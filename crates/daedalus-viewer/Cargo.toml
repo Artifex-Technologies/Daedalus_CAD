@@ -1,0 +1,14 @@
+[package]
+name = "daedalus-viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+daedalus-core.workspace = true
+daedalus-io.workspace = true
+wgpu = "24"
+winit = "0.30"
+glam = "0.29"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"

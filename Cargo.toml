@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/daedalus-core", "crates/daedalus-io", "crates/daedalus-app", "crates/daedalus-viewer"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+daedalus-core = { path = "crates/daedalus-core" }
+daedalus-io = { path = "crates/daedalus-io" }
