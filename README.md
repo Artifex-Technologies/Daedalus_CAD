@@ -80,3 +80,8 @@ no source from those projects is used.
 ## Next
 Line/rectangle/push-pull tools on `HalfEdgeMesh`, picking and snapping, edge rendering,
 undo/redo command stack, native `.daedalus` save format.
+
+## License
+
+MPL-2.0 (see `LICENSE`), like Labyrinth OS's other from-scratch projects. Daedalus is written independently; no source from other
+modelers is used.
