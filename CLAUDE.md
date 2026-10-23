@@ -38,15 +38,15 @@ Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/c
 Other modelers are studied through public documentation and by using them. **Do not decompile applications,
 and do not read or port source from copyleft projects** (IngeTrazo GPL-3, LibreCAD GPL-2, FreeCAD LGPL-2.1,
 LibreDWG GPLv3). Behaviour is reimplemented independently so the Daedalus licence stays free to choose
-(currently `MIT OR Apache-2.0`). CADCraft (MIT/Apache) is the one permissive reference; depending on its crates
+(currently `MPL-2.0`, see `LICENSE`). CADCraft (MIT/Apache) is the one permissive reference; depending on its crates
 is an open decision, not yet taken.
 
 ## Where the plan lives
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state at the time of the Windows to Linux move is:
-- 39 tests pass; viewer launched on Windows; **never built or run on Linux**; first job on Arch is the
-  first-run checklist (tests, viewer opens, orbit/pan/zoom, click-select, Up/Down push/pull, Ctrl+Z/Y,
+- 39 tests pass on Windows and Linux (CachyOS, Wayland, NVIDIA, 2026-10-15); viewer builds and starts on
+  Linux; still to do by hand from the first-run checklist (tests, viewer opens, orbit/pan/zoom, click-select, Up/Down push/pull, Ctrl+Z/Y,
   Wayland and X11, `WGPU_BACKEND=gl` if no Vulkan driver).
 - Next milestones: drawing tools (line/rectangle/circle/polygon/arc), plan view that toggles to 3D,
   inference and snapping, exact value entry, constraints, groups/components, native `.daedalus` format,
