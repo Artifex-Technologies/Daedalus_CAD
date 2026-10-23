@@ -1,3 +1,6 @@
+use crate::halfedge::ray_triangle;
+use crate::triangulate::triangulate;
+
 /// Indexed polygon mesh. Faces may have any number of vertices (>= 3).
 ///
 /// This is the interchange representation used by importers/exporters.
@@ -35,15 +38,39 @@ impl Mesh {
         }))
     }
 
-    /// Fan-triangulates every face. Correct for convex faces only.
-    pub fn triangles(&self) -> Vec<[u32; 3]> {
-        let mut out = Vec::new();
-        for f in &self.faces {
-            for i in 1..f.len().saturating_sub(1) {
-                out.push([f[0], f[i], f[i + 1]]);
+    /// Undirected edges as (low, high) vertex pairs, each listed once, sorted.
+    pub fn edges(&self) -> Vec<(u32, u32)> {
+        let mut out: Vec<(u32, u32)> = self
+            .faces
+            .iter()
+            .flat_map(|f| (0..f.len()).map(move |i| (f[i], f[(i + 1) % f.len()])))
+            .map(|(a, b)| (a.min(b), a.max(b)))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Nearest face hit by a ray, as (face index, distance along the ray).
+    /// Faces are treated as two-sided. Works on any mesh, including
+    /// non-manifold imports that cannot become a half-edge mesh.
+    pub fn pick_face(&self, origin: [f32; 3], dir: [f32; 3]) -> Option<(usize, f32)> {
+        let mut best: Option<(usize, f32)> = None;
+        for (f, ring) in self.faces.iter().enumerate() {
+            for tri in triangulate(&self.positions, ring) {
+                if let Some(t) = ray_triangle(origin, dir, tri.map(|v| self.positions[v as usize])) {
+                    if best.is_none_or(|(_, bt)| t < bt) {
+                        best = Some((f, t));
+                    }
+                }
             }
         }
-        out
+        best
+    }
+
+    /// Triangulates every face (ear clipping, so concave faces are correct).
+    pub fn triangles(&self) -> Vec<[u32; 3]> {
+        self.faces.iter().flat_map(|f| triangulate(&self.positions, f)).collect()
     }
 }
 
@@ -60,6 +87,7 @@ mod tests {
         let d = m.add_vertex([0.0, 1.0, 0.0]);
         m.add_face(vec![a, b, c, d]);
         assert_eq!(m.triangles().len(), 2);
+        assert_eq!(m.edges(), vec![(0, 1), (0, 3), (1, 2), (2, 3)]);
         assert_eq!(m.bounds(), Some(([0.0; 3], [1.0, 1.0, 0.0])));
     }
 }

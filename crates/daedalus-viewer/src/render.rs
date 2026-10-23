@@ -1,0 +1,382 @@
+//! GPU side of the viewport: shaded faces, edges drawn over them, overlay
+//! lines (rubber bands, axes) and the egui interface on top.
+
+use bytemuck::{Pod, Zeroable};
+use daedalus_core::Mesh;
+use glam::{Mat4, Vec3};
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
+use winit::window::Window;
+
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const EDGE_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+    /// 0.0 normal, 1.0 selected, 2.0 flagged by the inspector.
+    highlight: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct LineVertex {
+    pub position: [f32; 3],
+    pub color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Uniforms {
+    view_proj: [[f32; 4]; 4],
+    light: [f32; 4],
+}
+
+/// Flat-shaded triangle list: every face gets its own vertices and normal.
+fn face_vertices(mesh: &Mesh, selected: Option<usize>, flagged: &[usize]) -> Vec<Vertex> {
+    let mut out = Vec::new();
+    for (fi, face) in mesh.faces.iter().enumerate() {
+        let normal = newell(mesh, face);
+        let highlight = if selected == Some(fi) {
+            1.0
+        } else if flagged.binary_search(&fi).is_ok() {
+            2.0
+        } else {
+            0.0
+        };
+        for tri in daedalus_core::triangulate::triangulate(&mesh.positions, face) {
+            for v in tri {
+                out.push(Vertex { position: mesh.positions[v as usize], normal, highlight });
+            }
+        }
+    }
+    out
+}
+
+fn edge_vertices(mesh: &Mesh) -> Vec<LineVertex> {
+    mesh.edges()
+        .into_iter()
+        .flat_map(|(a, b)| [a, b])
+        .map(|v| LineVertex { position: mesh.positions[v as usize], color: EDGE_COLOR })
+        .collect()
+}
+
+pub fn newell(mesh: &Mesh, face: &[u32]) -> [f32; 3] {
+    let mut n = Vec3::ZERO;
+    for i in 0..face.len() {
+        let a = Vec3::from(mesh.positions[face[i] as usize]);
+        let b = Vec3::from(mesh.positions[face[(i + 1) % face.len()] as usize]);
+        n += Vec3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
+    }
+    n.normalize_or_zero().into()
+}
+
+fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth"),
+            size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// What egui produced for this frame.
+pub struct UiFrame {
+    pub primitives: Vec<egui::ClippedPrimitive>,
+    pub textures: egui::TexturesDelta,
+    pub pixels_per_point: f32,
+}
+
+pub struct Renderer {
+    surface: wgpu::Surface<'static>,
+    pub device: wgpu::Device,
+    queue: wgpu::Queue,
+    pub config: wgpu::SurfaceConfiguration,
+    face_pipeline: wgpu::RenderPipeline,
+    edge_pipeline: wgpu::RenderPipeline,
+    overlay_pipeline: wgpu::RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    depth_view: wgpu::TextureView,
+    faces: (wgpu::Buffer, u32),
+    edges: (wgpu::Buffer, u32),
+    egui: egui_wgpu::Renderer,
+}
+
+impl Renderer {
+    pub async fn new(window: Arc<Window>) -> Renderer {
+        let size = window.inner_size();
+        let instance = wgpu::Instance::default();
+        let surface = instance.create_surface(window).expect("create surface");
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                compatible_surface: Some(&surface),
+                ..Default::default()
+            })
+            .await
+            .expect("no suitable GPU adapter");
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .await
+            .expect("request device");
+        let config = surface
+            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
+            .expect("surface not supported by adapter");
+        surface.configure(&device, &config);
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() }],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let face_shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+        let line_shader = device.create_shader_module(wgpu::include_wgsl!("lines.wgsl"));
+        let target = [Some(wgpu::ColorTargetState {
+            format: config.format,
+            blend: Some(wgpu::BlendState::REPLACE),
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let face_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32],
+        };
+        let line_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<LineVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4],
+        };
+        let pipeline = |label, shader: &wgpu::ShaderModule, buffer: &wgpu::VertexBufferLayout, topology, depth| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: std::slice::from_ref(buffer),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &target,
+                }),
+                primitive: wgpu::PrimitiveState { topology, ..Default::default() },
+                depth_stencil: Some(depth),
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        // Faces are pushed slightly back so their own edges win the depth test.
+        let face_pipeline = pipeline(
+            "faces",
+            &face_shader,
+            &face_layout,
+            wgpu::PrimitiveTopology::TriangleList,
+            wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 },
+            },
+        );
+        let edge_pipeline = pipeline(
+            "edges",
+            &line_shader,
+            &line_layout,
+            wgpu::PrimitiveTopology::LineList,
+            wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: Default::default(),
+                bias: Default::default(),
+            },
+        );
+        let overlay_pipeline = pipeline(
+            "overlay",
+            &line_shader,
+            &line_layout,
+            wgpu::PrimitiveTopology::LineList,
+            wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: Default::default(),
+                bias: Default::default(),
+            },
+        );
+
+        let empty = |device: &wgpu::Device| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 64,
+                usage: wgpu::BufferUsages::VERTEX,
+                mapped_at_creation: false,
+            })
+        };
+        Renderer {
+            depth_view: depth_view(&device, config.width, config.height),
+            faces: (empty(&device), 0),
+            edges: (empty(&device), 0),
+            egui: egui_wgpu::Renderer::new(&device, config.format, None, 1, false),
+            surface,
+            device,
+            queue,
+            config,
+            face_pipeline,
+            edge_pipeline,
+            overlay_pipeline,
+            uniform_buffer,
+            bind_group,
+        }
+    }
+
+    pub fn resize(&mut self, w: u32, h: u32) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        self.config.width = w;
+        self.config.height = h;
+        self.surface.configure(&self.device, &self.config);
+        self.depth_view = depth_view(&self.device, w, h);
+    }
+
+    /// Uploads the model after an edit, a selection change or a preview step.
+    pub fn set_scene(&mut self, mesh: &Mesh, selected: Option<usize>, flagged: &[usize]) {
+        let faces = face_vertices(mesh, selected, flagged);
+        let edges = edge_vertices(mesh);
+        self.faces = (self.buffer(bytemuck::cast_slice(&faces)), faces.len() as u32);
+        self.edges = (self.buffer(bytemuck::cast_slice(&edges)), edges.len() as u32);
+    }
+
+    fn buffer(&self, contents: &[u8]) -> wgpu::Buffer {
+        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: if contents.is_empty() { &[0; 64] } else { contents },
+            usage: wgpu::BufferUsages::VERTEX,
+        })
+    }
+
+    /// Draws one frame. `guides` (the axes) are hidden by geometry like edges;
+    /// `overlay` lines (rubber bands) are drawn on top of everything.
+    pub fn render(&mut self, view_proj: Mat4, guides: &[LineVertex], overlay: &[LineVertex], ui: UiFrame) {
+        let frame = match self.surface.get_current_texture() {
+            Ok(f) => f,
+            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                self.surface.configure(&self.device, &self.config);
+                return;
+            }
+            Err(e) => {
+                eprintln!("surface error: {e}");
+                return;
+            }
+        };
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let uniforms = Uniforms { view_proj: view_proj.to_cols_array_2d(), light: [0.4, -0.6, 0.9, 0.0] };
+        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let guide_buffer = self.buffer(bytemuck::cast_slice(guides));
+        let overlay_buffer = self.buffer(bytemuck::cast_slice(overlay));
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scene"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.93, g: 0.94, b: 0.96, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_pipeline(&self.face_pipeline);
+            pass.set_vertex_buffer(0, self.faces.0.slice(..));
+            pass.draw(0..self.faces.1, 0..1);
+            pass.set_pipeline(&self.edge_pipeline);
+            pass.set_vertex_buffer(0, self.edges.0.slice(..));
+            pass.draw(0..self.edges.1, 0..1);
+            pass.set_vertex_buffer(0, guide_buffer.slice(..));
+            pass.draw(0..guides.len() as u32, 0..1);
+            pass.set_pipeline(&self.overlay_pipeline);
+            pass.set_vertex_buffer(0, overlay_buffer.slice(..));
+            pass.draw(0..overlay.len() as u32, 0..1);
+        }
+
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: ui.pixels_per_point,
+        };
+        for (id, delta) in &ui.textures.set {
+            self.egui.update_texture(&self.device, &self.queue, *id, delta);
+        }
+        let extra = self.egui.update_buffers(&self.device, &self.queue, &mut encoder, &ui.primitives, &screen);
+        {
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("ui"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                })
+                .forget_lifetime();
+            self.egui.render(&mut pass, &ui.primitives, &screen);
+        }
+        for id in &ui.textures.free {
+            self.egui.free_texture(id);
+        }
+        self.queue.submit(extra.into_iter().chain(Some(encoder.finish())));
+        frame.present();
+    }
+}

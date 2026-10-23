@@ -9,15 +9,32 @@ laser/waterjet and bending services). SketchUp's tools and controls are the mode
 
 ## Layout
 - `daedalus-core`: `Mesh` (interchange), `HalfEdgeMesh` (topology checks, normals, `split_face`,
-  `push_pull`, `pick_face`) and `Model` (document with atomic undo/redo)
+  `push_pull`, `erase_face`), `Model` (document with atomic undo/redo), `sketch` (workplanes,
+  rectangle, circle, polygon) and `triangulate` (ear clipping for concave faces)
 - `daedalus-io`: format importers/exporters behind `MeshImporter` / `MeshExporter`
 - `daedalus-app`: CLI that prints mesh stats
-- `daedalus-viewer`: wgpu viewport. `cargo run -p daedalus-viewer -- model.stl`
-  - left-drag orbit, right/middle-drag pan, wheel zoom
-  - click selects a face, Up/Down push/pulls it, Ctrl+Z / Ctrl+Y undo/redo, Esc deselects
-  - `I` inspects the solid, `F` repairs it
-  - no argument starts with a rectangle on the ground; imports with non-manifold
-    topology open read-only until repaired
+- `daedalus-viewer`: the modeler (wgpu + egui). `cargo run -p daedalus-viewer [-- model.stl]`
+
+## Using the modeler
+Laid out like SketchUp: menus and toolbar on top, hints and the Measurements box at the bottom.
+
+| Tool | Key | Use |
+|---|---|---|
+| Select | Space | click a face; Delete erases it |
+| Line | L | click corners; click the start point to close the loop into a face |
+| Rectangle | R | two corners, or type `width,height` after the first |
+| Circle | C | centre, then radius (click or type); type `24s` to set segments |
+| Polygon | | centre, then radius; type `6s` to set sides |
+| Push/Pull | P | click a face, move, click; or type a distance. Typing again right after re-does it |
+| Eraser | E | click a face |
+| Orbit / Pan / Zoom | O / H / Z | left-drag with the tool; Shift+Z zooms to extents |
+
+- Mouse: middle-drag orbits, Shift+middle-drag (or right-drag) pans, the wheel zooms toward the cursor.
+- Typing digits goes straight into the Measurements box; Enter applies, Esc clears or cancels.
+- Points snap to endpoints and midpoints; lines lock to the red/green axes within 3 degrees.
+  Shapes are drawn on the face under the first click, or on the ground.
+- Camera menu: Top, Iso, Parallel Projection. Ctrl+Z / Ctrl+Y undo and redo.
+- `I` inspects the solid, `F` repairs it. Imports with non-manifold topology open read-only until repaired.
 
 ## Solid inspector
 Checks whether a model is a valid solid (open borders, non-manifold edges, flipped or inverted
@@ -78,8 +95,8 @@ no source from those projects is used.
 | RBZ | later | needs a reimplementation of the public SketchUp Ruby API |
 
 ## Next
-Line/rectangle/push-pull tools on `HalfEdgeMesh`, picking and snapping, edge rendering,
-undo/redo command stack, native `.daedalus` save format.
+Imprinting (a shape drawn on a face splits it instead of overlapping it), vertex welding so shapes
+that touch share edges, arcs, Move/Rotate/Offset, units, and the native `.daedalus` save format.
 
 ## License
 

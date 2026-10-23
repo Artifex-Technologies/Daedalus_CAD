@@ -50,6 +50,15 @@ impl Model {
         self.edit(|m| m.add_polygon(&pts))
     }
 
+    /// Adds a closed outline as a new face (Line, Rectangle, Circle and Polygon tools).
+    pub fn add_polygon(&mut self, points: &[[f32; 3]]) -> Result<usize, TopologyError> {
+        self.edit(|m| m.add_polygon(points))
+    }
+
+    pub fn erase_face(&mut self, face: usize) -> Result<(), TopologyError> {
+        self.edit(|m| m.erase_face(face))
+    }
+
     pub fn push_pull(&mut self, face: usize, distance: f32) -> Result<usize, TopologyError> {
         self.edit(|m| m.push_pull(face, distance))
     }
@@ -117,6 +126,14 @@ mod tests {
         assert!(m.push_pull(9, 1.0).is_err());
         assert_eq!(m.mesh().face_count(), 1);
         assert!(m.undo());
+        assert!(!m.can_undo());
+    }
+
+    #[test]
+    fn degenerate_outline_is_rejected_without_a_history_step() {
+        let mut m = Model::new();
+        assert!(m.add_polygon(&[[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]).is_err());
+        assert_eq!(m.mesh().face_count(), 0);
         assert!(!m.can_undo());
     }
 

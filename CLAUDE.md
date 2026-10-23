@@ -11,7 +11,7 @@ capability only.
 ```sh
 cargo test --workspace                      # no GPU needed; the main check
 cargo build --workspace
-cargo run -p daedalus-viewer [-- model.stl] # wgpu viewport
+cargo run -p daedalus-viewer [-- model.stl] # the modeler (wgpu + egui)
 cargo run -p daedalus-app -- inspect model.stl [--fix out.stl]
 cargo run -p daedalus-app -- flatten out.dxf --thickness 2 --k 0.44 --width 40 50 90:2 30
 cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu   # from Windows
@@ -19,11 +19,14 @@ cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu   # from
 Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/ci.yml` (Arch container + Windows, `--locked`).
 
 ## Layout
-- `crates/daedalus-core`: `Mesh` (interchange), `HalfEdgeMesh` (topology, `push_pull`, `split_face`, `pick_face`),
-  `Model` (document + undo/redo), `inspect` (solid checks and repair), `sheetmetal` (flat patterns)
+- `crates/daedalus-core`: `Mesh` (interchange, `pick_face`, `edges`), `HalfEdgeMesh` (topology, `push_pull`,
+  `split_face`, `erase_face`), `Model` (document + undo/redo), `sketch` (workplanes and shapes), `triangulate`
+  (ear clipping), `inspect` (solid checks and repair), `sheetmetal` (flat patterns)
 - `crates/daedalus-io`: `MeshImporter` / `MeshExporter` per format (STL, OBJ, DXF, DAE), `dxf2d` (flat-pattern DXF), images/PSD
 - `crates/daedalus-app`: CLI (`inspect`, `flatten`, stats)
-- `crates/daedalus-viewer`: wgpu 24 + winit 0.30 viewport (pinned on purpose; newer majors changed APIs)
+- `crates/daedalus-viewer`: wgpu 24 + winit 0.30 + egui 0.31 (pinned together on purpose; egui 0.32 needs wgpu 25).
+  `tools.rs` is the GPU-free tool state machine (unit-tested); `render.rs` GPU; `ui.rs` egui chrome; `main.rs` events
+  and snapping
 
 ## Conventions
 - Every kernel or format feature gets a unit test. Solids are verified with **signed volume and Euler
@@ -44,15 +47,17 @@ is an open decision, not yet taken.
 ## Where the plan lives
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
-the current state at the time of the Windows to Linux move is:
-- 39 tests pass on Windows and Linux (CachyOS, Wayland, NVIDIA, 2026-10-15); viewer builds and starts on
-  Linux; still to do by hand from the first-run checklist (tests, viewer opens, orbit/pan/zoom, click-select, Up/Down push/pull, Ctrl+Z/Y,
-  Wayland and X11, `WGPU_BACKEND=gl` if no Vulkan driver).
-- Next milestones: drawing tools (line/rectangle/circle/polygon/arc), plan view that toggles to 3D,
-  inference and snapping, exact value entry, constraints, groups/components, native `.daedalus` format,
-  sheet metal inside the model, STEP export for bent parts.
+the current state is:
+- 64 tests pass (2026-10-23). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+  tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
+  and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
+- Not yet driven by hand with a real mouse: drawing, push/pull drag, undo; X11 session; `WGPU_BACKEND=gl`.
+- Known gaps: shapes drawn on a face overlap it instead of splitting it (no imprinting, no faces with holes);
+  touching shapes do not share edges (no vertex welding); no arcs; no units; no save.
+- Next milestones: imprint and weld, arcs, Move/Rotate/Offset, units, native `.daedalus` format, groups/components,
+  constraints, sheet metal inside the model, STEP export for bent parts.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
-  UI toolkit, constraint solver, reuse CADCraft crates or reimplement.
+  constraint solver, reuse CADCraft crates or reimplement.
 
 ## Fabrication facts (SendCutSend, public guidelines)
 Flat DXF: 1:1, inches preferred (mm fine if consistent), all cut geometry on one layer, closed paths, no

@@ -1,335 +1,238 @@
 mod camera;
+mod render;
+mod tools;
+mod ui;
 
-use bytemuck::{Pod, Zeroable};
 use camera::Camera;
 use daedalus_core::inspect::{self, DEFAULT_TOLERANCE};
-use daedalus_core::{HalfEdgeMesh, Mesh, Model};
+use daedalus_core::{HalfEdgeMesh, Mesh, Model, Plane};
 use glam::Vec3;
+use render::{LineVertex, Renderer, UiFrame};
 use std::path::PathBuf;
 use std::sync::Arc;
-use wgpu::util::DeviceExt;
+use tools::{Cursor, Hit, Snap, Tool, Tools, AXIS_COLORS};
+use ui::{UiAction, UiView};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
-const HELP: &str = "\
-Left-drag: orbit    Right/middle-drag: pan    Wheel: zoom
-Click: select face  Up/Down: push/pull selected face
-Ctrl+Z / Ctrl+Y: undo / redo    Esc: deselect
-I: inspect solid (problem faces turn red)    F: repair (also makes imports editable)";
-
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Vertex {
-    position: [f32; 3],
-    normal: [f32; 3],
-    /// 0.0 normal, 1.0 selected, 2.0 flagged by the inspector.
-    highlight: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniforms {
-    view_proj: [[f32; 4]; 4],
-    light: [f32; 4],
-}
-
-/// Flat-shaded triangle list: every face gets its own vertices and normal.
-fn build_vertices(mesh: &Mesh, selected: Option<usize>, flagged: &[usize]) -> Vec<Vertex> {
-    let mut out = Vec::new();
-    for (fi, face) in mesh.faces.iter().enumerate() {
-        let normal = newell(mesh, face);
-        let highlight = if selected == Some(fi) {
-            1.0
-        } else if flagged.binary_search(&fi).is_ok() {
-            2.0
-        } else {
-            0.0
-        };
-        for i in 1..face.len() - 1 {
-            for &v in &[face[0], face[i], face[i + 1]] {
-                out.push(Vertex { position: mesh.positions[v as usize], normal, highlight });
-            }
-        }
-    }
-    out
-}
-
-fn newell(mesh: &Mesh, face: &[u32]) -> [f32; 3] {
-    let mut n = Vec3::ZERO;
-    for i in 0..face.len() {
-        let a = Vec3::from(mesh.positions[face[i] as usize]);
-        let b = Vec3::from(mesh.positions[face[(i + 1) % face.len()] as usize]);
-        n += Vec3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
-    }
-    n.normalize_or_zero().into()
-}
-
-/// Starting scene when no file is given: a 2 x 2 rectangle on the ground, ready to push/pull.
-fn starter_scene() -> Mesh {
-    let mut h = HalfEdgeMesh::default();
-    h.add_polygon(&[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 2.0, 0.0], [0.0, 2.0, 0.0]])
-        .expect("starter rectangle");
-    h.to_mesh()
-}
+/// How close (in pixels) the cursor must be to a point to snap onto it.
+const SNAP_RADIUS: f32 = 12.0;
 
 struct State {
     window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    vertex_count: u32,
-    uniform_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    depth_view: wgpu::TextureView,
+    gpu: Renderer,
+    egui_ctx: egui::Context,
+    egui_state: egui_winit::State,
     camera: Camera,
+    /// Cursor in physical pixels.
     cursor: (f32, f32),
+    over_ui: bool,
     left_down: bool,
-    pan_down: bool,
+    middle_down: bool,
+    right_down: bool,
     press_at: (f32, f32),
-    ctrl: bool,
+    modifiers: ModifiersState,
     model: Model,
     /// Set when an import has non-manifold topology: shown, but not editable.
     readonly: Option<Mesh>,
-    selected: Option<usize>,
+    /// What is on screen: the model, a push/pull preview, or the read-only import.
+    display: Mesh,
+    tools: Tools,
     /// Sorted face indices flagged by the last inspection.
     flagged: Vec<usize>,
-}
-
-fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
-    device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some("depth"),
-            size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        })
-        .create_view(&wgpu::TextureViewDescriptor::default())
+    /// Text typed into the Measurements box, applied on Enter.
+    typed: String,
+    message: Option<String>,
+    last_cursor: Option<Cursor>,
+    shown_highlight: Option<usize>,
 }
 
 impl State {
-    async fn new(window: Arc<Window>, mesh: &Mesh) -> State {
-        let size = window.inner_size();
-        let instance = wgpu::Instance::default();
-        let surface = instance.create_surface(window.clone()).expect("create surface");
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await
-            .expect("no suitable GPU adapter");
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
-            .await
-            .expect("request device");
-        let config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
-            .expect("surface not supported by adapter");
-        surface.configure(&device, &config);
-
+    fn new(window: Arc<Window>, mesh: &Mesh) -> State {
+        let gpu = pollster::block_on(Renderer::new(window.clone()));
+        let egui_ctx = egui::Context::default();
+        egui_ctx.set_visuals(egui::Visuals::light());
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            Some(gpu.device.limits().max_texture_dimension_2d as usize),
+        );
         let (model, readonly) = match HalfEdgeMesh::from_mesh(mesh) {
             Ok(h) => (Model::from_mesh(h), None),
             Err(e) => {
-                eprintln!("note: model is read-only ({e})");
+                eprintln!("note: model is read-only until repaired with F ({e})");
                 (Model::new(), Some(mesh.clone()))
             }
         };
-        let vertices = build_vertices(mesh, None, &[]);
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() }],
-        });
-
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("mesh"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
-
         let camera = match mesh.bounds() {
             Some((lo, hi)) => Camera::fit(Vec3::from(lo), Vec3::from(hi)),
-            None => Camera::fit(Vec3::splat(-1.0), Vec3::splat(1.0)),
+            // An empty model: frame a room-sized area around the origin.
+            None => Camera::fit(Vec3::new(-1.0, -1.0, 0.0), Vec3::new(6.0, 6.0, 2.0)),
         };
-
-        State {
-            depth_view: depth_view(&device, config.width, config.height),
+        let mut s = State {
             window,
-            surface,
-            device,
-            queue,
-            config,
-            pipeline,
-            vertex_buffer,
-            vertex_count: vertices.len() as u32,
-            uniform_buffer,
-            bind_group,
+            gpu,
+            egui_ctx,
+            egui_state,
             camera,
             cursor: (0.0, 0.0),
+            over_ui: false,
             left_down: false,
-            pan_down: false,
+            middle_down: false,
+            right_down: false,
             press_at: (0.0, 0.0),
-            ctrl: false,
+            modifiers: ModifiersState::empty(),
             model,
             readonly,
-            selected: None,
+            display: Mesh::new(),
+            tools: Tools::default(),
             flagged: Vec::new(),
-        }
+            typed: String::new(),
+            message: None,
+            last_cursor: None,
+            shown_highlight: None,
+        };
+        s.refresh();
+        s
     }
 
-    /// Reports solid problems on stdout and marks the offending faces red.
-    fn inspect(&mut self) {
-        let report = inspect::inspect(&self.current_mesh(), DEFAULT_TOLERANCE);
-        println!("--- solid inspector ---\n{}", report.summary());
-        self.flagged = report.flagged_faces();
-        self.refresh();
+    fn size(&self) -> (f32, f32) {
+        (self.gpu.config.width as f32, self.gpu.config.height as f32)
     }
 
-    /// Repairs the model. A repaired import that is manifold becomes editable.
-    fn repair(&mut self) {
-        let (fixed, summary) = inspect::repair(&self.current_mesh(), DEFAULT_TOLERANCE);
-        if !summary.changed_anything() {
-            println!("repair: nothing to fix");
-            return;
-        }
-        println!("repair: {summary:?}");
-        match HalfEdgeMesh::from_mesh(&fixed) {
-            Ok(h) => {
-                self.model = Model::from_mesh(h);
-                self.readonly = None;
-                println!("repair: model is now editable");
-            }
-            Err(e) => {
-                self.readonly = Some(fixed);
-                println!("repair: still read-only ({e})");
-            }
-        }
-        self.selected = None;
-        self.flagged.clear();
-        self.refresh();
-    }
-
-    fn current_mesh(&self) -> Mesh {
-        match &self.readonly {
-            Some(m) => m.clone(),
-            None => self.model.mesh().to_mesh(),
-        }
-    }
-
-    /// Rebuilds GPU geometry after an edit or a selection change.
+    /// Rebuilds GPU geometry after an edit, a selection change or a preview step.
     fn refresh(&mut self) {
-        let vertices = build_vertices(&self.current_mesh(), self.selected, &self.flagged);
-        self.vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        self.vertex_count = vertices.len() as u32;
+        let preview = self.tools.preview_mesh(&self.model);
+        self.display = match (&self.readonly, &preview) {
+            (Some(m), _) => m.clone(),
+            (None, Some(p)) => p.to_mesh(),
+            (None, None) => self.model.mesh().to_mesh(),
+        };
+        let highlight = if preview.is_some() { None } else { self.tools.highlight() };
+        self.shown_highlight = highlight;
+        self.gpu.set_scene(&self.display, highlight, &self.flagged);
         self.window.request_redraw();
     }
 
-    fn pick(&mut self, x: f32, y: f32) {
-        let (w, h) = (self.config.width as f32, self.config.height as f32);
-        let (origin, dir) = self.camera.ray(x, y, w, h);
-        self.selected = self
-            .current_mesh_hit(origin, dir)
-            .filter(|&f| f < self.current_mesh().faces.len());
-        self.refresh();
-    }
+    /// The mouse ray, snapped to nearby endpoints and midpoints, else the face
+    /// under it, else the ground plane.
+    fn resolve_cursor(&self) -> Cursor {
+        let (w, h) = self.size();
+        let (origin, dir) = self.camera.ray(self.cursor.0, self.cursor.1, w, h);
+        let face_hit = self.display.pick_face(origin.into(), dir.into());
 
-    fn current_mesh_hit(&self, origin: Vec3, dir: Vec3) -> Option<usize> {
-        let hit = match &self.readonly {
-            Some(m) => HalfEdgeMesh::from_mesh(m).ok()?.pick_face(origin.into(), dir.into()),
-            None => self.model.mesh().pick_face(origin.into(), dir.into()),
+        let mut candidates: Vec<(Vec3, Snap)> = Vec::new();
+        for (a, b) in self.display.edges() {
+            let (pa, pb) = (Vec3::from(self.display.positions[a as usize]), Vec3::from(self.display.positions[b as usize]));
+            candidates.push((pa, Snap::Endpoint));
+            candidates.push((pb, Snap::Endpoint));
+            candidates.push(((pa + pb) * 0.5, Snap::Midpoint));
+        }
+        candidates.extend(self.tools.pending_points().into_iter().map(|p| (Vec3::from(p), Snap::Endpoint)));
+
+        let visible = |p: Vec3| match face_hit {
+            Some((_, t)) => (p - origin).dot(dir) <= t * 1.001 + 1e-4,
+            None => true,
         };
-        hit.map(|(f, _)| f)
+        let mut best: Option<(Vec3, Snap, f32)> = None;
+        for (p, snap) in candidates {
+            let Some((x, y)) = self.camera.project(p, w, h) else { continue };
+            let d = ((x - self.cursor.0).powi(2) + (y - self.cursor.1).powi(2)).sqrt();
+            // Endpoints win over midpoints at the same distance.
+            let rank = d + if snap == Snap::Midpoint { 2.0 } else { 0.0 };
+            if d <= SNAP_RADIUS && best.is_none_or(|b| rank < b.2) && visible(p) {
+                best = Some((p, snap, rank));
+            }
+        }
+
+        let face_plane = |f: usize, at: Vec3| Plane::from_point_normal(at.into(), render::newell(&self.display, &self.display.faces[f]));
+        let hit = match (best, face_hit) {
+            (Some((p, snap, _)), fh) => {
+                let on_face = fh.and_then(|(f, _)| {
+                    let plane = face_plane(f, p)?;
+                    let off = (p - Vec3::from(plane.origin)).dot(Vec3::from(plane.normal)).abs();
+                    let face_point = origin + dir * fh?.1;
+                    let off_face = (p - face_point).dot(Vec3::from(plane.normal)).abs();
+                    (off < 1e-4 && off_face < 1e-3 * (1.0 + p.length())).then_some((f, plane))
+                });
+                let (face, plane) = match on_face {
+                    Some((f, plane)) => (Some(f), plane),
+                    None if p.z.abs() < 1e-5 => (None, Plane::ground()),
+                    None => (None, Plane { origin: p.into(), ..Plane::ground() }),
+                };
+                Some(Hit { point: p.into(), plane, face, snap })
+            }
+            (None, Some((f, t))) => {
+                let p = origin + dir * t;
+                face_plane(f, p).map(|plane| Hit { point: p.into(), plane, face: Some(f), snap: Snap::OnFace })
+            }
+            (None, None) => Plane::ground()
+                .intersect_ray(origin.into(), dir.into())
+                .map(|p| Hit { point: p, plane: Plane::ground(), face: None, snap: Snap::Ground }),
+        };
+        Cursor { origin: origin.into(), dir: dir.into(), hit }
     }
 
-    fn push_pull(&mut self, direction: f32) {
-        if self.readonly.is_some() {
-            eprintln!("this model is read-only");
+    fn mouse_moved(&mut self) {
+        if self.over_ui {
+            self.last_cursor = None;
             return;
         }
-        let Some(face) = self.selected else { return };
-        let step = self.camera.distance * 0.03 * direction;
-        self.flagged.clear(); // face indices change with every edit
-        match self.model.push_pull(face, step) {
-            Ok(new_face) => self.selected = Some(new_face),
-            Err(e) => eprintln!("push/pull failed: {e}"),
+        let c = self.resolve_cursor();
+        self.last_cursor = Some(c);
+        self.tools.hover(&c);
+        if self.tools.preview_mesh(&self.model).is_some() || self.tools.highlight() != self.shown_highlight {
+            self.refresh();
         }
+        self.window.request_redraw();
+    }
+
+    fn click(&mut self) {
+        let c = self.resolve_cursor();
+        if self.readonly.is_some() && self.tools.tool.edits() {
+            self.message = Some("This model is read-only; press F to repair it.".into());
+            return;
+        }
+        self.message = None;
+        let result = match &self.readonly {
+            // Selection still works on a read-only import.
+            Some(_) => {
+                self.tools.selected = c.hit.and_then(|h| h.face);
+                Ok(())
+            }
+            None => self.tools.click(&mut self.model, &c),
+        };
+        if let Err(e) = result {
+            self.message = Some(e);
+        }
+        self.after_edit();
+    }
+
+    fn after_edit(&mut self) {
+        self.flagged.clear(); // face indices change with every edit
+        self.refresh();
+        self.mouse_moved();
+    }
+
+    fn enter_typed(&mut self) {
+        let text = std::mem::take(&mut self.typed);
+        if self.readonly.is_some() {
+            return;
+        }
+        self.message = self.tools.type_entry(&mut self.model, &text).err();
+        self.after_edit();
+    }
+
+    fn set_tool(&mut self, tool: Tool) {
+        self.tools.set_tool(tool);
+        self.typed.clear();
+        self.message = None;
         self.refresh();
     }
 
@@ -339,73 +242,189 @@ impl State {
         }
         let changed = if undo { self.model.undo() } else { self.model.redo() };
         if changed {
-            self.selected = None;
-            self.flagged.clear();
-            self.refresh();
+            self.tools.model_changed();
+            self.after_edit();
         }
     }
 
-    fn resize(&mut self, w: u32, h: u32) {
-        if w == 0 || h == 0 {
+    fn erase_selected(&mut self) {
+        let Some(face) = self.tools.selected.filter(|_| self.readonly.is_none()) else { return };
+        if let Err(e) = self.model.erase_face(face) {
+            self.message = Some(e.to_string());
+        }
+        self.tools.model_changed();
+        self.after_edit();
+    }
+
+    /// Reports solid problems on stdout and marks the offending faces red.
+    fn inspect(&mut self) {
+        let report = inspect::inspect(&self.display, DEFAULT_TOLERANCE);
+        println!("--- solid inspector ---\n{}", report.summary());
+        self.message = Some(if report.is_solid() {
+            "Solid Inspector: this is a valid solid.".into()
+        } else {
+            "Solid Inspector: problem faces shown in red (details on the console).".into()
+        });
+        self.flagged = report.flagged_faces();
+        self.refresh();
+    }
+
+    /// Repairs the model. A repaired import that is manifold becomes editable.
+    fn repair(&mut self) {
+        let (fixed, summary) = inspect::repair(&self.display, DEFAULT_TOLERANCE);
+        if !summary.changed_anything() {
+            self.message = Some("Repair: nothing to fix.".into());
             return;
         }
-        self.config.width = w;
-        self.config.height = h;
-        self.surface.configure(&self.device, &self.config);
-        self.depth_view = depth_view(&self.device, w, h);
+        println!("repair: {summary:?}");
+        match HalfEdgeMesh::from_mesh(&fixed) {
+            Ok(h) => {
+                self.model = Model::from_mesh(h);
+                self.readonly = None;
+                self.message = Some("Repair: the model is now editable.".into());
+            }
+            Err(e) => {
+                self.readonly = Some(fixed);
+                self.message = Some(format!("Repair: still read-only ({e})."));
+            }
+        }
+        self.tools.model_changed();
+        self.flagged.clear();
+        self.refresh();
+    }
+
+    fn zoom_extents(&mut self) {
+        if let Some((lo, hi)) = self.display.bounds() {
+            self.camera.zoom_extents(Vec3::from(lo), Vec3::from(hi));
+        }
+        self.window.request_redraw();
+    }
+
+    fn apply(&mut self, action: UiAction) {
+        match action {
+            UiAction::Tool(t) => self.set_tool(t),
+            UiAction::ZoomExtents => self.zoom_extents(),
+            UiAction::Top => self.camera.top(),
+            UiAction::Iso => self.camera.iso(),
+            UiAction::ToggleOrtho => self.camera.ortho = !self.camera.ortho,
+            UiAction::Undo => self.history(true),
+            UiAction::Redo => self.history(false),
+            UiAction::Inspect => self.inspect(),
+            UiAction::Repair => self.repair(),
+        }
+        self.window.request_redraw();
+    }
+
+    fn key(&mut self, key: &Key) {
+        let ctrl = self.modifiers.control_key();
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                if self.typed.is_empty() {
+                    self.tools.cancel();
+                    self.message = None;
+                } else {
+                    self.typed.clear();
+                }
+                self.refresh();
+            }
+            Key::Named(NamedKey::Enter) if !self.typed.is_empty() => self.enter_typed(),
+            Key::Named(NamedKey::Backspace) => {
+                self.typed.pop();
+            }
+            Key::Named(NamedKey::Delete) => self.erase_selected(),
+            Key::Named(NamedKey::Space) => self.set_tool(Tool::Select),
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => self.history(true),
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("y") => self.history(false),
+            Key::Character(_) if ctrl => {}
+            Key::Character(c) if self.modifiers.shift_key() && c.eq_ignore_ascii_case("z") => self.zoom_extents(),
+            // Digits go to the Measurements box without clicking it, as in SketchUp.
+            Key::Character(c) if c.chars().all(|ch| ch.is_ascii_digit() || ".,;-".contains(ch)) => {
+                self.typed.push_str(c);
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("s") && !self.typed.is_empty() => self.typed.push('s'),
+            Key::Character(c) if c.eq_ignore_ascii_case("i") => self.inspect(),
+            Key::Character(c) if c.eq_ignore_ascii_case("f") => self.repair(),
+            Key::Character(c) => {
+                if let Some(t) = Tool::from_key(c) {
+                    if self.readonly.is_some() && t.edits() {
+                        self.message = Some("This model is read-only; press F to repair it.".into());
+                    } else {
+                        self.set_tool(t);
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.window.request_redraw();
+    }
+
+    /// Drawing axes: solid on the positive side, faded on the negative side.
+    fn axes(&self) -> Vec<LineVertex> {
+        let reach = self.camera.distance * 40.0;
+        let mut out = Vec::new();
+        for (i, color) in AXIS_COLORS.iter().take(3).enumerate() {
+            let faded = [color[0] * 0.4 + 0.55, color[1] * 0.4 + 0.55, color[2] * 0.4 + 0.55, 1.0];
+            for (sign, color) in [(1.0, *color), (-1.0, faded)] {
+                let mut end = [0.0; 3];
+                end[i] = reach * sign;
+                out.push(LineVertex { position: [0.0; 3], color });
+                out.push(LineVertex { position: end, color });
+            }
+        }
+        out
+    }
+
+    fn overlay(&self) -> Vec<LineVertex> {
+        self.tools
+            .preview_lines()
+            .into_iter()
+            .flat_map(|(a, b, color)| [LineVertex { position: a, color }, LineVertex { position: b, color }])
+            .collect()
     }
 
     fn render(&mut self) {
-        let frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-                self.surface.configure(&self.device, &self.config);
-                return;
-            }
-            Err(e) => {
-                eprintln!("surface error: {e}");
-                return;
-            }
+        let ctx = self.egui_ctx.clone();
+        let (w, h) = self.size();
+        let ppp = ctx.pixels_per_point();
+        let marker = match self.tools.tool {
+            Tool::Line | Tool::Rectangle | Tool::Circle | Tool::Polygon if !self.over_ui => self
+                .last_cursor
+                .and_then(|c| self.tools.marker(&c))
+                .and_then(|(p, snap)| self.camera.project(Vec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), snap))),
+            _ => None,
         };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let aspect = self.config.width as f32 / self.config.height as f32;
-        let uniforms = Uniforms {
-            view_proj: self.camera.view_proj(aspect).to_cols_array_2d(),
-            light: [0.4, -0.6, 0.9, 0.0],
+        let (label, current) = self.tools.measurement();
+        let view = UiView {
+            tool: self.tools.tool,
+            editable: self.readonly.is_none(),
+            ortho: self.camera.ortho,
+            can_undo: self.model.can_undo(),
+            can_redo: self.model.can_redo(),
+            status: self.tools.status(),
+            message: self.message.as_deref(),
+            measure_label: label,
+            measure_value: if self.typed.is_empty() { &current } else { &self.typed },
+            typing: !self.typed.is_empty(),
+            marker,
         };
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let raw = self.egui_state.take_egui_input(&self.window);
+        let mut actions = Vec::new();
+        let out = ctx.run(raw, |ctx| actions = ui::draw(ctx, &view));
+        self.egui_state.handle_platform_output(&self.window, out.platform_output);
+        let ui = UiFrame {
+            primitives: ctx.tessellate(out.shapes, out.pixels_per_point),
+            textures: out.textures_delta,
+            pixels_per_point: out.pixels_per_point,
+        };
+        let (axes, overlay) = (self.axes(), self.overlay());
+        self.gpu.render(self.camera.view_proj(w / h), &axes, &overlay, ui);
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.93, g: 0.94, b: 0.96, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.draw(0..self.vertex_count, 0..1);
+        if out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay.is_zero()) {
+            self.window.request_redraw();
         }
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
+        for a in actions {
+            self.apply(a);
+        }
     }
 }
 
@@ -425,71 +444,91 @@ impl ApplicationHandler for App {
                 .create_window(Window::default_attributes().with_title(self.title.clone()))
                 .expect("create window"),
         );
-        self.state = Some(pollster::block_on(State::new(window, &self.mesh)));
+        self.state = Some(State::new(window, &self.mesh));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(s) = self.state.as_mut() else { return };
+        let response = s.egui_state.on_window_event(&s.window, &event);
+        if response.repaint {
+            s.window.request_redraw();
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                s.resize(size.width, size.height);
+                s.gpu.resize(size.width, size.height);
                 s.window.request_redraw();
             }
             WindowEvent::RedrawRequested => s.render(),
+            WindowEvent::ModifiersChanged(m) => s.modifiers = m.state(),
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
+                // Presses that land on the toolbar or status bar belong to egui.
+                if down && s.egui_ctx.is_pointer_over_area() {
+                    return;
+                }
                 match button {
                     MouseButton::Left => {
                         if down {
                             s.press_at = s.cursor;
-                        } else {
-                            // A release close to the press point is a click, not an orbit.
+                            s.left_down = true;
+                        } else if s.left_down {
+                            s.left_down = false;
+                            // A release close to the press point is a click, not a drag.
                             let (dx, dy) = (s.cursor.0 - s.press_at.0, s.cursor.1 - s.press_at.1);
-                            if dx * dx + dy * dy < 16.0 {
-                                s.pick(s.cursor.0, s.cursor.1);
+                            if dx * dx + dy * dy < 16.0 && !s.tools.tool.navigates() {
+                                s.click();
                             }
                         }
-                        s.left_down = down;
                     }
-                    MouseButton::Right | MouseButton::Middle => s.pan_down = down,
+                    MouseButton::Middle => s.middle_down = down,
+                    MouseButton::Right => s.right_down = down,
                     _ => {}
                 }
             }
-            WindowEvent::ModifiersChanged(m) => s.ctrl = m.state().control_key(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                match &event.logical_key {
-                    Key::Named(NamedKey::ArrowUp) => s.push_pull(1.0),
-                    Key::Named(NamedKey::ArrowDown) => s.push_pull(-1.0),
-                    Key::Named(NamedKey::Escape) => {
-                        s.selected = None;
-                        s.refresh();
-                    }
-                    Key::Character(c) if !s.ctrl && c.eq_ignore_ascii_case("i") => s.inspect(),
-                    Key::Character(c) if !s.ctrl && c.eq_ignore_ascii_case("f") => s.repair(),
-                    Key::Character(c) if s.ctrl && c.eq_ignore_ascii_case("z") => s.history(true),
-                    Key::Character(c) if s.ctrl && c.eq_ignore_ascii_case("y") => s.history(false),
-                    _ => {}
+                if !s.egui_ctx.wants_keyboard_input() {
+                    s.key(&event.logical_key);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (position.x as f32, position.y as f32);
                 let (dx, dy) = (x - s.cursor.0, y - s.cursor.1);
                 s.cursor = (x, y);
-                if s.left_down {
+                s.over_ui = s.egui_ctx.is_pointer_over_area();
+                let tool = s.tools.tool;
+                // Middle-drag orbits and Shift+middle-drag pans, as in SketchUp;
+                // right-drag pans until there is a context menu.
+                let orbit = (s.middle_down && !s.modifiers.shift_key()) || (s.left_down && tool == Tool::Orbit);
+                let pan = (s.middle_down && s.modifiers.shift_key()) || s.right_down || (s.left_down && tool == Tool::Pan);
+                if orbit {
                     s.camera.orbit(dx, dy);
-                    s.window.request_redraw();
-                } else if s.pan_down {
+                } else if pan {
                     s.camera.pan(dx, dy);
-                    s.window.request_redraw();
+                } else if s.left_down && tool == Tool::Zoom {
+                    s.camera.zoom(-dy * 0.05, None);
+                } else {
+                    s.mouse_moved();
+                    return;
                 }
+                s.window.request_redraw();
+            }
+            WindowEvent::CursorLeft { .. } => {
+                s.last_cursor = None;
+                s.window.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if s.over_ui {
+                    return;
+                }
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
-                s.camera.zoom(amount);
+                // Zoom toward the point under the cursor.
+                let focus = s.resolve_cursor().hit.map(|h| Vec3::from(h.point));
+                s.camera.zoom(amount, focus);
+                s.mouse_moved();
                 s.window.request_redraw();
             }
             _ => {}
@@ -509,9 +548,8 @@ fn main() {
                 }
             }
         }
-        None => (starter_scene(), "Daedalus".to_string()),
+        None => (Mesh::new(), "Daedalus".to_string()),
     };
-    println!("{HELP}");
     let event_loop = EventLoop::new().expect("event loop");
     let mut app = App { mesh, title, state: None };
     event_loop.run_app(&mut app).expect("run app");

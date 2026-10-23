@@ -193,12 +193,31 @@ impl HalfEdgeMesh {
 
     /// Adds a free-standing polygon (new vertices, no welding) and returns its face index.
     pub fn add_polygon(&mut self, points: &[[f32; 3]]) -> Result<usize, TopologyError> {
+        if points.len() < 3 {
+            return Err(TopologyError::DegenerateFace(self.face_count()));
+        }
         let mut m = self.to_mesh();
         let base = m.positions.len() as u32;
         m.positions.extend_from_slice(points);
         m.faces.push((base..base + points.len() as u32).collect());
         *self = Self::from_mesh(&m)?;
-        Ok(self.face_count() - 1)
+        let face = self.face_count() - 1;
+        if self.face_normal(face) == [0.0; 3] {
+            return Err(TopologyError::DegenerateNormal);
+        }
+        Ok(face)
+    }
+
+    /// Removes a face (SketchUp's Eraser on a face). Its edges stay where a
+    /// neighbour still uses them; vertices are kept so indices stay valid.
+    pub fn erase_face(&mut self, face: usize) -> Result<(), TopologyError> {
+        if face >= self.faces.len() {
+            return Err(TopologyError::FaceOutOfRange(face));
+        }
+        let mut m = self.to_mesh();
+        m.faces.remove(face);
+        *self = Self::from_mesh(&m)?;
+        Ok(())
     }
 
     /// Extrudes `face` along its normal by `distance` (negative pushes inward).
@@ -260,23 +279,7 @@ impl HalfEdgeMesh {
     /// Nearest face hit by a ray, as (face index, distance along the ray).
     /// Faces are treated as two-sided.
     pub fn pick_face(&self, origin: [f32; 3], dir: [f32; 3]) -> Option<(usize, f32)> {
-        let mut best: Option<(usize, f32)> = None;
-        for f in 0..self.faces.len() {
-            let vs = self.face_vertices(f);
-            for i in 1..vs.len() - 1 {
-                let tri = [
-                    self.positions[vs[0] as usize],
-                    self.positions[vs[i] as usize],
-                    self.positions[vs[i + 1] as usize],
-                ];
-                if let Some(t) = ray_triangle(origin, dir, tri) {
-                    if best.map_or(true, |(_, bt)| t < bt) {
-                        best = Some((f, t));
-                    }
-                }
-            }
-        }
-        best
+        self.to_mesh().pick_face(origin, dir)
     }
 
     /// Splits `face` along the chord between vertices `a` and `b`, which must be
@@ -334,7 +337,7 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 /// Moller-Trumbore ray/triangle intersection, two-sided. Returns the ray parameter.
-fn ray_triangle(origin: [f32; 3], dir: [f32; 3], tri: [[f32; 3]; 3]) -> Option<f32> {
+pub(crate) fn ray_triangle(origin: [f32; 3], dir: [f32; 3], tri: [[f32; 3]; 3]) -> Option<f32> {
     let e1 = sub(tri[1], tri[0]);
     let e2 = sub(tri[2], tri[0]);
     let p = cross(dir, e2);
@@ -489,6 +492,34 @@ mod tests {
         let (face, _) = h.pick_face([0.5, 0.5, -5.0], [0.0, 0.0, 1.0]).unwrap();
         assert_eq!(face, 0);
         assert!(h.pick_face([5.0, 5.0, 5.0], [0.0, 0.0, -1.0]).is_none());
+    }
+
+    #[test]
+    fn edges_and_erase() {
+        let mut h = HalfEdgeMesh::from_mesh(&cube()).unwrap();
+        h.erase_face(1).unwrap();
+        assert_eq!(h.face_count(), 5);
+        assert_eq!(h.boundary_edge_count(), 4, "open box");
+        assert_eq!(h.edge_count(), 12, "the rim edges stay");
+        assert_eq!(h.erase_face(9), Err(TopologyError::FaceOutOfRange(9)));
+    }
+
+    #[test]
+    fn add_polygon_rejects_degenerate_input() {
+        let mut h = HalfEdgeMesh::default();
+        assert!(h.add_polygon(&[[0.0; 3], [1.0, 0.0, 0.0]]).is_err());
+        let line = [[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        assert_eq!(h.add_polygon(&line), Err(TopologyError::DegenerateNormal));
+    }
+
+    #[test]
+    fn picks_inside_the_notch_of_a_concave_face_correctly() {
+        let mut h = HalfEdgeMesh::default();
+        // L-shape: 2 x 2 with the top-right quarter missing.
+        let l = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, 2.0, 0.0], [0.0, 2.0, 0.0]];
+        h.add_polygon(&l).unwrap();
+        assert!(h.pick_face([0.5, 1.5, 1.0], [0.0, 0.0, -1.0]).is_some());
+        assert!(h.pick_face([1.5, 1.5, 1.0], [0.0, 0.0, -1.0]).is_none(), "the missing quarter");
     }
 
     #[test]
