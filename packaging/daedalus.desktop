@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Daedalus CAD
+GenericName=3D Modeler
+Comment=SketchUp-style 3D modeling, 2D drafting and sheet metal
+Exec=daedalus %f
+Icon=daedalus
+Terminal=false
+Categories=Graphics;3DGraphics;Engineering;
+MimeType=model/stl;model/obj;image/vnd.dxf;model/vnd.collada+xml;
+Keywords=CAD;SketchUp;modeling;sheet metal;DXF;STL;
+StartupWMClass=daedalus

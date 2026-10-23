@@ -85,7 +85,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
     });
 
     egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for group in [
                 &[Tool::Select, Tool::Eraser][..],
                 &[Tool::Line, Tool::Rectangle, Tool::Circle, Tool::Polygon],

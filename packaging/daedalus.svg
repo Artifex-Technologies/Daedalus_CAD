@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- An isometric box being pulled up: the Push/Pull idea in one shape. -->
+  <rect x="2" y="2" width="60" height="60" rx="12" fill="#1f2a44"/>
+  <polygon points="32,12 52,22 32,32 12,22" fill="#dfe4ee"/>
+  <polygon points="12,22 32,32 32,54 12,44" fill="#9aa6bd"/>
+  <polygon points="52,22 32,32 32,54 52,44" fill="#c3cad8"/>
+  <path d="M12,22 L32,12 L52,22 L32,32 Z M32,32 L32,54 M12,22 L12,44 L32,54 L52,44 L52,22" fill="none" stroke="#0b0f18" stroke-width="1.6" stroke-linejoin="round"/>
+  <line x1="12" y1="44" x2="4" y2="48" stroke="#e0453a" stroke-width="2"/>
+  <line x1="52" y1="44" x2="60" y2="48" stroke="#2fa84f" stroke-width="2"/>
+</svg>

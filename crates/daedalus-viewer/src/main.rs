@@ -439,11 +439,14 @@ impl ApplicationHandler for App {
         if self.state.is_some() {
             return;
         }
-        let window = Arc::new(
-            event_loop
-                .create_window(Window::default_attributes().with_title(self.title.clone()))
-                .expect("create window"),
-        );
+        let attrs = Window::default_attributes().with_title(self.title.clone());
+        // App id / WM class matching packaging/daedalus.desktop, so the taskbar shows its icon.
+        #[cfg(target_os = "linux")]
+        let attrs = {
+            let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "daedalus", "daedalus");
+            winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "daedalus", "daedalus")
+        };
+        let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         self.state = Some(State::new(window, &self.mesh));
     }
 

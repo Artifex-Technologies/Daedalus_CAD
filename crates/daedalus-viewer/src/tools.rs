@@ -43,7 +43,7 @@ impl Tool {
             Tool::PushPull => "Push/Pull",
             Tool::Eraser => "Eraser",
             Tool::Orbit => "Orbit",
-            Tool::Pan => "Pan",
+            Tool::Pan => "Pan (Hand)",
             Tool::Zoom => "Zoom",
         }
     }

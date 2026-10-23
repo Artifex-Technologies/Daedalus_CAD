@@ -27,7 +27,7 @@ Laid out like SketchUp: menus and toolbar on top, hints and the Measurements box
 | Polygon | | centre, then radius; type `6s` to set sides |
 | Push/Pull | P | click a face, move, click; or type a distance. Typing again right after re-does it |
 | Eraser | E | click a face |
-| Orbit / Pan / Zoom | O / H / Z | left-drag with the tool; Shift+Z zooms to extents |
+| Orbit / Pan (Hand) / Zoom | O / H / Z | left-drag with the tool; Shift+Z zooms to extents |
 
 - Mouse: middle-drag orbits, Shift+middle-drag (or right-drag) pans, the wheel zooms toward the cursor.
 - Typing digits goes straight into the Measurements box; Enter applies, Esc clears or cancels.
@@ -60,6 +60,11 @@ sudo pacman -S --needed base-devel git rustup vulkan-icd-loader mesa libxkbcommo
 # plus a Vulkan driver for your GPU: vulkan-radeon, vulkan-intel or nvidia-utils
 rustup default stable
 cargo run -p daedalus-viewer
+```
+To install it for your user (binary in `~/.local/bin/daedalus`, plus an application-menu entry and icon):
+```sh
+packaging/install.sh              # run again after `git pull` to update
+packaging/install.sh --uninstall
 ```
 winit loads the X11/Wayland libraries at runtime, so the viewer runs on either session type.
 The workspace is pure Rust with no C build dependencies beyond a linker (`base-devel`).
