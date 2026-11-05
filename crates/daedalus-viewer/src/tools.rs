@@ -2,6 +2,7 @@
 //! code lives here: the viewer resolves the mouse into a [`Cursor`] (ray plus
 //! snapped hit) and the tools turn clicks and typed values into model edits.
 
+use daedalus_core::units::{self, Units};
 use daedalus_core::sketch::{self, Plane, DEFAULT_CIRCLE_SEGMENTS};
 use daedalus_core::{HalfEdgeMesh, Model};
 
@@ -137,16 +138,19 @@ pub enum Entry {
     Sides(u32),
 }
 
-/// Parses `2.5`, `3,2` (or `3;2`) and `24s`.
-pub fn parse_entry(text: &str) -> Option<Entry> {
+/// Parses `2.5`, `3,2` (or `3;2`) and `24s`. Lengths are in `units` unless a unit is written (`300mm`, `4' 6"`); they come
+/// back in metres, the model's unit.
+pub fn parse_entry(text: &str, units: Units) -> Option<Entry> {
     let t = text.trim();
     if let Some(n) = t.strip_suffix(['s', 'S']) {
-        return n.trim().parse().ok().filter(|&n| n >= 3).map(Entry::Sides);
+        if let Ok(n) = n.trim().parse::<u32>() {
+            return (n >= 3).then_some(Entry::Sides(n));
+        }
     }
     if let Some((a, b)) = t.split_once([',', ';']) {
-        return Some(Entry::Pair(a.trim().parse().ok()?, b.trim().parse().ok()?));
+        return Some(Entry::Pair(units::parse(a, units)?, units::parse(b, units)?));
     }
-    t.parse().ok().filter(|v: &f32| v.is_finite()).map(Entry::Value)
+    units::parse(t, units).map(Entry::Value)
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +166,8 @@ pub struct Tools {
     pub tool: Tool,
     pub circle_segments: u32,
     pub polygon_sides: u32,
+    /// What lengths are shown and typed in (the model itself is in metres).
+    pub units: Units,
     pub selected: Option<usize>,
     hover_face: Option<usize>,
     op: Op,
@@ -176,6 +182,7 @@ impl Default for Tools {
             tool: Tool::Select,
             circle_segments: DEFAULT_CIRCLE_SEGMENTS,
             polygon_sides: 6,
+            units: Units::Metres,
             selected: None,
             hover_face: None,
             op: Op::Idle,
@@ -335,7 +342,7 @@ impl Tools {
 
     /// Enter in the Measurements box.
     pub fn type_entry(&mut self, model: &mut Model, text: &str) -> Result<(), String> {
-        let entry = parse_entry(text).ok_or_else(|| format!("cannot read \"{text}\""))?;
+        let entry = parse_entry(text, self.units).ok_or_else(|| format!("cannot read \"{text}\""))?;
         match (entry, std::mem::replace(&mut self.op, Op::Idle)) {
             (Entry::Sides(n), op) if matches!(self.tool, Tool::Circle | Tool::Polygon) => {
                 match self.tool {
@@ -451,19 +458,19 @@ impl Tools {
     /// Label and current value for the Measurements box.
     pub fn measurement(&self) -> (&'static str, String) {
         match &self.op {
-            Op::Line { points, cursor: Some(c), .. } => ("Length", fmt(dist(*points.last().unwrap(), *c))),
+            Op::Line { points, cursor: Some(c), .. } => ("Length", fmt(dist(*points.last().unwrap(), *c), self.units)),
             Op::Line { .. } => ("Length", String::new()),
             Op::Rect { plane, start, cursor: Some(c) } => {
                 let (a, b) = (plane.to_local(*start), plane.to_local(*c));
-                ("Dimensions", format!("{}, {}", fmt((b[0] - a[0]).abs()), fmt((b[1] - a[1]).abs())))
+                ("Dimensions", format!("{}, {}", fmt((b[0] - a[0]).abs(), self.units), fmt((b[1] - a[1]).abs(), self.units)))
             }
             Op::Rect { .. } => ("Dimensions", String::new()),
-            Op::Round { center, cursor, .. } => ("Radius", cursor.map(|c| fmt(dist(*center, c))).unwrap_or_default()),
-            Op::Push { distance, .. } => ("Distance", fmt(*distance)),
+            Op::Round { center, cursor, .. } => ("Radius", cursor.map(|c| fmt(dist(*center, c), self.units)).unwrap_or_default()),
+            Op::Push { distance, .. } => ("Distance", fmt(*distance, self.units)),
             Op::Idle => match self.tool {
                 Tool::Circle => ("Segments", self.circle_segments.to_string()),
                 Tool::Polygon => ("Sides", self.polygon_sides.to_string()),
-                Tool::PushPull => ("Distance", self.last_push.map(|(_, d)| fmt(d)).unwrap_or_default()),
+                Tool::PushPull => ("Distance", self.last_push.map(|(_, d)| fmt(d, self.units)).unwrap_or_default()),
                 _ => ("Measurements", String::new()),
             },
         }
@@ -557,8 +564,8 @@ fn ring_lines(r: &[[f32; 3]], out: &mut Vec<([f32; 3], [f32; 3], [f32; 4])>) {
     }
 }
 
-fn fmt(v: f32) -> String {
-    format!("{v:.3}")
+fn fmt(v: f32, u: Units) -> String {
+    units::format(v, u)
 }
 
 fn sign(v: f32) -> f32 {
@@ -623,13 +630,21 @@ mod tests {
 
     #[test]
     fn parses_measurement_entries() {
-        assert_eq!(parse_entry(" 2.5 "), Some(Entry::Value(2.5)));
-        assert_eq!(parse_entry("3,2"), Some(Entry::Pair(3.0, 2.0)));
-        assert_eq!(parse_entry("3; -2"), Some(Entry::Pair(3.0, -2.0)));
-        assert_eq!(parse_entry("24s"), Some(Entry::Sides(24)));
-        assert_eq!(parse_entry("2s"), None, "fewer than 3 sides");
-        assert_eq!(parse_entry("abc"), None);
-        assert_eq!(parse_entry("inf"), None);
+        let m = Units::Metres;
+        assert_eq!(parse_entry(" 2.5 ", m), Some(Entry::Value(2.5)));
+        assert_eq!(parse_entry("3,2", m), Some(Entry::Pair(3.0, 2.0)));
+        assert_eq!(parse_entry("3; -2", m), Some(Entry::Pair(3.0, -2.0)));
+        assert_eq!(parse_entry("24s", m), Some(Entry::Sides(24)));
+        assert_eq!(parse_entry("2s", m), None, "fewer than 3 sides");
+        assert_eq!(parse_entry("abc", m), None);
+        assert_eq!(parse_entry("inf", m), None);
+        // units: a bare number in the chosen unit, a written one wins
+        assert_eq!(parse_entry("300", Units::Millimetres), Some(Entry::Value(0.3)));
+        assert_eq!(parse_entry("300mm, 2m", Units::Inches), Some(Entry::Pair(0.3, 2.0)));
+        match parse_entry("4'6\"", Units::Metres) {
+            Some(Entry::Value(v)) => assert!((v - 54.0 * 0.0254).abs() < 1e-6),
+            e => panic!("{e:?}"),
+        }
     }
 
     #[test]
@@ -645,7 +660,10 @@ mod tests {
         let (mut t, mut m) = with(Tool::Rectangle);
         t.click(&mut m, &at(1.0, 1.0)).unwrap();
         t.hover(&at(4.0, 3.0));
-        assert_eq!(t.measurement(), ("Dimensions", "3.000, 2.000".into()));
+        assert_eq!(t.measurement(), ("Dimensions", "3 m, 2 m".into()));
+        t.units = Units::Millimetres;
+        assert_eq!(t.measurement(), ("Dimensions", "3000 mm, 2000 mm".into()));
+        t.units = Units::Metres;
         t.click(&mut m, &at(4.0, 3.0)).unwrap();
         assert_eq!(m.mesh().face_count(), 1);
         assert_eq!(m.mesh().face_normal(0), [0.0, 0.0, 1.0]);
@@ -722,7 +740,7 @@ mod tests {
         // A horizontal ray at height 3 seen from the side sets distance 3.
         let side = Cursor { origin: [1.0, -10.0, 3.0], dir: [0.0, 1.0, 0.0], hit: None };
         t.hover(&side);
-        assert_eq!(t.measurement(), ("Distance", "3.000".into()));
+        assert_eq!(t.measurement(), ("Distance", "3 m".into()));
         assert!(t.preview_mesh(&m).is_some());
         assert_eq!(m.mesh().face_count(), 1, "preview does not touch the model");
         t.click(&mut m, &side).unwrap();

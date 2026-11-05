@@ -1,5 +1,6 @@
 mod camera;
 mod filedlg;
+mod settings;
 mod render;
 mod tools;
 mod ui;
@@ -97,6 +98,8 @@ impl State {
             // An empty model: frame a room-sized area around the origin.
             None => Camera::fit(Vec3::new(-1.0, -1.0, 0.0), Vec3::new(6.0, 6.0, 2.0)),
         };
+        let mut tools = Tools::default();
+        tools.units = settings::load_units();
         let mut s = State {
             window,
             gpu,
@@ -113,7 +116,7 @@ impl State {
             model,
             readonly,
             display: Mesh::new(),
-            tools: Tools::default(),
+            tools,
             flagged: Vec::new(),
             typed: String::new(),
             message: None,
@@ -163,7 +166,9 @@ impl State {
         self.path = path;
         // an import is a new, unsaved document; an opened file or an empty one is unchanged
         self.saved = if mesh.positions.is_empty() || self.path.is_some() { (self.doc, self.model.state()) } else { (u64::MAX, 0) };
+        let units = self.tools.units;
         self.tools = Tools::default();
+        self.tools.units = units;
         self.flagged.clear();
         self.typed.clear();
         self.camera = match mesh.bounds() {
@@ -488,6 +493,11 @@ impl State {
             UiAction::Inspect => self.inspect(),
             UiAction::Repair => self.repair(),
             UiAction::MergeCoplanar => self.merge_coplanar(),
+            UiAction::Units(u) => {
+                self.tools.units = u;
+                settings::save_units(u);
+                self.message = Some(format!("Lengths in {}.", u.name().to_lowercase()));
+            }
             UiAction::New => self.begin(Pending::New),
             UiAction::Open => self.begin(Pending::Open),
             UiAction::Save => self.save(None),
@@ -518,6 +528,8 @@ impl State {
                 self.typed.pop();
             }
             Key::Named(NamedKey::Delete) => self.erase_selected(),
+            // while a value is being typed, a space belongs to it (4' 6 1/2")
+            Key::Named(NamedKey::Space) if !self.typed.is_empty() => self.typed.push(' '),
             Key::Named(NamedKey::Space) => self.set_tool(Tool::Select),
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("n") => self.begin(Pending::New),
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("o") => self.begin(Pending::Open),
@@ -530,6 +542,10 @@ impl State {
             // Digits go to the Measurements box without clicking it, as in SketchUp.
             Key::Character(c) if c.chars().all(|ch| ch.is_ascii_digit() || ".,;-".contains(ch)) => {
                 self.typed.push_str(c);
+            }
+            // once a value is being typed, units and fractions go to it too, not to the tool shortcuts (as in SketchUp)
+            Key::Character(c) if !self.typed.is_empty() && c.chars().all(|ch| "smcikft'\"/".contains(ch.to_ascii_lowercase())) => {
+                self.typed.push_str(c)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("s") && !self.typed.is_empty() => self.typed.push('s'),
             Key::Character(c) if c.eq_ignore_ascii_case("i") => self.inspect(),
@@ -586,6 +602,7 @@ impl State {
         let (label, current) = self.tools.measurement();
         let view = UiView {
             tool: self.tools.tool,
+            units: self.tools.units,
             editable: self.readonly.is_none(),
             ortho: self.camera.ortho,
             can_undo: self.model.can_undo(),

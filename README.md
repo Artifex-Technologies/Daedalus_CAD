@@ -104,6 +104,11 @@ As in SketchUp, neighbouring faces that lie in one plane are one face: pushing a
 Repair (F) turns an imported mesh's triangle pairs back into the faces they were drawn as. Tools > Merge Coplanar Faces does
 it by hand. A group whose outline would have a hole is left as it is until faces with holes are supported.
 
+## Units
+The Units menu shows and takes lengths in millimetres, centimetres, metres, inches, or feet and inches (to 1/16"). A bare number
+is in the chosen unit; a unit written after it always wins, so `300mm`, `1.2m`, `6"`, `4'` or `4' 6 1/2"` work whatever is shown.
+The choice is remembered (`~/.config/daedalus/settings.conf`). The model itself is kept in metres.
+
 ## Saving
 File > Save writes Daedalus's own `.daedalus` file: plain text (`v x y z` per vertex, `f` and vertex numbers per face) with
 a version on the first line, so it is readable, diffable and kept bit-exact. Open, Save As, Import (STL, OBJ, DXF, DAE) and
@@ -112,7 +117,7 @@ Import or closing the window asks before throwing them away.
 
 ## Next
 Imprinting (a shape drawn on a face splits it instead of overlapping it), vertex welding so shapes that touch share edges,
-arcs, Move/Rotate/Offset, and units.
+arcs, and Move/Rotate/Offset.
 
 ## License
 

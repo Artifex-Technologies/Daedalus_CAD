@@ -8,6 +8,7 @@ pub mod model;
 pub mod sheetmetal;
 pub mod sketch;
 pub mod triangulate;
+pub mod units;
 
 pub use halfedge::{HalfEdgeMesh, TopologyError};
 pub use mesh::Mesh;

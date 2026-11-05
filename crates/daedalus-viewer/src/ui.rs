@@ -16,6 +16,7 @@ pub enum UiAction {
     Inspect,
     Repair,
     MergeCoplanar,
+    Units(daedalus_core::units::Units),
     New,
     Open,
     Save,
@@ -27,6 +28,7 @@ pub enum UiAction {
 /// Everything the chrome shows, gathered by the viewer each frame.
 pub struct UiView<'a> {
     pub tool: Tool,
+    pub units: daedalus_core::units::Units,
     pub editable: bool,
     pub ortho: bool,
     pub can_undo: bool,
@@ -96,6 +98,16 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     actions.push(UiAction::ZoomExtents);
                     ui.close_menu();
                 }
+            });
+            ui.menu_button("Units", |ui| {
+                for u in daedalus_core::units::ALL {
+                    if ui.radio(v.units == u, u.name()).clicked() {
+                        actions.push(UiAction::Units(u));
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("Type any unit whatever is shown: 300mm, 1.2m, 4' 6\"").weak());
             });
             ui.menu_button("Draw", |ui| tool_items(ui, v, &[Tool::Line, Tool::Rectangle, Tool::Circle, Tool::Polygon], &mut actions));
             ui.menu_button("Tools", |ui| {
