@@ -1,6 +1,6 @@
 //! File format import/export for Daedalus CAD.
 //!
-//! Each format implements [`MeshImporter`] and/or [`MeshExporter`]. Formats with
+//! Each format implements [`MeshImporter`] and/or [`MeshExporter`]. `.daedalus` (native.rs) is Daedalus's own. Formats with
 //! licensing or SDK constraints (DWG, SKP, FBX) belong in their own optional
 //! modules or crates so they can be feature-gated.
 
@@ -12,6 +12,7 @@ pub mod dae;
 pub mod dxf;
 pub mod dxf2d;
 pub mod image_io;
+pub mod native;
 pub mod obj;
 pub mod stl;
 mod weld;
@@ -59,7 +60,7 @@ fn extension(path: &Path) -> Option<String> {
 /// Imports a mesh, choosing the importer from the file extension.
 pub fn import_mesh(path: &Path) -> Result<Mesh, IoError> {
     let ext = extension(path).ok_or_else(|| IoError::Unsupported("no file extension".into()))?;
-    let importers: [&dyn MeshImporter; 4] = [&stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae];
+    let importers: [&dyn MeshImporter; 5] = [&native::Native, &stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae];
     let importer = importers
         .iter()
         .find(|i| i.extensions().contains(&ext.as_str()))
@@ -70,7 +71,7 @@ pub fn import_mesh(path: &Path) -> Result<Mesh, IoError> {
 /// Exports a mesh, choosing the exporter from the file extension.
 pub fn export_mesh(mesh: &Mesh, path: &Path) -> Result<(), IoError> {
     let ext = extension(path).ok_or_else(|| IoError::Unsupported("no file extension".into()))?;
-    let exporters: [&dyn MeshExporter; 4] = [&stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae];
+    let exporters: [&dyn MeshExporter; 5] = [&native::Native, &stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae];
     let exporter = exporters
         .iter()
         .find(|e| e.extensions().contains(&ext.as_str()))

@@ -15,6 +15,12 @@ pub enum UiAction {
     Redo,
     Inspect,
     Repair,
+    New,
+    Open,
+    Save,
+    SaveAs,
+    Import,
+    Export,
 }
 
 /// Everything the chrome shows, gathered by the viewer each frame.
@@ -40,6 +46,28 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
 
     egui::TopBottomPanel::top("menu").show(ctx, |ui| {
         egui::menu::bar(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                for (label, keys, action) in [
+                    ("New", "Ctrl+N", UiAction::New),
+                    ("Open…", "Ctrl+O", UiAction::Open),
+                    ("Save", "Ctrl+S", UiAction::Save),
+                    ("Save As…", "Ctrl+Shift+S", UiAction::SaveAs),
+                ] {
+                    if ui.add(egui::Button::new(label).shortcut_text(keys)).clicked() {
+                        actions.push(action);
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+                if ui.button("Import…").clicked() {
+                    actions.push(UiAction::Import);
+                    ui.close_menu();
+                }
+                if ui.button("Export…").clicked() {
+                    actions.push(UiAction::Export);
+                    ui.close_menu();
+                }
+            });
             ui.menu_button("Edit", |ui| {
                 if ui.add_enabled(v.can_undo, egui::Button::new("Undo").shortcut_text("Ctrl+Z")).clicked() {
                     actions.push(UiAction::Undo);

@@ -99,9 +99,16 @@ no source from those projects is used.
 | F3D/F3Z/CAM360 | blocked | no public spec; support STEP instead |
 | RBZ | later | needs a reimplementation of the public SketchUp Ruby API |
 
+## Saving
+File > Save writes Daedalus's own `.daedalus` file: plain text (`v x y z` per vertex, `f` and vertex numbers per face) with
+a version on the first line, so it is readable, diffable and kept bit-exact. Open, Save As, Import (STL, OBJ, DXF, DAE) and
+Export use a file browser built into the window. The title shows a dot while there are unsaved changes, and New, Open,
+Import or closing the window asks before throwing them away.
+
 ## Next
-Imprinting (a shape drawn on a face splits it instead of overlapping it), vertex welding so shapes
-that touch share edges, arcs, Move/Rotate/Offset, units, and the native `.daedalus` save format.
+Merging coplanar faces (so pushing a face of a solid again leaves no seam, and imported triangles become faces),
+imprinting (a shape drawn on a face splits it instead of overlapping it), vertex welding so shapes that touch share edges,
+arcs, Move/Rotate/Offset, and units.
 
 ## License
 

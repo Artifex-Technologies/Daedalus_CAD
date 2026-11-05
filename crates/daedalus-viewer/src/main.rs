@@ -1,4 +1,5 @@
 mod camera;
+mod filedlg;
 mod render;
 mod tools;
 mod ui;
@@ -8,7 +9,8 @@ use daedalus_core::inspect::{self, DEFAULT_TOLERANCE};
 use daedalus_core::{HalfEdgeMesh, Mesh, Model, Plane};
 use glam::Vec3;
 use render::{LineVertex, Renderer, UiFrame};
-use std::path::PathBuf;
+use filedlg::{FileDialog, Outcome, Purpose};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tools::{Cursor, Hit, Snap, Tool, Tools, AXIS_COLORS};
 use ui::{UiAction, UiView};
@@ -48,10 +50,30 @@ struct State {
     message: Option<String>,
     last_cursor: Option<Cursor>,
     shown_highlight: Option<usize>,
+    /// The document's file (None until it is saved), how many times the whole document was replaced (open, new, repair), and the
+    /// (replacement, model state) it was saved or opened at: it is unchanged while those match.
+    path: Option<PathBuf>,
+    doc: u64,
+    saved: (u64, u64),
+    dialog: Option<FileDialog>,
+    /// "Save changes?" while something would throw the changes away, and what to do once they are saved.
+    ask: Option<Pending>,
+    after_save: Option<Pending>,
+    quit: bool,
+    shown_title: String,
+}
+
+/// Something that replaces the document or ends the program, held while the person is asked about unsaved changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pending {
+    New,
+    Open,
+    Import,
+    Quit,
 }
 
 impl State {
-    fn new(window: Arc<Window>, mesh: &Mesh) -> State {
+    fn new(window: Arc<Window>, mesh: &Mesh, path: Option<PathBuf>) -> State {
         let gpu = pollster::block_on(Renderer::new(window.clone()));
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::light());
@@ -97,9 +119,143 @@ impl State {
             message: None,
             last_cursor: None,
             shown_highlight: None,
+            // a .daedalus file opened at start is the document's file; an import is a new, unsaved document
+            path: path.filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("daedalus"))),
+            doc: 0,
+            saved: (0, 0),
+            dialog: None,
+            ask: None,
+            after_save: None,
+            quit: false,
+            shown_title: String::new(),
         };
         s.refresh();
         s
+    }
+
+    fn changed(&self) -> bool {
+        (self.doc, self.model.state()) != self.saved
+    }
+
+    /// "name — Daedalus", with a dot while there are unsaved changes.
+    fn title(&self) -> String {
+        let name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
+        format!("{}{name} — Daedalus", if self.changed() { "• " } else { "" })
+    }
+
+    /// What a save or export writes: the model, or a read-only import as it is.
+    fn document_mesh(&self) -> Mesh {
+        self.readonly.clone().unwrap_or_else(|| self.model.mesh().to_mesh())
+    }
+
+    /// Replaces the document (a new one, an opened file, or an import).
+    fn replace(&mut self, mesh: &Mesh, path: Option<PathBuf>) {
+        let (model, readonly) = match HalfEdgeMesh::from_mesh(mesh) {
+            Ok(h) => (Model::from_mesh(h), None),
+            Err(e) => {
+                eprintln!("note: model is read-only until repaired with F ({e})");
+                (Model::new(), Some(mesh.clone()))
+            }
+        };
+        self.model = model;
+        self.readonly = readonly;
+        self.doc += 1;
+        self.path = path;
+        // an import is a new, unsaved document; an opened file or an empty one is unchanged
+        self.saved = if mesh.positions.is_empty() || self.path.is_some() { (self.doc, self.model.state()) } else { (u64::MAX, 0) };
+        self.tools = Tools::default();
+        self.flagged.clear();
+        self.typed.clear();
+        self.camera = match mesh.bounds() {
+            Some((lo, hi)) => Camera::fit(Vec3::from(lo), Vec3::from(hi)),
+            None => Camera::fit(Vec3::new(-1.0, -1.0, 0.0), Vec3::new(6.0, 6.0, 2.0)),
+        };
+        self.refresh();
+    }
+
+    /// Starts something that would throw away unsaved changes: asks first when there are any.
+    fn begin(&mut self, p: Pending) {
+        if self.changed() {
+            self.ask = Some(p);
+        } else {
+            self.carry_out(p);
+        }
+    }
+
+    fn carry_out(&mut self, p: Pending) {
+        match p {
+            Pending::New => {
+                self.replace(&Mesh::new(), None);
+                self.message = Some("New model.".into());
+            }
+            Pending::Open => self.dialog = Some(FileDialog::new(Purpose::Open, self.path.as_deref(), "")),
+            Pending::Import => self.dialog = Some(FileDialog::new(Purpose::Import, self.path.as_deref(), "")),
+            Pending::Quit => self.quit = true,
+        }
+    }
+
+    /// Save: to the document's file, or ask where (Save As) when it has none. `then` runs once it is saved.
+    fn save(&mut self, then: Option<Pending>) {
+        match self.path.clone() {
+            Some(p) => {
+                if self.save_to(&p) {
+                    if let Some(t) = then {
+                        self.carry_out(t);
+                    }
+                }
+            }
+            None => self.save_as(then),
+        }
+    }
+
+    fn save_as(&mut self, then: Option<Pending>) {
+        self.after_save = then;
+        let name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        self.dialog = Some(FileDialog::new(Purpose::SaveAs, self.path.as_deref(), &name));
+    }
+
+    fn save_to(&mut self, path: &Path) -> bool {
+        match daedalus_io::export_mesh(&self.document_mesh(), path) {
+            Ok(()) => {
+                self.path = Some(path.to_path_buf());
+                self.saved = (self.doc, self.model.state());
+                self.message = Some(format!("Saved {}.", short(path)));
+                true
+            }
+            Err(e) => {
+                self.message = Some(format!("Not saved: {e}."));
+                false
+            }
+        }
+    }
+
+    fn open_file(&mut self, path: &Path, import: bool) {
+        match daedalus_io::import_mesh(path) {
+            Ok(m) => {
+                self.replace(&m, if import { None } else { Some(path.to_path_buf()) });
+                self.message = Some(format!("{} {}.", if import { "Imported" } else { "Opened" }, short(path)));
+            }
+            Err(e) => self.message = Some(format!("Could not open {}: {e}.", short(path))),
+        }
+    }
+
+    /// A file chosen in the dialog.
+    fn dialog_done(&mut self, purpose: Purpose, path: PathBuf) {
+        match purpose {
+            Purpose::Open => self.open_file(&path, false),
+            Purpose::Import => self.open_file(&path, true),
+            Purpose::SaveAs => {
+                if self.save_to(&path) {
+                    if let Some(t) = self.after_save.take() {
+                        self.carry_out(t);
+                    }
+                }
+            }
+            Purpose::Export => match daedalus_io::export_mesh(&self.document_mesh(), &path) {
+                Ok(()) => self.message = Some(format!("Exported {}.", short(&path))),
+                Err(e) => self.message = Some(format!("Not exported: {e}.")),
+            },
+        }
     }
 
     fn size(&self) -> (f32, f32) {
@@ -288,6 +444,8 @@ impl State {
                 self.message = Some(format!("Repair: still read-only ({e})."));
             }
         }
+        // the repaired model replaces the document: a change to save
+        self.doc += 1;
         self.tools.model_changed();
         self.flagged.clear();
         self.refresh();
@@ -311,6 +469,15 @@ impl State {
             UiAction::Redo => self.history(false),
             UiAction::Inspect => self.inspect(),
             UiAction::Repair => self.repair(),
+            UiAction::New => self.begin(Pending::New),
+            UiAction::Open => self.begin(Pending::Open),
+            UiAction::Save => self.save(None),
+            UiAction::SaveAs => self.save_as(None),
+            UiAction::Import => self.begin(Pending::Import),
+            UiAction::Export => {
+                let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|n| format!("{}.stl", n.to_string_lossy())).unwrap_or_default();
+                self.dialog = Some(FileDialog::new(Purpose::Export, self.path.as_deref(), &stem));
+            }
         }
         self.window.request_redraw();
     }
@@ -333,6 +500,10 @@ impl State {
             }
             Key::Named(NamedKey::Delete) => self.erase_selected(),
             Key::Named(NamedKey::Space) => self.set_tool(Tool::Select),
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("n") => self.begin(Pending::New),
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("o") => self.begin(Pending::Open),
+            Key::Character(c) if ctrl && self.modifiers.shift_key() && c.eq_ignore_ascii_case("s") => self.save_as(None),
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("s") => self.save(None),
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => self.history(true),
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("y") => self.history(false),
             Key::Character(_) if ctrl => {}
@@ -409,7 +580,35 @@ impl State {
         };
         let raw = self.egui_state.take_egui_input(&self.window);
         let mut actions = Vec::new();
-        let out = ctx.run(raw, |ctx| actions = ui::draw(ctx, &view));
+        // the file dialog and the "save changes?" question are drawn over the chrome; taken out while drawn
+        let mut dialog = self.dialog.take();
+        let mut dialog_out = None;
+        let ask = self.ask;
+        let mut answer: Option<&'static str> = None;
+        let doc_name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
+        let out = ctx.run(raw, |ctx| {
+            actions = ui::draw(ctx, &view);
+            if let Some(d) = dialog.as_mut() {
+                dialog_out = d.show(ctx).map(|o| (d.purpose, o));
+            }
+            if ask.is_some() {
+                egui::Window::new("Save changes?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                    ui.label(format!("{doc_name} has changes that are not saved."));
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            answer = Some("save");
+                        }
+                        if ui.button("Don't Save").clicked() {
+                            answer = Some("discard");
+                        }
+                        if ui.button("Cancel").clicked() {
+                            answer = Some("cancel");
+                        }
+                    });
+                });
+            }
+        });
+        self.dialog = if dialog_out.is_some() { None } else { dialog };
         self.egui_state.handle_platform_output(&self.window, out.platform_output);
         let ui = UiFrame {
             primitives: ctx.tessellate(out.shapes, out.pixels_per_point),
@@ -425,11 +624,39 @@ impl State {
         for a in actions {
             self.apply(a);
         }
+        if let Some((purpose, o)) = dialog_out {
+            match o {
+                Outcome::Chosen(path) => self.dialog_done(purpose, path),
+                Outcome::Cancelled => self.after_save = None,
+            }
+        }
+        if let (Some(p), Some(a)) = (ask, answer) {
+            self.ask = None;
+            match a {
+                "save" => self.save(Some(p)),
+                "discard" => self.carry_out(p),
+                _ => {}
+            }
+        }
+        let title = self.title();
+        if title != self.shown_title {
+            self.window.set_title(&title);
+            self.shown_title = title;
+        }
+        if self.dialog.is_some() || self.ask.is_some() {
+            self.window.request_redraw();
+        }
     }
+}
+
+/// A file's name for a message (the whole path would run into the Measurements box).
+fn short(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string())
 }
 
 struct App {
     mesh: Mesh,
+    path: Option<PathBuf>,
     title: String,
     state: Option<State>,
 }
@@ -447,7 +674,7 @@ impl ApplicationHandler for App {
             winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "daedalus", "daedalus")
         };
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
-        self.state = Some(State::new(window, &self.mesh));
+        self.state = Some(State::new(window, &self.mesh, self.path.clone()));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -457,12 +684,21 @@ impl ApplicationHandler for App {
             s.window.request_redraw();
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            // closing with unsaved changes asks first, as SketchUp does
+            WindowEvent::CloseRequested => {
+                s.begin(Pending::Quit);
+                s.window.request_redraw();
+            }
             WindowEvent::Resized(size) => {
                 s.gpu.resize(size.width, size.height);
                 s.window.request_redraw();
             }
-            WindowEvent::RedrawRequested => s.render(),
+            WindowEvent::RedrawRequested => {
+                s.render();
+                if s.quit {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::ModifiersChanged(m) => s.modifiers = m.state(),
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
@@ -540,20 +776,20 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    let (mesh, title) = match std::env::args().nth(1) {
+    let (mesh, title, path) = match std::env::args().nth(1) {
         Some(arg) => {
             let path = PathBuf::from(&arg);
             match daedalus_io::import_mesh(&path) {
-                Ok(m) => (m, format!("Daedalus - {arg}")),
+                Ok(m) => (m, format!("Daedalus - {arg}"), Some(path)),
                 Err(e) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
             }
         }
-        None => (Mesh::new(), "Daedalus".to_string()),
+        None => (Mesh::new(), "Daedalus".to_string(), None),
     };
     let event_loop = EventLoop::new().expect("event loop");
-    let mut app = App { mesh, title, state: None };
+    let mut app = App { mesh, path, title, state: None };
     event_loop.run_app(&mut app).expect("run app");
 }

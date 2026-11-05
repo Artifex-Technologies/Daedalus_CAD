@@ -8,8 +8,12 @@ use crate::{HalfEdgeMesh, TopologyError};
 #[derive(Debug, Clone, Default)]
 pub struct Model {
     mesh: HalfEdgeMesh,
-    undo: Vec<HalfEdgeMesh>,
-    redo: Vec<HalfEdgeMesh>,
+    undo: Vec<(HalfEdgeMesh, u64)>,
+    redo: Vec<(HalfEdgeMesh, u64)>,
+    /// Which state the mesh is in: a new number for every edit, carried along by undo and redo, so "unchanged since saving"
+    /// is a comparison with the number at the save (undoing back to it counts as unchanged).
+    state: u64,
+    next_state: u64,
 }
 
 impl Model {
@@ -25,6 +29,11 @@ impl Model {
         &self.mesh
     }
 
+    /// The state the model is in now (see the field). Keep it at a save; the model is unchanged while this equals it.
+    pub fn state(&self) -> u64 {
+        self.state
+    }
+
     fn edit<R>(
         &mut self,
         f: impl FnOnce(&mut HalfEdgeMesh) -> Result<R, TopologyError>,
@@ -32,8 +41,10 @@ impl Model {
         let before = self.mesh.clone();
         match f(&mut self.mesh) {
             Ok(r) => {
-                self.undo.push(before);
+                self.undo.push((before, self.state));
                 self.redo.clear();
+                self.next_state += 1;
+                self.state = self.next_state;
                 Ok(r)
             }
             Err(e) => {
@@ -77,8 +88,9 @@ impl Model {
 
     pub fn undo(&mut self) -> bool {
         match self.undo.pop() {
-            Some(prev) => {
-                self.redo.push(std::mem::replace(&mut self.mesh, prev));
+            Some((prev, state)) => {
+                self.redo.push((std::mem::replace(&mut self.mesh, prev), self.state));
+                self.state = state;
                 true
             }
             None => false,
@@ -87,8 +99,9 @@ impl Model {
 
     pub fn redo(&mut self) -> bool {
         match self.redo.pop() {
-            Some(next) => {
-                self.undo.push(std::mem::replace(&mut self.mesh, next));
+            Some((next, state)) => {
+                self.undo.push((std::mem::replace(&mut self.mesh, next), self.state));
+                self.state = state;
                 true
             }
             None => false,
@@ -99,6 +112,28 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_state_follows_undo_and_redo() {
+        let mut m = Model::new();
+        let saved = m.state();
+        let f = m.add_rectangle([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+        let drawn = m.state();
+        assert_ne!(drawn, saved);
+        m.undo();
+        assert_eq!(m.state(), saved, "undone back to the save: unchanged");
+        m.redo();
+        assert_eq!(m.state(), drawn);
+        m.push_pull(f, 1.0).unwrap();
+        m.undo();
+        m.undo();
+        m.add_rectangle([5.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+        assert_ne!(m.state(), saved, "a different edit from the same start is a change");
+        assert_ne!(m.state(), drawn);
+        assert!(m.push_pull(99, 1.0).is_err());
+        let before = m.state();
+        assert_eq!(m.state(), before, "a failed edit changes nothing");
+    }
 
     #[test]
     fn draw_pull_undo_redo() {
