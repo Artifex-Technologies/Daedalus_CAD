@@ -428,6 +428,8 @@ impl State {
     /// Repairs the model. A repaired import that is manifold becomes editable.
     fn repair(&mut self) {
         let (fixed, summary) = inspect::repair(&self.display, DEFAULT_TOLERANCE);
+        // and coplanar faces merged: an import's triangle pairs become the faces they were drawn as
+        let (fixed, _) = daedalus_core::merge::merge_coplanar(&fixed, daedalus_core::model::MERGE_TOLERANCE);
         if !summary.changed_anything() {
             self.message = Some("Repair: nothing to fix.".into());
             return;
@@ -451,6 +453,22 @@ impl State {
         self.refresh();
     }
 
+    fn merge_coplanar(&mut self) {
+        if self.readonly.is_some() {
+            self.message = Some("This model is read-only; press F to repair it.".into());
+            return;
+        }
+        match self.model.merge_coplanar() {
+            Ok(0) => self.message = Some("No coplanar faces to merge.".into()),
+            Ok(n) => {
+                self.message = Some(format!("Merged: {n} face{} fewer.", if n == 1 { "" } else { "s" }));
+                self.tools.model_changed();
+                self.refresh();
+            }
+            Err(e) => self.message = Some(format!("Not merged: {e}.")),
+        }
+    }
+
     fn zoom_extents(&mut self) {
         if let Some((lo, hi)) = self.display.bounds() {
             self.camera.zoom_extents(Vec3::from(lo), Vec3::from(hi));
@@ -469,6 +487,7 @@ impl State {
             UiAction::Redo => self.history(false),
             UiAction::Inspect => self.inspect(),
             UiAction::Repair => self.repair(),
+            UiAction::MergeCoplanar => self.merge_coplanar(),
             UiAction::New => self.begin(Pending::New),
             UiAction::Open => self.begin(Pending::Open),
             UiAction::Save => self.save(None),

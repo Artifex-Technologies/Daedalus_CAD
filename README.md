@@ -99,6 +99,11 @@ no source from those projects is used.
 | F3D/F3Z/CAM360 | blocked | no public spec; support STEP instead |
 | RBZ | later | needs a reimplementation of the public SketchUp Ruby API |
 
+## Coplanar faces
+As in SketchUp, neighbouring faces that lie in one plane are one face: pushing a face of a solid again leaves no seam, and
+Repair (F) turns an imported mesh's triangle pairs back into the faces they were drawn as. Tools > Merge Coplanar Faces does
+it by hand. A group whose outline would have a hole is left as it is until faces with holes are supported.
+
 ## Saving
 File > Save writes Daedalus's own `.daedalus` file: plain text (`v x y z` per vertex, `f` and vertex numbers per face) with
 a version on the first line, so it is readable, diffable and kept bit-exact. Open, Save As, Import (STL, OBJ, DXF, DAE) and
@@ -106,8 +111,7 @@ Export use a file browser built into the window. The title shows a dot while the
 Import or closing the window asks before throwing them away.
 
 ## Next
-Merging coplanar faces (so pushing a face of a solid again leaves no seam, and imported triangles become faces),
-imprinting (a shape drawn on a face splits it instead of overlapping it), vertex welding so shapes that touch share edges,
+Imprinting (a shape drawn on a face splits it instead of overlapping it), vertex welding so shapes that touch share edges,
 arcs, Move/Rotate/Offset, and units.
 
 ## License

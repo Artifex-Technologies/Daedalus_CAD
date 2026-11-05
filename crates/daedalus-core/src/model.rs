@@ -1,5 +1,21 @@
 use crate::{HalfEdgeMesh, TopologyError};
 
+/// Within this distance (model units, metres) two faces' planes count as one when coplanar faces are merged.
+pub const MERGE_TOLERANCE: f32 = 1e-5;
+
+/// Merges coplanar faces of `m` in place; returns where `face` went (or `face` when nothing could be rebuilt).
+fn merge_in_place(m: &mut HalfEdgeMesh, face: usize) -> usize {
+    let (merged, map) = crate::merge::merge_coplanar(&m.to_mesh(), MERGE_TOLERANCE);
+    match HalfEdgeMesh::from_mesh(&merged) {
+        Ok(h) => {
+            *m = h;
+            map.get(face).copied().unwrap_or(face)
+        }
+        // never expected; the push stays as it was rather than being undone
+        Err(_) => face,
+    }
+}
+
 /// The editable document: a mesh plus an undo/redo history.
 ///
 /// Every edit is one atomic history step; a failed edit leaves the model
@@ -70,8 +86,28 @@ impl Model {
         self.edit(|m| m.erase_face(face))
     }
 
+    /// Pushes or pulls a face, then merges coplanar faces as SketchUp does (pushing a face of a solid again leaves no seam).
+    /// Returns the pushed face's index after the merge.
     pub fn push_pull(&mut self, face: usize, distance: f32) -> Result<usize, TopologyError> {
-        self.edit(|m| m.push_pull(face, distance))
+        self.edit(|m| {
+            let f = m.push_pull(face, distance)?;
+            Ok(merge_in_place(m, f))
+        })
+    }
+
+    /// Merges coplanar neighbouring faces (Tools > Merge Coplanar Faces). Returns how many faces went.
+    pub fn merge_coplanar(&mut self) -> Result<usize, TopologyError> {
+        let before = self.mesh.face_count();
+        let n = self.edit(|m| {
+            merge_in_place(m, 0);
+            Ok(before - m.face_count())
+        })?;
+        if n == 0 {
+            // nothing merged: not a step worth undoing
+            self.undo();
+            self.redo.clear();
+        }
+        Ok(n)
     }
 
     pub fn split_face(&mut self, face: usize, a: u32, b: u32) -> Result<usize, TopologyError> {
@@ -112,6 +148,26 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pushing_a_solid_face_again_merges_the_seam() {
+        let mut m = Model::new();
+        let f = m.add_rectangle([0.0; 3], [3.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
+        let top = m.push_pull(f, 1.0).unwrap();
+        let top = m.push_pull(top, 0.5).unwrap();
+        assert_eq!(m.mesh().face_count(), 6);
+        assert_eq!(m.mesh().vertex_count(), 8);
+        assert!((m.mesh().signed_volume() - 9.0).abs() < 1e-4);
+        assert_eq!(m.mesh().face_vertices(top).len(), 4);
+        // the top can be pushed once more, by its returned index
+        m.push_pull(top, -0.5).unwrap();
+        assert!((m.mesh().signed_volume() - 6.0).abs() < 1e-4);
+        m.undo();
+        assert!((m.mesh().signed_volume() - 9.0).abs() < 1e-4, "push and merge are one undo step");
+        let state = m.state();
+        assert_eq!(m.merge_coplanar().unwrap(), 0);
+        assert_eq!(m.state(), state, "merging nothing is no step");
+    }
 
     #[test]
     fn the_state_follows_undo_and_redo() {

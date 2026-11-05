@@ -2,6 +2,7 @@
 
 pub mod halfedge;
 pub mod inspect;
+pub mod merge;
 pub mod mesh;
 pub mod model;
 pub mod sheetmetal;

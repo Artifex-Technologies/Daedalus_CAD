@@ -20,7 +20,7 @@ Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/c
 
 ## Layout
 - `crates/daedalus-core`: `Mesh` (interchange, `pick_face`, `edges`), `HalfEdgeMesh` (topology, `push_pull`,
-  `split_face`, `erase_face`), `Model` (document + undo/redo), `sketch` (workplanes and shapes), `triangulate`
+  `split_face`, `erase_face`), `Model` (document + undo/redo), `merge` (coplanar faces), `sketch` (workplanes and shapes), `triangulate`
   (ear clipping), `inspect` (solid checks and repair), `sheetmetal` (flat patterns)
 - `crates/daedalus-io`: `MeshImporter` / `MeshExporter` per format (`.daedalus` native, STL, OBJ, DXF, DAE), `dxf2d`
   (flat-pattern DXF), images/PSD
@@ -49,18 +49,19 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 69 tests pass (2026-11-05). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 73 tests pass (2026-11-05). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
   undo/redo, orbit/zoom/pan, Solid Inspector and repair on an open STL, File > Save/Open/New and the unsaved-changes question.
   Not yet: `WGPU_BACKEND=gl`, HiDPI scaling.
 - Known gaps: shapes drawn on a face overlap it instead of splitting it (no imprinting, no faces with holes);
-  touching shapes do not share edges (no vertex welding); coplanar faces are not merged (pushing a face of a solid again
-  leaves a seam; imported triangles keep their diagonals); no arcs; no units.
+  touching shapes do not share edges (no vertex welding); no arcs; no units.
+- Coplanar faces merge (`core/src/merge.rs`, 2026-11-05): after every push/pull (one undo step), in Repair, and by Tools >
+  Merge Coplanar Faces. A group whose outline would have a hole or a pinch is left alone.
 - Native format: `.daedalus` (text, versioned, `crates/daedalus-io/src/native.rs`); File menu with New/Open/Save/Save As/
   Import/Export, a dot in the title while unsaved, and a question before unsaved changes are thrown away (2026-11-05).
-- Next milestones: coplanar merge, imprint and weld, arcs, Move/Rotate/Offset, units, groups/components,
+- Next milestones: imprint and weld, arcs, Move/Rotate/Offset, units, groups/components,
   constraints, sheet metal inside the model, STEP export for bent parts.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
   constraint solver, reuse CADCraft crates or reimplement.

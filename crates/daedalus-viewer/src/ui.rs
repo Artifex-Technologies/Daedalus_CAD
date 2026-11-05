@@ -15,6 +15,7 @@ pub enum UiAction {
     Redo,
     Inspect,
     Repair,
+    MergeCoplanar,
     New,
     Open,
     Save,
@@ -102,6 +103,10 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 ui.separator();
                 if ui.add(egui::Button::new("Solid Inspector").shortcut_text("I")).clicked() {
                     actions.push(UiAction::Inspect);
+                    ui.close_menu();
+                }
+                if ui.add_enabled(v.editable, egui::Button::new("Merge Coplanar Faces")).clicked() {
+                    actions.push(UiAction::MergeCoplanar);
                     ui.close_menu();
                 }
                 if ui.add(egui::Button::new("Repair Solid").shortcut_text("F")).clicked() {
