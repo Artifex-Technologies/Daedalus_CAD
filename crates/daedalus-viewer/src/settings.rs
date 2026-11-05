@@ -1,5 +1,5 @@
 //! The viewer's own settings, kept between sessions in `~/.config/daedalus/settings.conf` (`key = value` lines; unknown lines are
-//! kept). Today: the units lengths are shown and typed in.
+//! kept): the units lengths are shown and typed in, and where the toolbar is.
 
 use daedalus_core::units::Units;
 use std::path::PathBuf;
@@ -36,17 +36,27 @@ pub fn set(text: &str, key: &str, value: &str) -> String {
     out.join("\n") + "\n"
 }
 
-pub fn load_units() -> Units {
-    path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| get(&t, "units")).and_then(|v| Units::from_key(&v)).unwrap_or(Units::Metres)
+/// A setting's value, if it is set.
+pub fn load(key: &str) -> Option<String> {
+    path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| get(&t, key))
 }
 
-pub fn save_units(u: Units) {
+/// Sets one setting, keeping the others.
+pub fn save(key: &str, value: &str) {
     let Some(p) = path() else { return };
     let text = std::fs::read_to_string(&p).unwrap_or_default();
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(&p, set(&text, "units", u.key()));
+    let _ = std::fs::write(&p, set(&text, key, value));
+}
+
+pub fn load_units() -> Units {
+    path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| get(&t, "units")).and_then(|v| Units::from_key(&v)).unwrap_or(Units::Metres)
+}
+
+pub fn save_units(u: Units) {
+    save("units", u.key());
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 mod camera;
 mod filedlg;
+mod icons;
 mod settings;
 mod render;
 mod tools;
@@ -62,6 +63,8 @@ struct State {
     after_save: Option<Pending>,
     quit: bool,
     shown_title: String,
+    /// View > Toolbar: down the left side instead of across the top (remembered in settings.conf).
+    toolbar_left: bool,
 }
 
 /// Something that replaces the document or ends the program, held while the person is asked about unsaved changes.
@@ -131,6 +134,7 @@ impl State {
             after_save: None,
             quit: false,
             shown_title: String::new(),
+            toolbar_left: settings::load("toolbar").as_deref() == Some("left"),
         };
         s.refresh();
         s
@@ -493,6 +497,10 @@ impl State {
             UiAction::Inspect => self.inspect(),
             UiAction::Repair => self.repair(),
             UiAction::MergeCoplanar => self.merge_coplanar(),
+            UiAction::ToolbarLeft(left) => {
+                self.toolbar_left = left;
+                settings::save("toolbar", if left { "left" } else { "top" });
+            }
             UiAction::Units(u) => {
                 self.tools.units = u;
                 settings::save_units(u);
@@ -603,6 +611,7 @@ impl State {
         let view = UiView {
             tool: self.tools.tool,
             units: self.tools.units,
+            toolbar_left: self.toolbar_left,
             editable: self.readonly.is_none(),
             ortho: self.camera.ortho,
             can_undo: self.model.can_undo(),

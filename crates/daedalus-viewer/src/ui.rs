@@ -1,6 +1,7 @@
 //! The window chrome, laid out like SketchUp: menu bar and toolbar on top, a
 //! status bar with hints on the left and the Measurements box on the right.
 
+use crate::icons::{self, Icon};
 use crate::tools::{Snap, Tool, AXIS_COLORS};
 use egui::{Align, Color32, Layout, Pos2, RichText, Stroke};
 
@@ -17,6 +18,8 @@ pub enum UiAction {
     Repair,
     MergeCoplanar,
     Units(daedalus_core::units::Units),
+    /// View > Toolbar: on the left side (true) or across the top.
+    ToolbarLeft(bool),
     New,
     Open,
     Save,
@@ -29,6 +32,7 @@ pub enum UiAction {
 pub struct UiView<'a> {
     pub tool: Tool,
     pub units: daedalus_core::units::Units,
+    pub toolbar_left: bool,
     pub editable: bool,
     pub ortho: bool,
     pub can_undo: bool,
@@ -99,6 +103,17 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     ui.close_menu();
                 }
             });
+            ui.menu_button("View", |ui| {
+                ui.label(egui::RichText::new("Toolbar").weak());
+                if ui.radio(!v.toolbar_left, "Across the top").clicked() {
+                    actions.push(UiAction::ToolbarLeft(false));
+                    ui.close_menu();
+                }
+                if ui.radio(v.toolbar_left, "Down the left side").clicked() {
+                    actions.push(UiAction::ToolbarLeft(true));
+                    ui.close_menu();
+                }
+            });
             ui.menu_button("Units", |ui| {
                 for u in daedalus_core::units::ALL {
                     if ui.radio(v.units == u, u.name()).clicked() {
@@ -129,42 +144,17 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
         });
     });
 
-    egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            for group in [
-                &[Tool::Select, Tool::Eraser][..],
-                &[Tool::Line, Tool::Rectangle, Tool::Circle, Tool::Polygon],
-                &[Tool::PushPull],
-                &[Tool::Orbit, Tool::Pan, Tool::Zoom],
-            ] {
-                for &tool in group {
-                    let enabled = v.editable || !tool.edits();
-                    let button = egui::SelectableLabel::new(v.tool == tool, tool.label());
-                    let r = ui.add_enabled(enabled, button);
-                    let r = match tool.shortcut() {
-                        Some(key) => r.on_hover_text(format!("{} ({key})", tool.label())),
-                        None => r,
-                    };
-                    if r.clicked() {
-                        actions.push(UiAction::Tool(tool));
-                    }
-                }
-                ui.separator();
-            }
-            if ui.button("Zoom Extents").on_hover_text("Shift+Z").clicked() {
-                actions.push(UiAction::ZoomExtents);
-            }
-            if ui.button("Top").clicked() {
-                actions.push(UiAction::Top);
-            }
-            if ui.button("Iso").clicked() {
-                actions.push(UiAction::Iso);
-            }
-            if ui.selectable_label(v.ortho, "Parallel").on_hover_text("Parallel projection").clicked() {
-                actions.push(UiAction::ToggleOrtho);
-            }
+    // the toolbar: icons in groups, across the top or down the left side (View > Toolbar)
+    if v.toolbar_left {
+        egui::SidePanel::left("toolbar").resizable(false).exact_width(ICON + 14.0).show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.vertical_centered(|ui| toolbar(ui, v, &mut actions));
         });
-    });
+    } else {
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| toolbar(ui, v, &mut actions));
+        });
+    }
 
     egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
         ui.horizontal(|ui| {
@@ -217,6 +207,57 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
         }
     }
     actions
+}
+
+/// The size of a toolbar icon, in points.
+const ICON: f32 = 30.0;
+
+/// One icon button: the picture, a highlight when it is the tool in use or under the pointer, its name on hover.
+fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, enabled: bool) -> bool {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(ICON, ICON), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+    let visuals = ui.visuals();
+    if selected {
+        ui.painter().rect_filled(rect, 5.0, visuals.selection.bg_fill.gamma_multiply(0.55));
+        ui.painter().rect_stroke(rect, 5.0, Stroke::new(1.0_f32, visuals.selection.stroke.color), egui::StrokeKind::Inside);
+    } else if r.hovered() && enabled {
+        ui.painter().rect_filled(rect, 5.0, visuals.widgets.hovered.weak_bg_fill);
+    }
+    icons::paint(ui.painter(), rect.shrink(4.0), icon, !enabled);
+    let r = r.on_hover_text(icons::name(icon));
+    enabled && r.clicked()
+}
+
+fn toolbar(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
+    let gap = |ui: &mut egui::Ui| {
+        ui.add_space(3.0);
+        ui.separator();
+        ui.add_space(3.0);
+    };
+    for group in [
+        &[Tool::Select, Tool::Eraser][..],
+        &[Tool::Line, Tool::Rectangle, Tool::Circle, Tool::Polygon],
+        &[Tool::PushPull],
+        &[Tool::Orbit, Tool::Pan, Tool::Zoom],
+    ] {
+        for &tool in group {
+            if icon_button(ui, Icon::Tool(tool), v.tool == tool, v.editable || !tool.edits()) {
+                actions.push(UiAction::Tool(tool));
+            }
+        }
+        gap(ui);
+    }
+    if icon_button(ui, Icon::ZoomExtents, false, true) {
+        actions.push(UiAction::ZoomExtents);
+    }
+    if icon_button(ui, Icon::Top, false, true) {
+        actions.push(UiAction::Top);
+    }
+    if icon_button(ui, Icon::Iso, false, true) {
+        actions.push(UiAction::Iso);
+    }
+    if icon_button(ui, Icon::Parallel, v.ortho, true) {
+        actions.push(UiAction::ToggleOrtho);
+    }
 }
 
 fn tool_items(ui: &mut egui::Ui, v: &UiView, tools: &[Tool], actions: &mut Vec<UiAction>) {

@@ -104,6 +104,11 @@ As in SketchUp, neighbouring faces that lie in one plane are one face: pushing a
 Repair (F) turns an imported mesh's triangle pairs back into the faces they were drawn as. Tools > Merge Coplanar Faces does
 it by hand. A group whose outline would have a hole is left as it is until faces with holes are supported.
 
+## Toolbar
+Icons in SketchUp's manner (a pencil for Line, a red box with an arrow for Push/Pull, the red and green orbit arrows), each
+with its name and shortcut on hover. View > Toolbar puts the toolbar across the top or down the left side; the choice is
+remembered.
+
 ## Units
 The Units menu shows and takes lengths in millimetres, centimetres, metres, inches, or feet and inches (to 1/16"). A bare number
 is in the chosen unit; a unit written after it always wins, so `300mm`, `1.2m`, `6"`, `4'` or `4' 6 1/2"` work whatever is shown.

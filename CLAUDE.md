@@ -27,7 +27,8 @@ Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/c
 - `crates/daedalus-app`: CLI (`inspect`, `flatten`, stats)
 - `crates/daedalus-viewer`: wgpu 24 + winit 0.30 + egui 0.31 (pinned together on purpose; egui 0.32 needs wgpu 25).
   `tools.rs` is the GPU-free tool state machine (unit-tested); `render.rs` GPU; `ui.rs` egui chrome; `main.rs` events,
-  snapping and the document (open, save, unsaved changes); `filedlg.rs` the built-in file browser (no GTK/Qt dialog)
+  snapping and the document (open, save, unsaved changes); `filedlg.rs` the built-in file browser (no GTK/Qt dialog);
+  `icons.rs` the toolbar's vector icons (SketchUp-style pictures, no image files); `settings.rs` units and toolbar side
 
 ## Conventions
 - Every kernel or format feature gets a unit test. Solids are verified with **signed volume and Euler
@@ -57,6 +58,8 @@ the current state is:
   Not yet: `WGPU_BACKEND=gl`, HiDPI scaling.
 - Known gaps: shapes drawn on a face overlap it instead of splitting it (no imprinting, no faces with holes);
   touching shapes do not share edges (no vertex welding); no arcs.
+- Toolbar (2026-11-05): icons instead of words, the name and shortcut on hover; View > Toolbar puts it across the top or
+  down the left side (remembered).
 - Units (`core/src/units.rs`, 2026-11-05): the model is in metres; Units menu shows and types lengths in mm, cm, m, inches
   or feet and inches (to 1/16"), remembered in `~/.config/daedalus/settings.conf`. A written unit always wins when typing
   (`300mm`, `4' 6 1/2"`); once a number is being typed, unit letters, `'`, `"`, `/` and spaces go to the Measurements box.
