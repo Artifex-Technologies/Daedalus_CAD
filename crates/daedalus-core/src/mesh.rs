@@ -113,6 +113,27 @@ impl Mesh {
         best
     }
 
+    /// Each face's triangles (ear clipping), in face order: worked out once and kept by a caller that picks or draws often.
+    pub fn face_triangles(&self) -> Vec<Vec<[u32; 3]>> {
+        self.faces.iter().map(|f| triangulate(&self.positions, f)).collect()
+    }
+
+    /// [`Mesh::pick_face`] with the triangles already worked out ([`Mesh::face_triangles`] of this mesh): no ear clipping
+    /// on every call, so it is quick enough for every mouse move on a large model.
+    pub fn pick_triangles(&self, tris: &[Vec<[u32; 3]>], origin: [f32; 3], dir: [f32; 3]) -> Option<(usize, f32)> {
+        let mut best: Option<(usize, f32)> = None;
+        for (f, ts) in tris.iter().enumerate() {
+            for tri in ts {
+                if let Some(t) = ray_triangle(origin, dir, tri.map(|v| self.positions[v as usize])) {
+                    if best.is_none_or(|(_, bt)| t < bt) {
+                        best = Some((f, t));
+                    }
+                }
+            }
+        }
+        best
+    }
+
     /// Triangulates every face (ear clipping, so concave faces are correct).
     pub fn triangles(&self) -> Vec<[u32; 3]> {
         self.faces.iter().flat_map(|f| triangulate(&self.positions, f)).collect()

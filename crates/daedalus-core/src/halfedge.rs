@@ -516,7 +516,7 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 /// Moller-Trumbore ray/triangle intersection, two-sided. Returns the ray parameter.
-pub(crate) fn ray_triangle(origin: [f32; 3], dir: [f32; 3], tri: [[f32; 3]; 3]) -> Option<f32> {
+pub fn ray_triangle(origin: [f32; 3], dir: [f32; 3], tri: [[f32; 3]; 3]) -> Option<f32> {
     let e1 = sub(tri[1], tri[0]);
     let e2 = sub(tri[2], tri[0]);
     let p = cross(dir, e2);

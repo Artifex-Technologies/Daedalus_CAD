@@ -450,3 +450,39 @@ end
         assert!(read(b"daedalus-skp 1\n").unwrap_err().to_string().contains("no top level"));
     }
 }
+
+#[cfg(test)]
+mod timing {
+    /// `DSKP=file cargo test -p daedalus-io --release timing -- --ignored --nocapture`: how long reading and the per-mouse-move
+    /// work take on a real model.
+    #[test]
+    #[ignore]
+    fn time_a_real_model() {
+        let Some(path) = std::env::var_os("DSKP") else { return };
+        let t = std::time::Instant::now();
+        let s = super::read(&std::fs::read(path).unwrap()).unwrap();
+        println!("read: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let m = daedalus_core::Model::from_scene(s.clone());
+        println!("model: {:?} ok={}", t.elapsed(), m.is_ok());
+        let flat = s.flatten();
+        println!("flat: {} vertices, {} faces, {} defs, {} top instances", flat.positions.len(), flat.faces.len(), s.defs.len(), s.root.instances.len());
+        let t = std::time::Instant::now();
+        let e = flat.visible_edges();
+        println!("visible_edges: {:?} ({} edges)", t.elapsed(), e.len());
+        let t = std::time::Instant::now();
+        let hit = flat.pick_face([10.0, -30.0, 20.0], [0.0, 0.8, -0.6]);
+        println!("pick_face: {:?} {:?}", t.elapsed(), hit.map(|h| h.0));
+        let t = std::time::Instant::now();
+        let tris = flat.face_triangles();
+        println!("face_triangles (once): {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let hit2 = flat.pick_triangles(&tris, [10.0, -30.0, 20.0], [0.0, 0.8, -0.6]);
+        println!("pick_triangles (each move): {:?} {:?}", t.elapsed(), hit2.map(|h| h.0));
+        if let Ok(m) = m {
+            let t = std::time::Instant::now();
+            let _ = m.parts();
+            println!("parts: {:?}", t.elapsed());
+        }
+    }
+}

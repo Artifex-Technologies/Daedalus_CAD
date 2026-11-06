@@ -98,7 +98,7 @@ pub struct Style {
 }
 
 /// Flat-shaded triangle list: every face gets its own vertices and normal.
-fn face_vertices(mesh: &Mesh, selected: &[usize], flagged: &[usize], faded_from: usize) -> Vec<Vertex> {
+fn face_vertices(mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagged: &[usize], faded_from: usize) -> Vec<Vertex> {
     let mut out = Vec::new();
     for (fi, face) in mesh.faces.iter().enumerate() {
         let normal = newell(mesh, face);
@@ -112,7 +112,7 @@ fn face_vertices(mesh: &Mesh, selected: &[usize], flagged: &[usize], faded_from:
             0.0
         };
         let color = mesh.color_of(fi).map_or(DEFAULT_FACE, |c| c.map(|x| x as f32 / 255.0));
-        for tri in daedalus_core::triangulate::triangulate(&mesh.positions, face) {
+        for &tri in tris.get(fi).map(Vec::as_slice).unwrap_or(&[]) {
             for v in tri {
                 out.push(Vertex { position: mesh.positions[v as usize], normal, highlight, color });
             }
@@ -430,8 +430,10 @@ impl Renderer {
     /// Uploads the model after an edit, a selection change or a preview step.
     /// `faded`: faces from this number on, and edges between vertices from that number on, lie outside the open group
     /// or component and are drawn faded.
-    pub fn set_scene(&mut self, mesh: &Mesh, selected: &[usize], flagged: &[usize], faded: (usize, u32)) {
-        let faces = face_vertices(mesh, selected, flagged, faded.0);
+    /// `tris`: each face's triangles (`Mesh::face_triangles`), kept by the caller so a highlight change does not split
+    /// every face again.
+    pub fn set_scene(&mut self, mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagged: &[usize], faded: (usize, u32)) {
+        let faces = face_vertices(mesh, tris, selected, flagged, faded.0);
         let edges = edge_vertices(mesh, faded.1);
         self.faces = (self.buffer(bytemuck::cast_slice(&faces)), faces.len() as u32);
         self.edges = (self.buffer(bytemuck::cast_slice(&edges)), edges.len() as u32);

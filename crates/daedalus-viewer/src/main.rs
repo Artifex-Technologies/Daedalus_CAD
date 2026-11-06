@@ -65,8 +65,14 @@ struct State {
     owners: Vec<usize>,
     faded_from: usize,
     faded_vertex: u32,
-    /// The instances and the outside, as of the model state they were built for (rebuilt when it changes).
-    parts: Option<((u64, u64, usize), Vec<(usize, Mesh)>, Mesh)>,
+    /// The instances and the outside, as of the model state they were built for (rebuilt when it changes), each with its
+    /// faces' triangles.
+    parts: Option<((u64, u64, usize), Vec<(usize, Mesh, Tris)>, (Mesh, Tris))>,
+    /// The geometry being edited, split into triangles, as of the state it was split for (none while a preview runs).
+    active_tris: Option<((u64, u64, usize), Tris)>,
+    /// `display`'s faces as triangles, and its edges to draw and snap to: worked out in refresh, not on every mouse move.
+    tris: Tris,
+    edges: Vec<(u32, u32)>,
     tools: Tools,
     /// Sorted face indices flagged by the last inspection.
     flagged: Vec<usize>,
@@ -172,6 +178,9 @@ impl State {
             faded_from: 0,
             faded_vertex: 0,
             parts: None,
+            active_tris: None,
+            tris: Vec::new(),
+            edges: Vec::new(),
             tools,
             flagged: Vec::new(),
             typed: String::new(),
@@ -238,6 +247,7 @@ impl State {
         let mesh = scene.flatten();
         self.model = model;
         self.parts = None;
+        self.active_tris = None;
         self.readonly = readonly;
         self.doc += 1;
         self.path = path;
@@ -414,6 +424,16 @@ impl State {
             (None, None) => self.model.mesh().to_mesh(),
         };
         self.active_faces = self.display.faces.len();
+        // its triangles: kept while the model is unchanged (a highlight or a hover does not split every face again)
+        let key = (self.doc, self.model.state(), self.model.open_depth() + if self.readonly.is_some() { 1 << 20 } else { 0 });
+        self.tris = match (&preview, &self.active_tris) {
+            (None, Some((k, t))) if *k == key => t.clone(),
+            _ => {
+                let t = self.display.face_triangles();
+                self.active_tris = if preview.is_none() { Some((key, t.clone())) } else { None };
+                t
+            }
+        };
         self.owners.clear();
         let mut highlight = if preview.is_some() { Vec::new() } else { self.tools.highlight() };
         if self.readonly.is_none() {
@@ -421,14 +441,22 @@ impl State {
             let key = (self.doc, self.model.state(), self.model.open_depth());
             if self.parts.as_ref().is_none_or(|p| p.0 != key) {
                 let (inside, outside) = self.model.parts();
-                self.parts = Some((key, inside, outside));
+                let inside = inside.into_iter().map(|(i, m)| {
+                    let t = m.face_triangles();
+                    (i, m, t)
+                });
+                let ot = outside.face_triangles();
+                self.parts = Some((key, inside.collect(), (outside, ot)));
             }
             let lit = self.tools.highlight_instances();
             let moving = self.tools.preview_instances();
-            let (_, inside, outside) = self.parts.as_ref().expect("built above");
-            for (i, m) in inside {
+            let (_, inside, (outside, outside_tris)) = self.parts.as_ref().expect("built above");
+            let tris = &mut self.tris;
+            for (i, m, t) in inside {
                 let mut place = |m: &Mesh, owners: &mut Vec<usize>, display: &mut Mesh, lit_now: bool| {
                     let from = display.faces.len();
+                    let base = display.positions.len() as u32;
+                    tris.extend(t.iter().map(|ts| ts.iter().map(|tri| tri.map(|v| v + base)).collect::<Vec<_>>()));
                     display.append(m);
                     owners.extend(std::iter::repeat_n(*i, m.faces.len()));
                     if lit_now {
@@ -447,6 +475,8 @@ impl State {
             }
             self.faded_from = self.display.faces.len();
             self.faded_vertex = self.display.positions.len() as u32;
+            let base = self.faded_vertex;
+            self.tris.extend(outside_tris.iter().map(|ts| ts.iter().map(|tri| tri.map(|v| v + base)).collect::<Vec<_>>()));
             self.display.append(outside);
         } else {
             self.faded_from = self.display.faces.len();
@@ -465,7 +495,8 @@ impl State {
             None => Vec::new(),
         };
         highlight.sort_unstable();
-        self.gpu.set_scene(&self.display, &highlight, &self.flagged, (self.faded_from, self.faded_vertex));
+        self.edges = self.display.visible_edges();
+        self.gpu.set_scene(&self.display, &self.tris, &highlight, &self.flagged, (self.faded_from, self.faded_vertex));
         self.shown_highlight = highlight;
         self.window.request_redraw();
     }
@@ -486,10 +517,10 @@ impl State {
     fn resolve_cursor(&self) -> Cursor {
         let (w, h) = self.size();
         let (origin, dir) = self.camera.ray(self.cursor.0, self.cursor.1, w, h);
-        let face_hit = self.display.pick_face(origin.into(), dir.into());
+        let face_hit = self.display.pick_triangles(&self.tris, origin.into(), dir.into());
 
         let mut candidates: Vec<(Vec3, Snap)> = Vec::new();
-        for (a, b) in self.display.visible_edges() {
+        for &(a, b) in &self.edges {
             let (pa, pb) = (Vec3::from(self.display.positions[a as usize]), Vec3::from(self.display.positions[b as usize]));
             candidates.push((pa, Snap::Endpoint));
             candidates.push((pb, Snap::Endpoint));
@@ -1478,6 +1509,9 @@ fn from_sketchup(path: &Path) -> Result<Scene, String> {
     }
     daedalus_io::open_scene(&out).map_err(|e| format!("{} could not be read: {e}", short(path)))
 }
+
+/// Each face's triangles.
+type Tris = Vec<Vec<[u32; 3]>>;
 
 /// A file's name for a message (the whole path would run into the Measurements box).
 fn short(path: &Path) -> String {
