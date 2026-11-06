@@ -14,6 +14,7 @@ pub mod dxf2d;
 pub mod image_io;
 pub mod native;
 pub mod obj;
+pub mod skp;
 pub mod stl;
 mod weld;
 
@@ -60,6 +61,9 @@ fn extension(path: &Path) -> Option<String> {
 /// Imports a mesh, choosing the importer from the file extension.
 pub fn import_mesh(path: &Path) -> Result<Mesh, IoError> {
     let ext = extension(path).ok_or_else(|| IoError::Unsupported("no file extension".into()))?;
+    if ext == "dskp" {
+        return Ok(skp::read(&std::fs::read(path)?)?.flatten());
+    }
     let importers: [&dyn MeshImporter; 5] = [&native::Native, &stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae];
     let importer = importers
         .iter()
@@ -70,8 +74,11 @@ pub fn import_mesh(path: &Path) -> Result<Mesh, IoError> {
 
 /// Opens a model: a `.daedalus` file whole (groups, components, notes), any other format as its geometry.
 pub fn open_scene(path: &Path) -> Result<daedalus_core::scene::Scene, IoError> {
-    if extension(path).as_deref() == Some("daedalus") {
-        return native::read_scene(&std::fs::read(path)?);
+    match extension(path).as_deref() {
+        Some("daedalus") => return native::read_scene(&std::fs::read(path)?),
+        // a SketchUp model, as skp-convert describes it (skp.rs)
+        Some("dskp") => return skp::read(&std::fs::read(path)?),
+        _ => {}
     }
     Ok(daedalus_core::scene::Scene::from_mesh(import_mesh(path)?))
 }

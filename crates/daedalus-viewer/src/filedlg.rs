@@ -25,8 +25,9 @@ impl Purpose {
     /// The file kinds it shows, the first being the default for a name typed without one.
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
-            Purpose::Open | Purpose::SaveAs => &["daedalus"],
-            Purpose::Import => &["stl", "obj", "dxf", "dae"],
+            Purpose::Open => &["daedalus", "skp", "dskp"],
+            Purpose::SaveAs => &["daedalus"],
+            Purpose::Import => &["stl", "obj", "dxf", "dae", "skp", "dskp"],
             Purpose::Export => &["stl", "obj", "dxf", "dae"],
         }
     }

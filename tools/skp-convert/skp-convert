@@ -1,0 +1,3 @@
+#!/bin/sh
+# SketchUp models to OBJ and JSON with OpenSKP (see ~/.local/share/daedalus/skp-convert.py). The .skp files are only read.
+exec "$HOME/.local/share/daedalus/openskp/bin/python" -I "$HOME/.local/share/daedalus/skp-convert.py" "$@"

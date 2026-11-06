@@ -111,7 +111,12 @@ the current state is:
   `section`, `axes`. Shaders are validated in a test (naga). Not seen on screen yet.
 - Exit (2026-11-06): the window and GPU state are dropped before the event loop ends, and wgpu starts Vulkan only (OpenGL
   just when Vulkan finds no adapter): NVIDIA's EGL clean-up after the Wayland connection closed crashed at every close
-  (SIGSEGV, Sarina reported it as a crash). SketchUp files (.skp) are listed in the dialog but cannot be read: closed format.
+  (SIGSEGV, Sarina reported it as a crash).
+- SketchUp (2026-11-06): `.skp` opens through `tools/skp-convert` (Python, OpenSKP, MIT; installed in its own venv in
+  ~/.local/share/daedalus/openskp, not part of the build), which writes `.dskp` (our text format) that
+  `daedalus-io/src/skp.rs` builds into groups and components; faces that would make an edge non-manifold or clash in
+  winding go into a nested "(overlapping faces)" group. Matt's 29 models converted (OBJ checked: sizes right); the .dskp
+  path is unit-tested, not yet tried on his files. Claude Code's safety check does not let Claude run OpenSKP itself.
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

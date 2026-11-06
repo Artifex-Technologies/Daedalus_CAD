@@ -312,11 +312,15 @@ impl State {
     }
 
     fn open_file(&mut self, path: &Path, import: bool) {
+        // a SketchUp model: read through skp-convert (OpenSKP), then opened as a new, unsaved Daedalus model
         if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("skp") || e.eq_ignore_ascii_case("skb")) {
-            self.message = Some(format!(
-                "{} is a SketchUp file, which Daedalus cannot read yet (SketchUp's format is closed). In SketchUp: File > Export > 3D Model, as COLLADA (.dae) or OBJ, then Import that here.",
-                short(path)
-            ));
+            match from_sketchup(path) {
+                Ok(scene) => {
+                    self.replace(&scene, None);
+                    self.message = Some(format!("Opened {} from SketchUp. File > Save keeps it as a Daedalus model; the .skp is not changed.", short(path)));
+                }
+                Err(e) => self.message = Some(e),
+            }
             return;
         }
         match daedalus_io::open_scene(path) {
@@ -1451,6 +1455,28 @@ fn load(scene: &Scene) -> (Model, Option<Mesh>) {
             (Model::new(), Some(scene.flatten()))
         }
     }
+}
+
+/// A SketchUp model read with `skp-convert --one` (OpenSKP, installed apart from Daedalus), which writes a `.dskp` into the
+/// cache that daedalus-io then reads.
+fn from_sketchup(path: &Path) -> Result<Scene, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let converter = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .chain([home.join(".local/bin")])
+        .map(|d| d.join("skp-convert"))
+        .find(|p| p.is_file())
+        .ok_or_else(|| format!("{} is a SketchUp file. Reading those needs the skp-convert helper (OpenSKP), which is not installed here.", short(path)))?;
+    let cache = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".cache")).join("daedalus/sketchup");
+    let out = cache.join(format!("{}.dskp", path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "model".into())));
+    let run = std::process::Command::new(&converter).arg("--one").arg(path).arg(&out).output().map_err(|e| format!("skp-convert did not start: {e}"))?;
+    if !run.status.success() {
+        let why = String::from_utf8_lossy(&run.stderr);
+        let last = why.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no reason given").to_string();
+        return Err(format!("{} could not be read: {last}", short(path)));
+    }
+    daedalus_io::open_scene(&out).map_err(|e| format!("{} could not be read: {e}", short(path)))
 }
 
 /// A file's name for a message (the whole path would run into the Measurements box).

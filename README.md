@@ -141,6 +141,10 @@ Solid Tools (union, subtract, intersect on groups), then the Sandbox (terrain) t
 MPL-2.0 (see `LICENSE`), like Labyrinth OS's other from-scratch projects. Daedalus is written independently; no source from other
 modelers is used.
 
+SketchUp models (`.skp`) open through the `skp-convert` helper (`tools/skp-convert`), which reads them with
+[OpenSKP](https://github.com/iamahsanmehmood/openskp) (MIT, Ahsan Mehmood); OpenSKP is installed apart from Daedalus and
+not part of its build.
+
 3D Text draws its letters from Ubuntu Light, the font the egui toolkit already carries (via `epaint_default_fonts`), under
 the Ubuntu Font Licence 1.0, which allows it to be embedded and shipped with a program; its outlines are read with
 `ttf-parser` (MIT/Apache-2.0).

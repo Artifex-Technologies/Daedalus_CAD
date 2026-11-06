@@ -19,18 +19,17 @@ pub enum Answer {
 
 /// The filters offered, the first one selected: (label, glob patterns).
 fn filters(purpose: Purpose) -> Vec<(&'static str, Vec<&'static str>)> {
-    let models = vec!["*.daedalus", "*.stl", "*.obj", "*.dxf", "*.dae"];
+    let models = vec!["*.daedalus", "*.skp", "*.dskp", "*.stl", "*.obj", "*.dxf", "*.dae"];
     match purpose {
         Purpose::Open => vec![
             ("Models Daedalus opens", models),
             ("Daedalus models (.daedalus)", vec!["*.daedalus"]),
-            // shown so they can be found; opening one says why it cannot be read yet
-            ("SketchUp models (.skp)", vec!["*.skp", "*.skb"]),
+            ("SketchUp models (.skp)", vec!["*.skp", "*.dskp"]),
             ("All files", vec!["*"]),
         ],
         Purpose::Import => vec![
             ("STL, OBJ, DXF, COLLADA", vec!["*.stl", "*.obj", "*.dxf", "*.dae"]),
-            ("SketchUp models (.skp)", vec!["*.skp", "*.skb"]),
+            ("SketchUp models (.skp)", vec!["*.skp", "*.dskp"]),
             ("All files", vec!["*"]),
         ],
         Purpose::SaveAs => vec![("Daedalus model (.daedalus)", vec!["*.daedalus"])],
