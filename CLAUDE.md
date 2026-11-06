@@ -52,7 +52,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 94 tests pass (2026-11-06). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 101 tests pass (2026-11-06). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -85,6 +85,14 @@ the current state is:
   Move/Rotate/Scale move vertices (`Model::transform_vertices`): a lone face moved sideways stretches its neighbours.
 - Light/dark (2026-11-06): the chrome follows the desktop live; the modelling area stays white until a background and
   lighting are chosen. In dark mode each toolbar icon sits on a light tile (the icons are dark ink).
+- Lines (2026-11-06, phase 2 started): `Mesh.lines` / `HalfEdgeMesh.lines` are loose edges. The Line tool puts each
+  segment in the model at once (one undo step each; Esc keeps what is drawn), welding onto existing vertices; a closed loop
+  of loose lines in one plane becomes a face (`close_loop`, shortest path). Erasing a face leaves its edges as lines; the
+  Eraser takes a line under the mouse first. Line works in 3D: snap > red/green/blue axis through the last point (ray
+  lock, so blue works) > face/ground. Snaps include the origin and points on the axes. `.daedalus` version 2 holds `l a b`
+  (a file without lines is still written as version 1). Not yet: lines split faces (imprint), lines crossing (weld).
+- Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
+  hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").
 - Next milestones: imprint and weld, arcs, Move/Rotate/Offset, groups/components,
   constraints, sheet metal inside the model, STEP export for bent parts.

@@ -141,6 +141,8 @@ pub enum Snap {
     Ground,
     /// On a guide line or at a guide point (Tape Measure, Protractor).
     OnGuide,
+    /// The origin, where the three axes meet.
+    Origin,
 }
 
 /// A construction guide: drawn dashed, snapped to, never part of the model (SketchUp's guide lines and points).
@@ -164,6 +166,7 @@ impl Snap {
             Snap::InPlane => "In Plane",
             Snap::Ground => "On Ground",
             Snap::OnGuide => "On Guide",
+            Snap::Origin => "Origin",
         }
     }
 }
@@ -181,6 +184,8 @@ pub struct Hit {
     /// Plane a drawing started here would use (the face's plane, or the ground).
     pub plane: Plane,
     pub face: Option<usize>,
+    /// A loose line close to the mouse (for the Eraser).
+    pub line: Option<usize>,
     pub snap: Snap,
 }
 
@@ -217,7 +222,8 @@ pub fn parse_entry(text: &str, units: Units) -> Option<Entry> {
 #[derive(Debug, Clone)]
 enum Op {
     Idle,
-    Line { plane: Plane, points: Vec<[f32; 3]>, cursor: Option<[f32; 3]>, axis: Option<u8> },
+    /// Line: each click adds a loose line from `last` to the new point (in the model at once, so Esc keeps what is drawn).
+    Line { plane: Plane, last: [f32; 3], cursor: Option<[f32; 3]>, axis: Option<u8> },
     Rect { plane: Plane, start: [f32; 3], cursor: Option<[f32; 3]> },
     Round { plane: Plane, center: [f32; 3], cursor: Option<[f32; 3]> },
     Push { face: usize, base: [f32; 3], normal: [f32; 3], distance: f32 },
@@ -360,7 +366,7 @@ impl Tools {
     /// (the Line tool's own corners, so the loop can be closed).
     pub fn pending_points(&self) -> Vec<[f32; 3]> {
         match &self.op {
-            Op::Line { points, .. } => points.clone(),
+            Op::Line { last, .. } => vec![*last],
             Op::Rect { start, .. } => vec![*start],
             Op::Round { center, .. } | Op::Pie { center, .. } => vec![*center],
             Op::RotRect { a, b, .. } => std::iter::once(*a).chain(*b).collect(),
@@ -384,15 +390,25 @@ impl Tools {
     /// keeping to the workplane), for the marker and tooltip.
     pub fn marker(&self, c: &Cursor) -> Option<([f32; 3], Snap)> {
         match &self.op {
-            Op::Line { plane, points, .. } => {
-                let (p, snap) = on_plane(plane, c)?;
-                Some(match points.last() {
-                    Some(&last) if !matches!(snap, Snap::Endpoint | Snap::Midpoint) => {
-                        let (q, axis) = axis_lock(plane, last, p);
-                        (q, axis.map_or(snap, Snap::OnAxis))
-                    }
-                    _ => (p, snap),
-                })
+            Op::Line { plane, last, .. } => {
+                // a snap wins; then the red, green or blue axis through the last point; then the face or ground under the
+                // mouse, locked onto an axis of its plane when close to one
+                if let Some(h) = c.hit.filter(|h| matches!(h.snap, Snap::Endpoint | Snap::Midpoint | Snap::OnGuide | Snap::Origin)) {
+                    return Some((h.point, h.snap));
+                }
+                if let Some((p, a)) = ray_axis_lock(*last, c) {
+                    return Some((p, Snap::OnAxis(a)));
+                }
+                let (p, snap) = match c.hit {
+                    Some(h) => (h.point, h.snap),
+                    None => on_plane(&Plane { origin: *last, ..*plane }, c)?,
+                };
+                let level = Plane { origin: *last, ..Plane::from_point_normal(*last, plane.normal).unwrap_or(*plane) };
+                if dot(sub(p, *last), level.normal).abs() <= 1e-4 * (1.0 + len(p)) {
+                    let (q, axis) = axis_lock(&level, *last, p);
+                    return Some((q, axis.map_or(snap, Snap::OnAxis)));
+                }
+                Some((p, snap))
             }
             Op::Rect { plane, .. } | Op::Round { plane, .. } | Op::RotRect { plane, .. } | Op::Pie { plane, .. } => on_plane(plane, c),
             Op::Rotate { plane, .. } | Op::Protract { plane, .. } => on_plane(plane, c),
@@ -542,6 +558,10 @@ impl Tools {
                 (Some(st), _) => self.add_protractor_guide(&plane, center, st, angle),
                 (start, _) => self.op = Op::Protract { plane, center, start, angle },
             },
+            // the Eraser takes a line under the mouse before the face behind it
+            (Tool::Eraser, _) if c.hit.and_then(|h| h.line).is_some() => {
+                model.erase_line(c.hit.and_then(|h| h.line).expect("checked")).map_err(|e| e.to_string())?;
+            }
             (Tool::Eraser, _) => {
                 if let Some(face) = c.hit.and_then(|h| h.face) {
                     model.erase_face(face).map_err(|e| e.to_string())?;
@@ -550,17 +570,13 @@ impl Tools {
             }
             (Tool::Line, Op::Idle) => {
                 if let Some(h) = c.hit {
-                    self.op = Op::Line { plane: h.plane, points: vec![h.point], cursor: None, axis: None };
+                    self.op = Op::Line { plane: h.plane, last: h.point, cursor: None, axis: None };
                 }
             }
-            (Tool::Line, Op::Line { plane, mut points, .. }) => {
-                let Some((p, _)) = marker else {
-                    self.op = Op::Line { plane, points, cursor: None, axis: None };
-                    return Ok(());
-                };
-                self.op = Op::Line { plane, points: Vec::new(), cursor: None, axis: None };
-                self.add_line_point(model, plane, &mut points, p)?;
-            }
+            (Tool::Line, Op::Line { plane, last, .. }) => match marker {
+                Some((p, _)) => self.add_line_point(model, plane, last, p)?,
+                None => self.op = Op::Line { plane, last, cursor: None, axis: None },
+            },
             (Tool::Rectangle, Op::Idle) => {
                 if let Some(h) = c.hit {
                     self.op = Op::Rect { plane: h.plane, start: h.point, cursor: None };
@@ -608,15 +624,13 @@ impl Tools {
                 }
                 self.op = op;
             }
-            (Entry::Value(len), Op::Line { plane, mut points, cursor, axis }) => {
-                let last = *points.last().expect("a line op always has a start point");
+            (Entry::Value(len), Op::Line { plane, last, cursor, axis }) => {
                 let dir = cursor.and_then(|c| normalize(sub(c, last)));
                 let Some(dir) = dir else {
-                    self.op = Op::Line { plane, points, cursor, axis };
+                    self.op = Op::Line { plane, last, cursor, axis };
                     return Err("move the mouse to show the direction first".into());
                 };
-                self.op = Op::Line { plane, points: Vec::new(), cursor, axis };
-                self.add_line_point(model, plane, &mut points, add(last, scale(dir, len)))?;
+                self.add_line_point(model, plane, last, add(last, scale(dir, len)))?;
             }
             (Entry::Pair(w, h), Op::Rect { plane, start, cursor }) => {
                 // Typed sizes follow the side of the start point the mouse is on.
@@ -763,13 +777,8 @@ impl Tools {
     pub fn preview_lines(&self) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
         let mut out = Vec::new();
         match &self.op {
-            Op::Line { points, cursor, axis, .. } => {
-                for w in points.windows(2) {
-                    out.push((w[0], w[1], RUBBER_BAND));
-                }
-                if let (Some(&last), Some(c)) = (points.last(), cursor) {
-                    out.push((last, *c, axis.map_or(RUBBER_BAND, |a| AXIS_COLORS[a as usize])));
-                }
+            Op::Line { last, cursor: Some(c), axis, .. } => {
+                out.push((*last, *c, axis.map_or(RUBBER_BAND, |a| AXIS_COLORS[a as usize])));
             }
             Op::Rect { plane, start, cursor: Some(c) } => {
                 if let Some(r) = sketch::rectangle(plane, *start, *c) {
@@ -862,7 +871,7 @@ impl Tools {
             (Tool::LookAround, _) => "Drag to look around. The eye stays where it is.",
             (Tool::Walk, _) => "Drag up or down to walk, left or right to turn. Arrow keys work too.",
             (Tool::Line, Op::Idle) => "Select start point.",
-            (Tool::Line, _) => "Select end point, or type a length. Click the start point to close the face.",
+            (Tool::Line, _) => "Select end point, or type a length. Esc stops; what is drawn stays. A closed outline becomes a face.",
             (Tool::Rectangle, Op::Idle) => "Select first corner.",
             (Tool::Rectangle, _) => "Select opposite corner, or type width,height.",
             (Tool::Circle, Op::Idle) => "Select center point. Type a number followed by s to set segments.",
@@ -880,7 +889,7 @@ impl Tools {
     /// Label and current value for the Measurements box.
     pub fn measurement(&self) -> (&'static str, String) {
         match &self.op {
-            Op::Line { points, cursor: Some(c), .. } => ("Length", fmt(dist(*points.last().unwrap(), *c), self.units)),
+            Op::Line { last, cursor: Some(c), .. } => ("Length", fmt(dist(*last, *c), self.units)),
             Op::Line { .. } => ("Length", String::new()),
             Op::Rect { plane, start, cursor: Some(c) } => {
                 let (a, b) = (plane.to_local(*start), plane.to_local(*c));
@@ -927,22 +936,21 @@ impl Tools {
         }
     }
 
-    /// Adds `p` to the line chain; closing on the start point makes the face.
-    fn add_line_point(
-        &mut self,
-        model: &mut Model,
-        plane: Plane,
-        points: &mut Vec<[f32; 3]>,
-        p: [f32; 3],
-    ) -> Result<(), String> {
-        let same = |a: [f32; 3], b: [f32; 3]| dist(a, b) <= 1e-6 * (1.0 + len(a));
-        if points.len() >= 3 && same(p, points[0]) {
-            return self.commit(model, Some(std::mem::take(points)));
+    /// Draws the line from `last` to `p` into the model and goes on from `p`; when it closes a face the chain ends, as
+    /// in SketchUp.
+    fn add_line_point(&mut self, model: &mut Model, plane: Plane, last: [f32; 3], p: [f32; 3]) -> Result<(), String> {
+        if dist(last, p) <= 1e-6 * (1.0 + len(p)) {
+            self.op = Op::Line { plane, last, cursor: None, axis: None };
+            return Ok(());
         }
-        if !points.last().is_some_and(|&l| same(l, p)) {
-            points.push(p);
+        match model.add_line(last, p) {
+            Ok(Some(_)) => self.op = Op::Idle,
+            Ok(None) => self.op = Op::Line { plane, last: p, cursor: None, axis: None },
+            Err(e) => {
+                self.op = Op::Line { plane, last, cursor: None, axis: None };
+                return Err(e.to_string());
+            }
         }
-        self.op = Op::Line { plane, points: std::mem::take(points), cursor: None, axis: None };
         Ok(())
     }
 
@@ -1154,7 +1162,7 @@ mod tests {
         Cursor {
             origin: [point[0], point[1], 10.0],
             dir: [0.0, 0.0, -1.0],
-            hit: Some(Hit { point, plane: Plane::ground(), face: None, snap }),
+            hit: Some(Hit { point, plane: Plane::ground(), face: None, line: None, snap }),
         }
     }
 
@@ -1204,7 +1212,7 @@ mod tests {
         let c = Cursor {
             origin: [1.0, 1.0, 10.0],
             dir: [0.0, 0.0, -1.0],
-            hit: Some(Hit { point: [1.0, 1.0, 2.0], plane: Plane::from_point_normal([1.0, 1.0, 2.0], [0.0, 0.0, 1.0]).unwrap(), face: Some(top), snap: Snap::OnFace }),
+            hit: Some(Hit { point: [1.0, 1.0, 2.0], plane: Plane::from_point_normal([1.0, 1.0, 2.0], [0.0, 0.0, 1.0]).unwrap(), face: Some(top), line: None, snap: Snap::OnFace }),
         };
         (m, c)
     }
@@ -1282,7 +1290,7 @@ mod tests {
         t.select_all(&m);
         t.set_tool(Tool::Scale);
         // grip the top corner at (2,2,2): the anchor is the corner at the origin
-        let grip = Cursor { origin: [2.0, 2.0, 10.0], dir: [0.0, 0.0, -1.0], hit: Some(Hit { point: [2.0, 2.0, 2.0], plane: Plane::ground(), face: None, snap: Snap::Endpoint }) };
+        let grip = Cursor { origin: [2.0, 2.0, 10.0], dir: [0.0, 0.0, -1.0], hit: Some(Hit { point: [2.0, 2.0, 2.0], plane: Plane::ground(), face: None, line: None, snap: Snap::Endpoint }) };
         t.click(&mut m, &grip).unwrap();
         t.type_entry(&mut m, "1.5").unwrap();
         assert_eq!(bounds(&m), ([0.0; 3], [3.0, 3.0, 3.0]));
@@ -1372,16 +1380,18 @@ mod tests {
             t.click(&mut m, &at(x, y)).unwrap();
         }
         assert_eq!(m.mesh().face_count(), 0, "still open");
-        // The viewer snaps onto the start point because it is a pending point.
-        assert!(t.pending_points().contains(&[0.0, 0.0, 0.0]));
+        assert_eq!(m.mesh().lines.len(), 5, "every segment is in the model already");
+        // the viewer snaps onto the start point (an endpoint of the first line)
         t.click(&mut m, &ground_hit([0.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
         assert_eq!(m.mesh().face_count(), 1);
         assert_eq!(m.mesh().face_vertices(0).len(), 6);
+        assert!(m.mesh().lines.is_empty());
+        assert!(!t.is_busy(), "closing a face ends the chain");
 
         // Pull it into an L-shaped solid of area 3 x height 2.
         let (mut p, _) = with(Tool::PushPull);
         let down = Cursor { origin: [0.5, 0.5, 10.0], dir: [0.0, 0.0, -1.0], hit: Some(Hit {
-            point: [0.5, 0.5, 0.0], plane: Plane::ground(), face: Some(0), snap: Snap::OnFace,
+            point: [0.5, 0.5, 0.0], plane: Plane::ground(), face: Some(0), line: None, snap: Snap::OnFace,
         }) };
         p.click(&mut m, &down).unwrap();
         p.type_entry(&mut m, "2").unwrap();
@@ -1398,9 +1408,48 @@ mod tests {
         assert_eq!(t.marker(&c).unwrap(), ([5.0, 0.0, 0.0], Snap::OnAxis(0)));
         t.hover(&c);
         t.type_entry(&mut m, "2").unwrap();
-        assert_eq!(t.pending_points(), vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
+        assert_eq!(t.pending_points(), vec![[2.0, 0.0, 0.0]], "going on from the end of the typed line");
+        assert_eq!(m.mesh().lines.len(), 1);
         // Far off any axis: no lock.
-        assert_eq!(t.marker(&at(3.0, 2.0)).unwrap().1, Snap::InPlane);
+        assert_eq!(t.marker(&at(3.0, 2.0)).unwrap().1, Snap::Ground);
+    }
+
+    #[test]
+    fn esc_keeps_the_lines_already_drawn() {
+        let (mut t, mut m) = with(Tool::Line);
+        for (x, y) in [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0)] {
+            t.click(&mut m, &at(x, y)).unwrap();
+        }
+        t.cancel();
+        assert!(!t.is_busy());
+        assert_eq!(m.mesh().lines.len(), 2, "Esc stops the next line only");
+    }
+
+    #[test]
+    fn a_line_goes_up_the_blue_axis() {
+        let (mut t, mut m) = with(Tool::Line);
+        t.click(&mut m, &at(1.0, 1.0)).unwrap();
+        // looking from the front at height 2.5, just beside the upright line through (1, 1, 0)
+        let c = Cursor { origin: [1.02, -20.0, 2.5], dir: [0.0, 1.0, 0.0], hit: None };
+        let (p, snap) = t.marker(&c).unwrap();
+        assert_eq!(snap, Snap::OnAxis(2));
+        assert!((p[0] - 1.0).abs() < 1e-5 && (p[1] - 1.0).abs() < 1e-5 && (p[2] - 2.5).abs() < 1e-4);
+        t.click(&mut m, &c).unwrap();
+        let mesh = m.mesh().to_mesh();
+        let [a, b] = mesh.lines[0];
+        assert!((mesh.positions[b as usize][2] - mesh.positions[a as usize][2] - 2.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_eraser_takes_a_line() {
+        let (mut t, mut m) = with(Tool::Line);
+        t.click(&mut m, &at(0.0, 0.0)).unwrap();
+        t.click(&mut m, &at(2.0, 0.0)).unwrap();
+        t.set_tool(Tool::Eraser);
+        let mut c = at(1.0, 0.0);
+        c.hit.as_mut().unwrap().line = Some(0);
+        t.click(&mut m, &c).unwrap();
+        assert!(m.mesh().lines.is_empty());
     }
 
     #[test]
@@ -1419,7 +1468,7 @@ mod tests {
         m.add_rectangle([0.0; 3], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
         let (mut t, _) = with(Tool::PushPull);
         let face_hit = Cursor { origin: [1.0, -10.0, 0.0], dir: [0.0, 1.0, 0.0], hit: Some(Hit {
-            point: [1.0, 1.0, 0.0], plane: Plane::ground(), face: Some(0), snap: Snap::OnFace,
+            point: [1.0, 1.0, 0.0], plane: Plane::ground(), face: Some(0), line: None, snap: Snap::OnFace,
         }) };
         t.click(&mut m, &face_hit).unwrap();
         // A horizontal ray at height 3 seen from the side sets distance 3.

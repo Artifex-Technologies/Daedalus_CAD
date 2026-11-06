@@ -16,7 +16,8 @@
 use crate::{IoError, MeshExporter, MeshImporter};
 use daedalus_core::Mesh;
 
-pub const VERSION: u32 = 1;
+/// Version 2 adds loose lines (`l a b`); a file without lines is still written as version 1, which older Daedalus reads.
+pub const VERSION: u32 = 2;
 const MAGIC: &str = "daedalus";
 
 pub struct Native;
@@ -61,6 +62,14 @@ impl MeshImporter for Native {
                     mesh.add_face(idx);
                 }
                 // a line kind this version does not know: only possible in a file that claims a version it does not have
+                Some("l") if version >= 2 => {
+                    let idx: Vec<u32> = parts.map(|p| p.parse::<u32>()).collect::<Result<_, _>>().map_err(|_| IoError::Parse(format!("line {n}: a line lists two vertex numbers")))?;
+                    let [a, b] = idx[..] else { return Err(IoError::Parse(format!("line {n}: a line lists two vertex numbers"))) };
+                    if a.max(b) as usize >= mesh.positions.len() {
+                        return Err(IoError::Parse(format!("line {n}: vertex {} is not defined above", a.max(b))));
+                    }
+                    mesh.lines.push([a, b]);
+                }
                 Some(other) => return Err(IoError::Parse(format!("line {n}: unknown entry {other:?}"))),
                 None => {}
             }
@@ -75,7 +84,8 @@ impl MeshExporter for Native {
     }
 
     fn export(&self, mesh: &Mesh) -> Result<Vec<u8>, IoError> {
-        let mut s = format!("{MAGIC} {VERSION}\n# Daedalus CAD model: v x y z (metres), f vertex numbers counter-clockwise from outside\n");
+        let version = if mesh.lines.is_empty() { 1 } else { VERSION };
+        let mut s = format!("{MAGIC} {version}\n# Daedalus CAD model: v x y z (metres), f vertex numbers counter-clockwise from outside, l a loose line\n");
         for p in &mesh.positions {
             s.push_str(&format!("v {} {} {}\n", p[0], p[1], p[2]));
         }
@@ -85,6 +95,9 @@ impl MeshExporter for Native {
                 s.push_str(&format!(" {i}"));
             }
             s.push('\n');
+        }
+        for [a, b] in &mesh.lines {
+            s.push_str(&format!("l {a} {b}\n"));
         }
         Ok(s.into_bytes())
     }
@@ -117,10 +130,23 @@ mod tests {
     }
 
     #[test]
+    fn lines_come_back_in_a_version_2_file() {
+        let mut m = cube();
+        m.add_vertex([5.0, 0.0, 0.0]);
+        m.lines.push([0, 8]);
+        let bytes = Native.export(&m).unwrap();
+        assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 2\n"));
+        let back = Native.import(&bytes).unwrap();
+        assert_eq!(back, m);
+    }
+
+    #[test]
     fn bad_files_are_refused_with_the_line() {
         let e = |t: &str| Native.import(t.as_bytes()).unwrap_err().to_string();
         assert!(e("hello\n").contains("not a .daedalus file"));
-        assert!(e("daedalus 2\n").contains("newer Daedalus"), "{}", e("daedalus 2\n"));
+        assert!(e("daedalus 3\n").contains("newer Daedalus"), "{}", e("daedalus 3\n"));
+        assert!(e("daedalus 1\nv 0 0 0\nv 1 0 0\nl 0 1\n").contains("unknown entry"), "lines need version 2");
+        assert!(e("daedalus 2\nv 0 0 0\nl 0 1\n").contains("vertex 1 is not defined"));
         assert!(e("daedalus 1\nv 0 0\n").contains("line 2"));
         assert!(e("daedalus 1\nv 0 0 0\nf 0 1 2\n").contains("vertex 1 is not defined"));
         assert!(e("daedalus 1\nv 0 0 NaN\n").contains("finite"));

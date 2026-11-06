@@ -9,6 +9,8 @@ use crate::triangulate::triangulate;
 pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
     pub faces: Vec<Vec<u32>>,
+    /// Loose edges: lines drawn that do not border a face (yet), as SketchUp keeps them. Vertex pairs.
+    pub lines: Vec<[u32; 2]>,
 }
 
 impl Mesh {
@@ -46,6 +48,15 @@ impl Mesh {
             .flat_map(|f| (0..f.len()).map(move |i| (f[i], f[(i + 1) % f.len()])))
             .map(|(a, b)| (a.min(b), a.max(b)))
             .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Every edge to draw and snap to: the faces' edges and the loose lines, (low, high), each once, sorted.
+    pub fn all_edges(&self) -> Vec<(u32, u32)> {
+        let mut out = self.edges();
+        out.extend(self.lines.iter().map(|&[a, b]| (a.min(b), a.max(b))));
         out.sort_unstable();
         out.dedup();
         out

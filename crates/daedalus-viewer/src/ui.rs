@@ -297,9 +297,10 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
             }
             Snap::InPlane | Snap::Ground => Color32::DARK_GRAY,
             Snap::OnGuide => Color32::from_rgb(90, 90, 100),
+            Snap::Origin => Color32::from_rgb(200, 120, 20),
         };
         match snap {
-            Snap::Endpoint | Snap::Midpoint => {
+            Snap::Endpoint | Snap::Midpoint | Snap::Origin => {
                 painter.circle(pos, 5.0, Color32::TRANSPARENT, Stroke::new(2.0_f32, color));
             }
             _ => {

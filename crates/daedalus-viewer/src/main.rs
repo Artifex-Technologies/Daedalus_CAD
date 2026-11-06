@@ -321,13 +321,23 @@ impl State {
         let face_hit = self.display.pick_face(origin.into(), dir.into());
 
         let mut candidates: Vec<(Vec3, Snap)> = Vec::new();
-        for (a, b) in self.display.edges() {
+        for (a, b) in self.display.all_edges() {
             let (pa, pb) = (Vec3::from(self.display.positions[a as usize]), Vec3::from(self.display.positions[b as usize]));
             candidates.push((pa, Snap::Endpoint));
             candidates.push((pb, Snap::Endpoint));
             candidates.push(((pa + pb) * 0.5, Snap::Midpoint));
         }
         candidates.extend(self.tools.pending_points().into_iter().map(|p| (Vec3::from(p), Snap::Endpoint)));
+        // the origin, and the point of each axis nearest the mouse (as SketchUp snaps onto the axes)
+        candidates.push((Vec3::ZERO, Snap::Origin));
+        for (i, axis) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
+            let b = axis.dot(dir);
+            let denom = 1.0 - b * b;
+            if denom.abs() > 1e-6 {
+                let s = (b * dir.dot(-origin) - axis.dot(-origin)) / denom;
+                candidates.push((axis * s, Snap::OnAxis(i as u8)));
+            }
+        }
         // guide points, and the point of each guide line nearest the mouse
         for g in &self.tools.guides {
             match *g {
@@ -357,6 +367,7 @@ impl State {
             let rank = d + match snap {
                 Snap::Midpoint => 2.0,
                 Snap::OnGuide => 3.0,
+                Snap::OnAxis(_) => 4.0,
                 _ => 0.0,
             };
             if d <= SNAP_RADIUS && best.is_none_or(|b| rank < b.2) && visible(p) {
@@ -379,16 +390,25 @@ impl State {
                     None if p.z.abs() < 1e-5 => (None, Plane::ground()),
                     None => (None, Plane { origin: p.into(), ..Plane::ground() }),
                 };
-                Some(Hit { point: p.into(), plane, face, snap })
+                Some(Hit { point: p.into(), plane, face, line: None, snap })
             }
             (None, Some((f, t))) => {
                 let p = origin + dir * t;
-                face_plane(f, p).map(|plane| Hit { point: p.into(), plane, face: Some(f), snap: Snap::OnFace })
+                face_plane(f, p).map(|plane| Hit { point: p.into(), plane, face: Some(f), line: None, snap: Snap::OnFace })
             }
             (None, None) => Plane::ground()
                 .intersect_ray(origin.into(), dir.into())
-                .map(|p| Hit { point: p, plane: Plane::ground(), face: None, snap: Snap::Ground }),
+                .map(|p| Hit { point: p, plane: Plane::ground(), face: None, line: None, snap: Snap::Ground }),
         };
+        // the loose line nearest the mouse on screen, for the Eraser
+        let line = self.display.lines.iter().enumerate().filter_map(|(i, &[a, b])| {
+            let pa = self.camera.project(Vec3::from(self.display.positions[a as usize]), w, h)?;
+            let pb = self.camera.project(Vec3::from(self.display.positions[b as usize]), w, h)?;
+            let d = segment_distance(self.cursor, pa, pb);
+            (d <= SNAP_RADIUS * 0.6).then_some((i, d))
+        });
+        let line = line.min_by(|x, y| x.1.total_cmp(&y.1)).map(|(i, _)| i);
+        let hit = hit.map(|h| Hit { line, ..h });
         Cursor { origin: origin.into(), dir: dir.into(), hit }
     }
 
@@ -870,7 +890,9 @@ impl State {
             pixels_per_point: out.pixels_per_point,
         };
         let (axes, overlay) = (self.axes(), self.overlay());
-        self.gpu.render(self.camera.view_proj(w / h), self.style, &axes, &overlay, ui);
+        // edges about 1.5 points wide, like SketchUp's default
+        let line_width = 1.4 * self.window.scale_factor() as f32;
+        self.gpu.render(self.camera.view_proj(w / h), self.style, line_width, &axes, &overlay, ui);
 
         if out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay.is_zero()) {
             self.window.request_redraw();
@@ -1109,4 +1131,13 @@ fn main() {
     let event_loop = EventLoop::<AppEvent>::with_user_event().build().expect("event loop");
     let mut app = App { proxy: event_loop.create_proxy(), mesh, path, title, state: None };
     event_loop.run_app(&mut app).expect("run app");
+}
+
+/// Distance in pixels from point `p` to the segment `a`-`b` on screen.
+fn segment_distance(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    let (cx, cy) = (a.0 + t * dx, a.1 + t * dy);
+    ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt()
 }

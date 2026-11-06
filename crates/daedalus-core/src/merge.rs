@@ -144,6 +144,11 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f32) -> (Mesh, Vec<usize>) {
             neighbours.entry(b).or_default().push(a);
         }
     }
+    // a loose line at a corner keeps it
+    for &[a, b] in &mesh.lines {
+        neighbours.entry(a).or_default().push(b);
+        neighbours.entry(b).or_default().push(a);
+    }
     let straight = |v: u32| -> bool {
         let mut n = neighbours[&v].clone();
         n.sort_unstable();
@@ -168,6 +173,11 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f32) -> (Mesh, Vec<usize>) {
             used[v as usize] = true;
         }
     }
+    for l in &mesh.lines {
+        for &v in l {
+            used[v as usize] = true;
+        }
+    }
     let mut renumber = vec![u32::MAX; mesh.positions.len()];
     let mut out = Mesh::new();
     for (i, &u) in used.iter().enumerate() {
@@ -178,6 +188,7 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f32) -> (Mesh, Vec<usize>) {
     for f in faces {
         out.add_face(f.iter().map(|&v| renumber[v as usize]).collect());
     }
+    out.lines = mesh.lines.iter().map(|l| l.map(|v| renumber[v as usize])).collect();
     (out, map)
 }
 

@@ -106,7 +106,7 @@ fn face_vertices(mesh: &Mesh, selected: &[usize], flagged: &[usize]) -> Vec<Vert
 }
 
 fn edge_vertices(mesh: &Mesh) -> Vec<LineVertex> {
-    mesh.edges()
+    mesh.all_edges()
         .into_iter()
         .flat_map(|(a, b)| [a, b])
         .map(|v| LineVertex { position: mesh.positions[v as usize], color: EDGE_COLOR })
@@ -123,15 +123,24 @@ pub fn newell(mesh: &Mesh, face: &[u32]) -> [f32; 3] {
     n.normalize_or_zero().into()
 }
 
-fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
+/// Samples per pixel for the 3D scene: edges and faces are smoothed (anti-aliased) instead of stair-stepped.
+const MSAA: u32 = 4;
+
+fn depth_view(device: &wgpu::Device, w: u32, h: u32, samples: u32) -> wgpu::TextureView {
+    target_view(device, w, h, samples, DEPTH_FORMAT, "depth")
+}
+
+/// A render target of the window's size: the depth buffer, or the multisampled colour buffer the scene is drawn into
+/// before it is resolved to the screen.
+fn target_view(device: &wgpu::Device, w: u32, h: u32, samples: u32, format: wgpu::TextureFormat, label: &str) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {
-            label: Some("depth"),
+            label: Some(label),
             size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count: samples,
             dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         })
@@ -158,6 +167,9 @@ pub struct Renderer {
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
+    /// Samples per pixel actually used (MSAA, or 1 where the GPU cannot), and the multisampled colour target.
+    samples: u32,
+    msaa_view: Option<wgpu::TextureView>,
     faces: (wgpu::Buffer, u32),
     edges: (wgpu::Buffer, u32),
     egui: egui_wgpu::Renderer,
@@ -183,6 +195,14 @@ impl Renderer {
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .expect("surface not supported by adapter");
         surface.configure(&device, &config);
+        // 4x MSAA where the GPU offers it for the window's format (it nearly always does)
+        let samples = if adapter.get_texture_format_features(config.format).flags.sample_count_supported(MSAA)
+            && adapter.get_texture_format_features(DEPTH_FORMAT).flags.sample_count_supported(MSAA)
+        {
+            MSAA
+        } else {
+            1
+        };
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniforms"),
@@ -226,10 +246,11 @@ impl Renderer {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32],
         };
+        // a pair of line vertices (one segment) per instance: the shader turns it into a strip
         let line_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<LineVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4],
+            array_stride: 2 * std::mem::size_of::<LineVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4, 2 => Float32x3, 3 => Float32x4],
         };
         let pipeline = |label,
                         shader: &wgpu::ShaderModule,
@@ -255,7 +276,7 @@ impl Renderer {
                 }),
                 primitive: wgpu::PrimitiveState { topology, ..Default::default() },
                 depth_stencil: Some(depth),
-                multisample: Default::default(),
+                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
                 multiview: None,
                 cache: None,
             })
@@ -296,7 +317,7 @@ impl Renderer {
             "edges",
             &line_shader,
             &line_layout,
-            wgpu::PrimitiveTopology::LineList,
+            wgpu::PrimitiveTopology::TriangleList,
             wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: true,
@@ -305,14 +326,14 @@ impl Renderer {
                 bias: Default::default(),
             },
             "fs_main",
-            &opaque,
+            &blended,
         );
         // Back Edges: the edges that faces hide, dashed and grey
         let back_edge_pipeline = pipeline(
             "back edges",
             &line_shader,
             &line_layout,
-            wgpu::PrimitiveTopology::LineList,
+            wgpu::PrimitiveTopology::TriangleList,
             wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: false,
@@ -321,13 +342,13 @@ impl Renderer {
                 bias: Default::default(),
             },
             "fs_dashed",
-            &opaque,
+            &blended,
         );
         let overlay_pipeline = pipeline(
             "overlay",
             &line_shader,
             &line_layout,
-            wgpu::PrimitiveTopology::LineList,
+            wgpu::PrimitiveTopology::TriangleList,
             wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: false,
@@ -336,7 +357,7 @@ impl Renderer {
                 bias: Default::default(),
             },
             "fs_main",
-            &opaque,
+            &blended,
         );
 
         let empty = |device: &wgpu::Device| {
@@ -348,7 +369,9 @@ impl Renderer {
             })
         };
         Renderer {
-            depth_view: depth_view(&device, config.width, config.height),
+            depth_view: depth_view(&device, config.width, config.height, samples),
+            msaa_view: (samples > 1).then(|| target_view(&device, config.width, config.height, samples, config.format, "msaa")),
+            samples,
             faces: (empty(&device), 0),
             edges: (empty(&device), 0),
             egui: egui_wgpu::Renderer::new(&device, config.format, None, 1, false),
@@ -373,7 +396,8 @@ impl Renderer {
         self.config.width = w;
         self.config.height = h;
         self.surface.configure(&self.device, &self.config);
-        self.depth_view = depth_view(&self.device, w, h);
+        self.depth_view = depth_view(&self.device, w, h, self.samples);
+        self.msaa_view = (self.samples > 1).then(|| target_view(&self.device, w, h, self.samples, self.config.format, "msaa"));
     }
 
     /// Uploads the model after an edit, a selection change or a preview step.
@@ -394,7 +418,8 @@ impl Renderer {
 
     /// Draws one frame. `guides` (the axes) are hidden by geometry like edges;
     /// `overlay` lines (rubber bands) are drawn on top of everything.
-    pub fn render(&mut self, view_proj: Mat4, style: Style, guides: &[LineVertex], overlay: &[LineVertex], ui: UiFrame) {
+    /// `line_width` is in pixels (scaled for HiDPI by the caller).
+    pub fn render(&mut self, view_proj: Mat4, style: Style, line_width: f32, guides: &[LineVertex], overlay: &[LineVertex], ui: UiFrame) {
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
@@ -413,7 +438,7 @@ impl Renderer {
             FaceStyle::XRay => 2.0,
             _ => 0.0,
         };
-        let uniforms = Uniforms { view_proj: view_proj.to_cols_array_2d(), light: [0.4, -0.6, 0.9, 0.0], style: [mode, 0.0, 0.0, 0.0] };
+        let uniforms = Uniforms { view_proj: view_proj.to_cols_array_2d(), light: [0.4, -0.6, 0.9, 0.0], style: [mode, self.config.width as f32, self.config.height as f32, line_width] };
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
         let guide_buffer = self.buffer(bytemuck::cast_slice(guides));
         let overlay_buffer = self.buffer(bytemuck::cast_slice(overlay));
@@ -423,8 +448,9 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    // drawn multisampled, then resolved onto the screen
+                    view: self.msaa_view.as_ref().unwrap_or(&view),
+                    resolve_target: self.msaa_view.as_ref().map(|_| &view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.93, g: 0.94, b: 0.96, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
@@ -446,10 +472,10 @@ impl Renderer {
             }
             pass.set_pipeline(&self.edge_pipeline);
             pass.set_vertex_buffer(0, self.edges.0.slice(..));
-            pass.draw(0..self.edges.1, 0..1);
+            pass.draw(0..6, 0..self.edges.1 / 2);
             if style.back_edges && matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded) {
                 pass.set_pipeline(&self.back_edge_pipeline);
-                pass.draw(0..self.edges.1, 0..1);
+                pass.draw(0..6, 0..self.edges.1 / 2);
             }
             if style.faces == FaceStyle::XRay {
                 pass.set_pipeline(&self.xray_pipeline);
@@ -458,10 +484,10 @@ impl Renderer {
             }
             pass.set_pipeline(&self.edge_pipeline);
             pass.set_vertex_buffer(0, guide_buffer.slice(..));
-            pass.draw(0..guides.len() as u32, 0..1);
+            pass.draw(0..6, 0..guides.len() as u32 / 2);
             pass.set_pipeline(&self.overlay_pipeline);
             pass.set_vertex_buffer(0, overlay_buffer.slice(..));
-            pass.draw(0..overlay.len() as u32, 0..1);
+            pass.draw(0..6, 0..overlay.len() as u32 / 2);
         }
 
         let screen = egui_wgpu::ScreenDescriptor {

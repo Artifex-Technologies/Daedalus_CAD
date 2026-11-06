@@ -86,6 +86,15 @@ impl Model {
         self.edit(|m| m.erase_face(face))
     }
 
+    /// Line tool: one segment, as one undo step. Returns the face it closed, if it closed one.
+    pub fn add_line(&mut self, a: [f32; 3], b: [f32; 3]) -> Result<Option<usize>, TopologyError> {
+        self.edit(|m| m.add_line(a, b))
+    }
+
+    pub fn erase_line(&mut self, i: usize) -> Result<(), TopologyError> {
+        self.edit(|m| m.erase_line(i))
+    }
+
     /// Erases several faces as one undo step (Delete on a selection). Highest numbers first, so the others keep theirs.
     pub fn erase_faces(&mut self, faces: &[usize]) -> Result<(), TopologyError> {
         let mut faces = faces.to_vec();
@@ -256,5 +265,65 @@ mod tests {
         m.undo();
         m.add_rectangle([5.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
         assert!(!m.can_redo());
+    }
+
+    #[test]
+    fn lines_stay_until_they_close_a_face() {
+        let mut m = Model::new();
+        assert_eq!(m.add_line([0.0, 0.0, 0.0], [3.0, 0.0, 0.0]).unwrap(), None);
+        assert_eq!(m.add_line([3.0, 0.0, 0.0], [3.0, 2.0, 0.0]).unwrap(), None);
+        assert_eq!(m.add_line([3.0, 2.0, 0.0], [0.0, 2.0, 0.0]).unwrap(), None);
+        assert_eq!(m.mesh().lines.len(), 3, "three loose lines, no face yet");
+        assert_eq!(m.mesh().vertex_count(), 4, "corners are shared");
+        let face = m.add_line([0.0, 2.0, 0.0], [0.0, 0.0, 0.0]).unwrap().expect("the fourth line closes the face");
+        assert!(m.mesh().lines.is_empty(), "the lines became the face's edges");
+        assert_eq!(m.mesh().face_normal(face), [0.0, 0.0, 1.0], "a floor faces up");
+        m.push_pull(face, 1.0).unwrap();
+        assert!((m.mesh().signed_volume() - 6.0).abs() < 1e-4);
+        // each line was its own step
+        m.undo();
+        m.undo();
+        assert_eq!(m.mesh().lines.len(), 3);
+    }
+
+    #[test]
+    fn a_wall_from_lines_and_a_crooked_loop() {
+        let mut m = Model::new();
+        let pts = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 3.0], [0.0, 0.0, 3.0]];
+        let mut face = None;
+        for i in 0..4 {
+            face = m.add_line(pts[i], pts[(i + 1) % 4]).unwrap();
+        }
+        let n = m.mesh().face_normal(face.unwrap());
+        assert!((n[1] + 1.0).abs() < 1e-6, "an upright face looks to the front: {n:?}");
+
+        // four lines that do not lie in one plane stay lines
+        let mut m = Model::new();
+        let pts = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 2.0, 1.0], [0.0, 2.0, 0.0]];
+        for i in 0..4 {
+            assert_eq!(m.add_line(pts[i], pts[(i + 1) % 4]).unwrap(), None);
+        }
+        assert_eq!(m.mesh().lines.len(), 4);
+        assert_eq!(m.mesh().face_count(), 0);
+        // the same line twice is one line
+        m.add_line([0.0, 0.0, 0.0], [2.0, 0.0, 0.0]).unwrap();
+        assert_eq!(m.mesh().lines.len(), 4);
+    }
+
+    #[test]
+    fn erasing_a_face_leaves_its_edges_and_lines_survive_edits() {
+        let mut m = Model::new();
+        let f = m.add_rectangle([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+        m.erase_face(f).unwrap();
+        assert_eq!(m.mesh().face_count(), 0);
+        assert_eq!(m.mesh().lines.len(), 4, "SketchUp keeps the edges");
+        // a box elsewhere, pushed (which merges coplanar faces): the lines stay
+        let b = m.add_rectangle([5.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+        m.push_pull(b, 1.0).unwrap();
+        assert_eq!(m.mesh().lines.len(), 4);
+        let mesh = m.mesh().to_mesh();
+        assert!(mesh.lines.iter().all(|l| l.iter().all(|&v| mesh.positions[v as usize][0] < 2.0)), "still the old square");
+        m.erase_line(0).unwrap();
+        assert_eq!(m.mesh().lines.len(), 3);
     }
 }

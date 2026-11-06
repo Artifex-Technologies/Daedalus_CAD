@@ -56,11 +56,17 @@ pub struct HalfEdgeMesh {
     half_edges: Vec<HalfEdge>,
     /// One half-edge per face.
     faces: Vec<u32>,
+    /// Loose edges (lines that are no face's edge), as vertex pairs.
+    pub lines: Vec<[u32; 2]>,
 }
 
 impl HalfEdgeMesh {
     pub fn from_mesh(mesh: &Mesh) -> Result<Self, TopologyError> {
         let mut he = HalfEdgeMesh { positions: mesh.positions.clone(), ..Default::default() };
+        if let Some(&[a, b]) = mesh.lines.iter().find(|l| l.iter().any(|&v| v as usize >= mesh.positions.len())) {
+            return Err(TopologyError::VertexOutOfRange(a.max(b)));
+        }
+        he.lines = mesh.lines.clone();
         let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
 
         for (fi, face) in mesh.faces.iter().enumerate() {
@@ -100,7 +106,7 @@ impl HalfEdgeMesh {
     }
 
     pub fn to_mesh(&self) -> Mesh {
-        let mut m = Mesh { positions: self.positions.clone(), faces: Vec::new() };
+        let mut m = Mesh { positions: self.positions.clone(), faces: Vec::new(), lines: self.lines.clone() };
         for f in 0..self.faces.len() {
             m.faces.push(self.face_vertices(f));
         }
@@ -208,16 +214,143 @@ impl HalfEdgeMesh {
         Ok(face)
     }
 
-    /// Removes a face (SketchUp's Eraser on a face). Its edges stay where a
-    /// neighbour still uses them; vertices are kept so indices stay valid.
+    /// Removes a face (SketchUp's Eraser on a face). Its edges stay: as a
+    /// neighbour's edges, or else as loose lines. Vertices are kept so indices stay valid.
     pub fn erase_face(&mut self, face: usize) -> Result<(), TopologyError> {
         if face >= self.faces.len() {
             return Err(TopologyError::FaceOutOfRange(face));
         }
         let mut m = self.to_mesh();
-        m.faces.remove(face);
+        let ring = m.faces.remove(face);
+        let still: std::collections::HashSet<(u32, u32)> = m.edges().into_iter().collect();
+        for i in 0..ring.len() {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            if !still.contains(&(a.min(b), a.max(b))) {
+                m.lines.push([a, b]);
+            }
+        }
         *self = Self::from_mesh(&m)?;
         Ok(())
+    }
+
+    /// The vertex at `p` (within `tol`), or a new one there: lines drawn from a corner share it.
+    fn weld_vertex(&mut self, p: [f32; 3], tol: f32) -> u32 {
+        let found = self.positions.iter().position(|q| (0..3).all(|i| (q[i] - p[i]).abs() <= tol));
+        match found {
+            Some(i) => i as u32,
+            None => {
+                self.positions.push(p);
+                (self.positions.len() - 1) as u32
+            }
+        }
+    }
+
+    /// Line tool: a loose edge from `a` to `b`, sharing vertices with what is already there. When it closes a loop of loose
+    /// lines that lie in one plane, the loop becomes a face, as in SketchUp; that face's index is returned. A line that is
+    /// already there (or has no length) changes nothing.
+    pub fn add_line(&mut self, a: [f32; 3], b: [f32; 3]) -> Result<Option<usize>, TopologyError> {
+        let scale = a.iter().chain(b.iter()).fold(1.0f32, |m, c| m.max(c.abs()));
+        let tol = 1e-5 * scale;
+        let (ia, ib) = (self.weld_vertex(a, tol), self.weld_vertex(b, tol));
+        if ia == ib {
+            return Ok(None);
+        }
+        let key = (ia.min(ib), ia.max(ib));
+        let exists = self.lines.iter().any(|&[x, y]| (x.min(y), x.max(y)) == key) || self.to_mesh().edges().binary_search(&key).is_ok();
+        if exists {
+            return Ok(None);
+        }
+        self.lines.push([ia, ib]);
+        Ok(self.close_loop(ia, ib, tol * 10.0))
+    }
+
+    /// Erases loose line `i` (the Eraser on a line). Its vertices stay so indices stay valid.
+    pub fn erase_line(&mut self, i: usize) -> Result<(), TopologyError> {
+        if i >= self.lines.len() {
+            return Err(TopologyError::FaceOutOfRange(i));
+        }
+        self.lines.remove(i);
+        Ok(())
+    }
+
+    /// After the line `a`-`b` was added: the shortest path of other loose lines from `b` back to `a`, if it lies in one
+    /// plane with at least three corners, becomes a face (its lines turn into the face's edges).
+    fn close_loop(&mut self, a: u32, b: u32, tol: f32) -> Option<usize> {
+        let new_line = self.lines.len() - 1;
+        let mut adjacent: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
+        for (i, &[x, y]) in self.lines.iter().enumerate() {
+            if i != new_line {
+                adjacent.entry(x).or_default().push((y, i));
+                adjacent.entry(y).or_default().push((x, i));
+            }
+        }
+        // breadth first from b to a
+        let mut came: HashMap<u32, (u32, usize)> = HashMap::new();
+        let mut queue = std::collections::VecDeque::from([b]);
+        came.insert(b, (b, usize::MAX));
+        while let Some(v) = queue.pop_front() {
+            if v == a {
+                break;
+            }
+            for &(w, line) in adjacent.get(&v).map(|n| n.as_slice()).unwrap_or(&[]) {
+                if !came.contains_key(&w) {
+                    came.insert(w, (v, line));
+                    queue.push_back(w);
+                }
+            }
+        }
+        if !came.contains_key(&a) {
+            return None;
+        }
+        let (mut ring, mut used) = (vec![a], vec![new_line]);
+        let mut v = a;
+        while v != b {
+            let (prev, line) = came[&v];
+            ring.push(prev);
+            used.push(line);
+            v = prev;
+        }
+        if ring.len() < 3 {
+            return None;
+        }
+        // one plane: every corner within tol of the plane through the first, by the ring's normal
+        let pts: Vec<[f32; 3]> = ring.iter().map(|&v| self.positions[v as usize]).collect();
+        let mut n = [0.0f32; 3];
+        for i in 0..pts.len() {
+            let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+            n[0] += (p[1] - q[1]) * (p[2] + q[2]);
+            n[1] += (p[2] - q[2]) * (p[0] + q[0]);
+            n[2] += (p[0] - q[0]) * (p[1] + q[1]);
+        }
+        let len = dot(n, n).sqrt();
+        if len < 1e-12 {
+            return None;
+        }
+        let n = n.map(|c| c / len);
+        if pts.iter().any(|&p| dot(sub(p, pts[0]), n).abs() > tol.max(1e-6)) {
+            return None;
+        }
+        // which way it faces: up if it lies flat, else toward the front (-Y), else toward +X
+        let want = if n[2].abs() > 0.1 { n[2] > 0.0 } else if n[1].abs() > 0.1 { n[1] < 0.0 } else { n[0] > 0.0 };
+        if !want {
+            ring.reverse();
+        }
+        used.sort_unstable_by(|x, y| y.cmp(x));
+        let mut m = self.to_mesh();
+        for &i in &used {
+            m.lines.remove(i);
+        }
+        // the other winding when this one runs the same way as a neighbouring face's edge
+        for attempt in 0..2 {
+            let mut trial = m.clone();
+            let face: Vec<u32> = if attempt == 0 { ring.clone() } else { ring.iter().rev().copied().collect() };
+            trial.faces.push(face);
+            if let Ok(h) = Self::from_mesh(&trial) {
+                *self = h;
+                return Some(self.face_count() - 1);
+            }
+        }
+        None
     }
 
     /// Extrudes `face` along its normal by `distance` (negative pushes inward).
