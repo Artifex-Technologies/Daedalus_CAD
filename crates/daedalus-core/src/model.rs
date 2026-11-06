@@ -86,6 +86,14 @@ impl Model {
         self.edit(|m| m.erase_face(face))
     }
 
+    /// Erases several faces as one undo step (Delete on a selection). Highest numbers first, so the others keep theirs.
+    pub fn erase_faces(&mut self, faces: &[usize]) -> Result<(), TopologyError> {
+        let mut faces = faces.to_vec();
+        faces.sort_unstable_by(|a, b| b.cmp(a));
+        faces.dedup();
+        self.edit(|m| faces.iter().try_for_each(|&f| m.erase_face(f)))
+    }
+
     /// Pushes or pulls a face, then merges coplanar faces as SketchUp does (pushing a face of a solid again leaves no seam).
     /// Returns the pushed face's index after the merge.
     pub fn push_pull(&mut self, face: usize, distance: f32) -> Result<usize, TopologyError> {
@@ -108,6 +116,19 @@ impl Model {
             self.redo.clear();
         }
         Ok(n)
+    }
+
+    /// Move, Rotate and Scale: puts each of `vertices` where `f` sends it, as one undo step. Faces keep their numbers.
+    /// Faces that share some of the vertices but not all of them stretch to follow, as in SketchUp.
+    pub fn transform_vertices(&mut self, vertices: &[u32], f: impl Fn([f32; 3]) -> [f32; 3]) -> Result<(), TopologyError> {
+        self.edit(|m| {
+            for &v in vertices {
+                if let Some(p) = m.positions.get_mut(v as usize) {
+                    *p = f(*p);
+                }
+            }
+            Ok(())
+        })
     }
 
     pub fn split_face(&mut self, face: usize, a: u32, b: u32) -> Result<usize, TopologyError> {

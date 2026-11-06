@@ -1,6 +1,8 @@
 struct Uniforms {
     view_proj: mat4x4<f32>,
     light: vec4<f32>,
+    // x: face style (0 shaded, 1 hidden line, 2 X-ray)
+    style: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -36,5 +38,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let flagged = vec3<f32>(0.90, 0.25, 0.22);
     // highlight: 0 = normal, 1 = selected, 2 = flagged by the solid inspector
     let tint = select(selected, flagged, in.highlight > 1.5);
-    return vec4<f32>(mix(base, tint, min(in.highlight, 1.0)) * shade, 1.0);
+    let lit = mix(base, tint, min(in.highlight, 1.0)) * shade;
+    if (u.style.x > 1.5) {
+        // X-ray: see-through
+        return vec4<f32>(lit, 0.45);
+    }
+    if (u.style.x > 0.5) {
+        // hidden line: faces in the background colour, unlit (a selection still shows)
+        let paper = vec3<f32>(0.93, 0.94, 0.96);
+        return vec4<f32>(mix(paper, tint, min(in.highlight, 1.0) * 0.5), 1.0);
+    }
+    return vec4<f32>(lit, 1.0);
 }

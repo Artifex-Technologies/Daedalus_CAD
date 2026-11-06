@@ -6,7 +6,8 @@
 //! the title bar, as in VS Code: drag its empty part to move the window, double-click it to
 //! maximize, and the window buttons sit at its right end. The edges resize (main.rs, `frame`).
 
-use crate::icons::{self, Icon};
+use crate::icons::{self, Icon, Planned};
+use crate::render::{FaceStyle, Style};
 use crate::tools::{Snap, Tool, AXIS_COLORS};
 use egui::{Align, Color32, Layout, Pos2, RichText, Stroke};
 
@@ -16,7 +17,17 @@ pub enum UiAction {
     ZoomExtents,
     Top,
     Iso,
+    Front,
+    Back,
+    Right,
+    Left,
+    /// Camera > Previous: back to the view before the last change.
+    Previous,
     ToggleOrtho,
+    FaceStyle(FaceStyle),
+    BackEdges,
+    SelectAll,
+    DeleteGuides,
     Undo,
     Redo,
     Inspect,
@@ -47,6 +58,9 @@ pub struct UiView<'a> {
     pub ortho: bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    pub style: Style,
+    /// Camera > Previous has a view to go back to.
+    pub can_go_back: bool,
     pub status: &'a str,
     /// Last error or note, shown instead of the hint until the next action.
     pub message: Option<&'a str>,
@@ -99,26 +113,65 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     actions.push(UiAction::Redo);
                     ui.close_menu();
                 }
+                ui.separator();
+                if ui.add(egui::Button::new("Select All").shortcut_text("Ctrl+A")).clicked() {
+                    actions.push(UiAction::SelectAll);
+                    ui.close_menu();
+                }
+                if ui.button("Delete Guides").clicked() {
+                    actions.push(UiAction::DeleteGuides);
+                    ui.close_menu();
+                }
             });
             ui.menu_button("Camera", |ui| {
-                for (label, action) in [("Top", UiAction::Top), ("Iso", UiAction::Iso)] {
-                    if ui.button(label).clicked() {
-                        actions.push(action);
-                        ui.close_menu();
-                    }
+                if ui.add_enabled(v.can_go_back, egui::Button::new("Previous")).clicked() {
+                    actions.push(UiAction::Previous);
+                    ui.close_menu();
                 }
+                ui.menu_button("Standard Views", |ui| {
+                    for (label, action) in [
+                        ("Top", UiAction::Top),
+                        ("Front", UiAction::Front),
+                        ("Right", UiAction::Right),
+                        ("Back", UiAction::Back),
+                        ("Left", UiAction::Left),
+                        ("Iso", UiAction::Iso),
+                    ] {
+                        if ui.button(label).clicked() {
+                            actions.push(action);
+                            ui.close_menu();
+                        }
+                    }
+                });
                 ui.separator();
                 let mut ortho = v.ortho;
                 if ui.checkbox(&mut ortho, "Parallel Projection").clicked() {
                     actions.push(UiAction::ToggleOrtho);
                     ui.close_menu();
                 }
+                ui.separator();
+                tool_items(ui, v, &[Tool::Orbit, Tool::Pan, Tool::Zoom, Tool::ZoomWindow], &mut actions);
                 if ui.add(egui::Button::new("Zoom Extents").shortcut_text("Shift+Z")).clicked() {
                     actions.push(UiAction::ZoomExtents);
                     ui.close_menu();
                 }
+                ui.separator();
+                tool_items(ui, v, &[Tool::PositionCamera, Tool::Walk, Tool::LookAround], &mut actions);
             });
             ui.menu_button("View", |ui| {
+                ui.label(egui::RichText::new("Face Style").weak());
+                for f in FaceStyle::ALL {
+                    if ui.radio(v.style.faces == f, f.label()).clicked() {
+                        actions.push(UiAction::FaceStyle(f));
+                        ui.close_menu();
+                    }
+                }
+                let mut back = v.style.back_edges;
+                if ui.checkbox(&mut back, "Back Edges").clicked() {
+                    actions.push(UiAction::BackEdges);
+                    ui.close_menu();
+                }
+                ui.separator();
                 ui.label(egui::RichText::new("Toolbar").weak());
                 if ui.radio(!v.toolbar_left, "Across the top").clicked() {
                     actions.push(UiAction::ToolbarLeft(false));
@@ -139,9 +192,17 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 ui.separator();
                 ui.label(egui::RichText::new("Type any unit whatever is shown: 300mm, 1.2m, 4' 6\"").weak());
             });
-            ui.menu_button("Draw", |ui| tool_items(ui, v, &[Tool::Line, Tool::Rectangle, Tool::Circle, Tool::Polygon], &mut actions));
+            ui.menu_button("Draw", |ui| {
+                tool_items(ui, v, &[Tool::Line], &mut actions);
+                ui.separator();
+                tool_items(ui, v, &[Tool::Rectangle, Tool::RotatedRectangle, Tool::Circle, Tool::Polygon, Tool::Pie], &mut actions);
+            });
             ui.menu_button("Tools", |ui| {
-                tool_items(ui, v, &[Tool::Select, Tool::Eraser, Tool::PushPull], &mut actions);
+                tool_items(ui, v, &[Tool::Select, Tool::Eraser], &mut actions);
+                ui.separator();
+                tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull], &mut actions);
+                ui.separator();
+                tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor], &mut actions);
                 ui.separator();
                 if ui.add(egui::Button::new("Solid Inspector").shortcut_text("I")).clicked() {
                     actions.push(UiAction::Inspect);
@@ -164,13 +225,43 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
 
     // the toolbar: icons in groups, across the top or down the left side (View > Toolbar)
     if v.toolbar_left {
-        egui::SidePanel::left("toolbar").resizable(false).exact_width(ICON + 14.0).show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.vertical_centered(|ui| toolbar(ui, v, &mut actions));
+        // SketchUp's Large Tool Set: two columns, in its order; views and styles below
+        egui::SidePanel::left("toolbar").resizable(false).exact_width(2.0 * ICON + 22.0).show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
+                for (gi, group) in toolbar_groups().iter().enumerate() {
+                    if gi > 0 {
+                        ui.add_space(2.0);
+                        ui.separator();
+                        ui.add_space(2.0);
+                    }
+                    for pair in group.chunks(2) {
+                        ui.horizontal(|ui| {
+                            for &slot in pair {
+                                toolbar_slot(ui, v, slot, &mut actions);
+                            }
+                        });
+                    }
+                }
+            });
         });
     } else {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| toolbar(ui, v, &mut actions));
+            ui.horizontal_wrapped(|ui| {
+                for (gi, group) in toolbar_groups().iter().enumerate() {
+                    if gi > 0 {
+                        ui.add_space(3.0);
+                        ui.separator();
+                        ui.add_space(3.0);
+                    }
+                    for &slot in group.iter() {
+                        if !matches!(slot, Slot::Empty) {
+                            toolbar_slot(ui, v, slot, &mut actions);
+                        }
+                    }
+                }
+            });
         });
     }
 
@@ -205,6 +296,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8)
             }
             Snap::InPlane | Snap::Ground => Color32::DARK_GRAY,
+            Snap::OnGuide => Color32::from_rgb(90, 90, 100),
         };
         match snap {
             Snap::Endpoint | Snap::Midpoint => {
@@ -294,6 +386,10 @@ const ICON: f32 = 30.0;
 fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, enabled: bool) -> bool {
     let (rect, r) = ui.allocate_exact_size(egui::vec2(ICON, ICON), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
     let visuals = ui.visuals();
+    // the icons are drawn in dark ink, as SketchUp's: on a dark panel each sits on a light tile
+    if visuals.dark_mode {
+        ui.painter().rect_filled(rect, 5.0, if enabled { Color32::from_gray(214) } else { Color32::from_gray(120) });
+    }
     if selected {
         ui.painter().rect_filled(rect, 5.0, visuals.selection.bg_fill.gamma_multiply(0.55));
         ui.painter().rect_stroke(rect, 5.0, Stroke::new(1.0_f32, visuals.selection.stroke.color), egui::StrokeKind::Inside);
@@ -305,36 +401,105 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, enabled: bool) -> 
     enabled && r.clicked()
 }
 
-fn toolbar(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
-    let gap = |ui: &mut egui::Ui| {
-        ui.add_space(3.0);
-        ui.separator();
-        ui.add_space(3.0);
-    };
-    for group in [
-        &[Tool::Select, Tool::Eraser][..],
-        &[Tool::Line, Tool::Rectangle, Tool::Circle, Tool::Polygon],
-        &[Tool::PushPull],
-        &[Tool::Orbit, Tool::Pan, Tool::Zoom],
-    ] {
-        for &tool in group {
+/// One place in the toolbar.
+#[derive(Debug, Clone, Copy)]
+enum Slot {
+    Tool(Tool),
+    Act(Icon, UiAction),
+    Planned(Planned),
+    Empty,
+}
+
+/// The toolbar, in groups. The first group is SketchUp's Large Tool Set in its order (pairs of two, left then right
+/// column), with tools still to come greyed out in their place; then the camera views and the face styles.
+fn toolbar_groups() -> [Vec<Slot>; 3] {
+    use Slot::{Act, Empty, Planned as P};
+    let t = Slot::Tool;
+    [
+        vec![
+            t(Tool::Select),
+            P(Planned::MakeComponent),
+            P(Planned::PaintBucket),
+            t(Tool::Eraser),
+            t(Tool::Line),
+            P(Planned::Freehand),
+            t(Tool::Rectangle),
+            t(Tool::RotatedRectangle),
+            t(Tool::Circle),
+            t(Tool::Polygon),
+            P(Planned::Arc),
+            P(Planned::TwoPointArc),
+            P(Planned::ThreePointArc),
+            t(Tool::Pie),
+            t(Tool::Move),
+            t(Tool::PushPull),
+            t(Tool::Rotate),
+            P(Planned::FollowMe),
+            t(Tool::Scale),
+            P(Planned::Offset),
+            t(Tool::TapeMeasure),
+            P(Planned::Dimensions),
+            t(Tool::Protractor),
+            P(Planned::Text),
+            P(Planned::Axes),
+            P(Planned::Text3D),
+            t(Tool::Orbit),
+            t(Tool::Pan),
+            t(Tool::Zoom),
+            t(Tool::ZoomWindow),
+            Act(Icon::ZoomExtents, UiAction::ZoomExtents),
+            Act(Icon::Previous, UiAction::Previous),
+            t(Tool::PositionCamera),
+            t(Tool::Walk),
+            t(Tool::LookAround),
+            P(Planned::SectionPlane),
+        ],
+        vec![
+            Act(Icon::Iso, UiAction::Iso),
+            Act(Icon::Top, UiAction::Top),
+            Act(Icon::Front, UiAction::Front),
+            Act(Icon::Right, UiAction::Right),
+            Act(Icon::Back, UiAction::Back),
+            Act(Icon::Left, UiAction::Left),
+            Act(Icon::Parallel, UiAction::ToggleOrtho),
+            Empty,
+        ],
+        vec![
+            Act(Icon::Style(FaceStyle::XRay), UiAction::FaceStyle(FaceStyle::XRay)),
+            Act(Icon::BackEdges, UiAction::BackEdges),
+            Act(Icon::Style(FaceStyle::Wireframe), UiAction::FaceStyle(FaceStyle::Wireframe)),
+            Act(Icon::Style(FaceStyle::HiddenLine), UiAction::FaceStyle(FaceStyle::HiddenLine)),
+            Act(Icon::Style(FaceStyle::Shaded), UiAction::FaceStyle(FaceStyle::Shaded)),
+            Empty,
+        ],
+    ]
+}
+
+fn toolbar_slot(ui: &mut egui::Ui, v: &UiView, slot: Slot, actions: &mut Vec<UiAction>) {
+    match slot {
+        Slot::Tool(tool) => {
             if icon_button(ui, Icon::Tool(tool), v.tool == tool, v.editable || !tool.edits()) {
                 actions.push(UiAction::Tool(tool));
             }
         }
-        gap(ui);
-    }
-    if icon_button(ui, Icon::ZoomExtents, false, true) {
-        actions.push(UiAction::ZoomExtents);
-    }
-    if icon_button(ui, Icon::Top, false, true) {
-        actions.push(UiAction::Top);
-    }
-    if icon_button(ui, Icon::Iso, false, true) {
-        actions.push(UiAction::Iso);
-    }
-    if icon_button(ui, Icon::Parallel, v.ortho, true) {
-        actions.push(UiAction::ToggleOrtho);
+        Slot::Act(icon, action) => {
+            let selected = match action {
+                UiAction::ToggleOrtho => v.ortho,
+                UiAction::FaceStyle(f) => v.style.faces == f,
+                UiAction::BackEdges => v.style.back_edges,
+                _ => false,
+            };
+            let enabled = action != UiAction::Previous || v.can_go_back;
+            if icon_button(ui, icon, selected, enabled) {
+                actions.push(action);
+            }
+        }
+        Slot::Planned(p) => {
+            icon_button(ui, Icon::Planned(p), false, false);
+        }
+        Slot::Empty => {
+            ui.allocate_exact_size(egui::vec2(ICON, ICON), egui::Sense::hover());
+        }
     }
 }
 

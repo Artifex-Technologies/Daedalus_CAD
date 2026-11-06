@@ -1,5 +1,7 @@
 //! GPU side of the viewport: shaded faces, edges drawn over them, overlay
-//! lines (rubber bands, axes) and the egui interface on top.
+//! lines (rubber bands, axes) and the egui interface on top. The face style
+//! (SketchUp's Style toolbar) and Back Edges change how faces and hidden edges
+//! are drawn.
 
 use bytemuck::{Pod, Zeroable};
 use daedalus_core::Mesh;
@@ -32,14 +34,62 @@ pub struct LineVertex {
 struct Uniforms {
     view_proj: [[f32; 4]; 4],
     light: [f32; 4],
+    /// x: how faces are drawn (0 shaded, 1 hidden line, 2 X-ray); y, z, w unused.
+    style: [f32; 4],
+}
+
+/// How faces are drawn, as SketchUp's Style toolbar offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceStyle {
+    /// Edges only, every one of them, no faces.
+    Wireframe,
+    /// Faces in the background colour: hidden edges are hidden, nothing is shaded.
+    HiddenLine,
+    /// Lit faces (the default).
+    Shaded,
+    /// Faces see-through, so edges behind them show.
+    XRay,
+}
+
+impl FaceStyle {
+    pub const ALL: [FaceStyle; 4] = [FaceStyle::Wireframe, FaceStyle::HiddenLine, FaceStyle::Shaded, FaceStyle::XRay];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FaceStyle::Wireframe => "Wireframe",
+            FaceStyle::HiddenLine => "Hidden Line",
+            FaceStyle::Shaded => "Shaded",
+            FaceStyle::XRay => "X-Ray",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            FaceStyle::Wireframe => "wireframe",
+            FaceStyle::HiddenLine => "hidden-line",
+            FaceStyle::Shaded => "shaded",
+            FaceStyle::XRay => "x-ray",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<FaceStyle> {
+        FaceStyle::ALL.into_iter().find(|s| s.key() == k)
+    }
+}
+
+/// The display style: the face style, and whether edges hidden behind faces are drawn dashed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Style {
+    pub faces: FaceStyle,
+    pub back_edges: bool,
 }
 
 /// Flat-shaded triangle list: every face gets its own vertices and normal.
-fn face_vertices(mesh: &Mesh, selected: Option<usize>, flagged: &[usize]) -> Vec<Vertex> {
+fn face_vertices(mesh: &Mesh, selected: &[usize], flagged: &[usize]) -> Vec<Vertex> {
     let mut out = Vec::new();
     for (fi, face) in mesh.faces.iter().enumerate() {
         let normal = newell(mesh, face);
-        let highlight = if selected == Some(fi) {
+        let highlight = if selected.binary_search(&fi).is_ok() {
             1.0
         } else if flagged.binary_search(&fi).is_ok() {
             2.0
@@ -101,7 +151,9 @@ pub struct Renderer {
     queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     face_pipeline: wgpu::RenderPipeline,
+    xray_pipeline: wgpu::RenderPipeline,
     edge_pipeline: wgpu::RenderPipeline,
+    back_edge_pipeline: wgpu::RenderPipeline,
     overlay_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -164,11 +216,11 @@ impl Renderer {
 
         let face_shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let line_shader = device.create_shader_module(wgpu::include_wgsl!("lines.wgsl"));
-        let target = [Some(wgpu::ColorTargetState {
-            format: config.format,
-            blend: Some(wgpu::BlendState::REPLACE),
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
+        let target = |blend| {
+            [Some(wgpu::ColorTargetState { format: config.format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })]
+        };
+        let opaque = target(wgpu::BlendState::REPLACE);
+        let blended = target(wgpu::BlendState::ALPHA_BLENDING);
         let face_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -179,7 +231,13 @@ impl Renderer {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4],
         };
-        let pipeline = |label, shader: &wgpu::ShaderModule, buffer: &wgpu::VertexBufferLayout, topology, depth| {
+        let pipeline = |label,
+                        shader: &wgpu::ShaderModule,
+                        buffer: &wgpu::VertexBufferLayout,
+                        topology,
+                        depth,
+                        fs: &'static str,
+                        targets: &[Option<wgpu::ColorTargetState>]| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&layout),
@@ -191,9 +249,9 @@ impl Renderer {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shader,
-                    entry_point: Some("fs_main"),
+                    entry_point: Some(fs),
                     compilation_options: Default::default(),
-                    targets: &target,
+                    targets,
                 }),
                 primitive: wgpu::PrimitiveState { topology, ..Default::default() },
                 depth_stencil: Some(depth),
@@ -215,6 +273,24 @@ impl Renderer {
                 stencil: Default::default(),
                 bias: wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 },
             },
+            "fs_main",
+            &opaque,
+        );
+        // X-ray faces blend over what is behind them and hide nothing
+        let xray_pipeline = pipeline(
+            "x-ray faces",
+            &face_shader,
+            &face_layout,
+            wgpu::PrimitiveTopology::TriangleList,
+            wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 },
+            },
+            "fs_main",
+            &blended,
         );
         let edge_pipeline = pipeline(
             "edges",
@@ -228,6 +304,24 @@ impl Renderer {
                 stencil: Default::default(),
                 bias: Default::default(),
             },
+            "fs_main",
+            &opaque,
+        );
+        // Back Edges: the edges that faces hide, dashed and grey
+        let back_edge_pipeline = pipeline(
+            "back edges",
+            &line_shader,
+            &line_layout,
+            wgpu::PrimitiveTopology::LineList,
+            wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Greater,
+                stencil: Default::default(),
+                bias: Default::default(),
+            },
+            "fs_dashed",
+            &opaque,
         );
         let overlay_pipeline = pipeline(
             "overlay",
@@ -241,6 +335,8 @@ impl Renderer {
                 stencil: Default::default(),
                 bias: Default::default(),
             },
+            "fs_main",
+            &opaque,
         );
 
         let empty = |device: &wgpu::Device| {
@@ -261,7 +357,9 @@ impl Renderer {
             queue,
             config,
             face_pipeline,
+            xray_pipeline,
             edge_pipeline,
+            back_edge_pipeline,
             overlay_pipeline,
             uniform_buffer,
             bind_group,
@@ -279,7 +377,7 @@ impl Renderer {
     }
 
     /// Uploads the model after an edit, a selection change or a preview step.
-    pub fn set_scene(&mut self, mesh: &Mesh, selected: Option<usize>, flagged: &[usize]) {
+    pub fn set_scene(&mut self, mesh: &Mesh, selected: &[usize], flagged: &[usize]) {
         let faces = face_vertices(mesh, selected, flagged);
         let edges = edge_vertices(mesh);
         self.faces = (self.buffer(bytemuck::cast_slice(&faces)), faces.len() as u32);
@@ -296,7 +394,7 @@ impl Renderer {
 
     /// Draws one frame. `guides` (the axes) are hidden by geometry like edges;
     /// `overlay` lines (rubber bands) are drawn on top of everything.
-    pub fn render(&mut self, view_proj: Mat4, guides: &[LineVertex], overlay: &[LineVertex], ui: UiFrame) {
+    pub fn render(&mut self, view_proj: Mat4, style: Style, guides: &[LineVertex], overlay: &[LineVertex], ui: UiFrame) {
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
@@ -310,7 +408,12 @@ impl Renderer {
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let uniforms = Uniforms { view_proj: view_proj.to_cols_array_2d(), light: [0.4, -0.6, 0.9, 0.0] };
+        let mode = match style.faces {
+            FaceStyle::HiddenLine => 1.0,
+            FaceStyle::XRay => 2.0,
+            _ => 0.0,
+        };
+        let uniforms = Uniforms { view_proj: view_proj.to_cols_array_2d(), light: [0.4, -0.6, 0.9, 0.0], style: [mode, 0.0, 0.0, 0.0] };
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
         let guide_buffer = self.buffer(bytemuck::cast_slice(guides));
         let overlay_buffer = self.buffer(bytemuck::cast_slice(overlay));
@@ -336,12 +439,24 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_pipeline(&self.face_pipeline);
-            pass.set_vertex_buffer(0, self.faces.0.slice(..));
-            pass.draw(0..self.faces.1, 0..1);
+            if matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded) {
+                pass.set_pipeline(&self.face_pipeline);
+                pass.set_vertex_buffer(0, self.faces.0.slice(..));
+                pass.draw(0..self.faces.1, 0..1);
+            }
             pass.set_pipeline(&self.edge_pipeline);
             pass.set_vertex_buffer(0, self.edges.0.slice(..));
             pass.draw(0..self.edges.1, 0..1);
+            if style.back_edges && matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded) {
+                pass.set_pipeline(&self.back_edge_pipeline);
+                pass.draw(0..self.edges.1, 0..1);
+            }
+            if style.faces == FaceStyle::XRay {
+                pass.set_pipeline(&self.xray_pipeline);
+                pass.set_vertex_buffer(0, self.faces.0.slice(..));
+                pass.draw(0..self.faces.1, 0..1);
+            }
+            pass.set_pipeline(&self.edge_pipeline);
             pass.set_vertex_buffer(0, guide_buffer.slice(..));
             pass.draw(0..guides.len() as u32, 0..1);
             pass.set_pipeline(&self.overlay_pipeline);

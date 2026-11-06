@@ -6,6 +6,9 @@
 /// SketchUp's default number of segments for a circle.
 pub const DEFAULT_CIRCLE_SEGMENTS: u32 = 24;
 
+/// SketchUp's default number of segments for an arc (and a pie).
+pub const DEFAULT_ARC_SEGMENTS: u32 = 12;
+
 const EPS: f32 = 1e-6;
 
 /// A drawing plane: `origin` plus orthonormal in-plane axes `u`, `v` with
@@ -91,6 +94,61 @@ pub fn regular_polygon(plane: &Plane, center: [f32; 3], rim: [f32; 3], sides: u3
             })
             .collect(),
     )
+}
+
+/// Rotated Rectangle: the first side from `a` to `b` (any direction in the plane), the opposite side through `c`'s
+/// distance from that line, on `c`'s side. None if a side has no length.
+pub fn rotated_rectangle(plane: &Plane, a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<Vec<[f32; 3]>> {
+    let (la, lb, lc) = (plane.to_local(a), plane.to_local(b), plane.to_local(c));
+    let (dx, dy) = (lb[0] - la[0], lb[1] - la[1]);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < EPS {
+        return None;
+    }
+    // the side's left-hand normal in the plane, and how far c lies along it
+    let (nx, ny) = (-dy / len, dx / len);
+    let h = (lc[0] - la[0]) * nx + (lc[1] - la[1]) * ny;
+    if h.abs() < EPS {
+        return None;
+    }
+    let w = |x: f32, y: f32| plane.to_world(x, y);
+    let pts = vec![w(la[0], la[1]), w(lb[0], lb[1]), w(lb[0] + nx * h, lb[1] + ny * h), w(la[0] + nx * h, la[1] + ny * h)];
+    // counter-clockwise around the normal: reversed when c is on the right of a -> b
+    Some(if h > 0.0 { pts } else { pts.into_iter().rev().collect() })
+}
+
+/// The angle (radians, counter-clockwise about the plane normal) from the direction `center -> from` to `center -> to`,
+/// in (-pi, pi]. None when either point is on the centre.
+pub fn angle_between(plane: &Plane, center: [f32; 3], from: [f32; 3], to: [f32; 3]) -> Option<f32> {
+    let (c, f, t) = (plane.to_local(center), plane.to_local(from), plane.to_local(to));
+    let (a, b) = ([f[0] - c[0], f[1] - c[1]], [t[0] - c[0], t[1] - c[1]]);
+    if a[0].hypot(a[1]) < EPS || b[0].hypot(b[1]) < EPS {
+        return None;
+    }
+    Some((a[0] * b[1] - a[1] * b[0]).atan2(a[0] * b[0] + a[1] * b[1]))
+}
+
+/// Pie: the slice of a circle around `center`, starting at `start` (which sets the radius) and turning `sweep` radians
+/// counter-clockwise about the plane normal (negative: clockwise), in `segments` straight pieces. None for no radius or
+/// no sweep.
+pub fn pie(plane: &Plane, center: [f32; 3], start: [f32; 3], sweep: f32, segments: u32) -> Option<Vec<[f32; 3]>> {
+    let (c, s) = (plane.to_local(center), plane.to_local(start));
+    let radius = (s[0] - c[0]).hypot(s[1] - c[1]);
+    if radius < EPS || sweep.abs() < 1e-4 || segments == 0 {
+        return None;
+    }
+    let sweep = sweep.clamp(-std::f32::consts::TAU, std::f32::consts::TAU);
+    let a0 = (s[1] - c[1]).atan2(s[0] - c[0]);
+    let mut pts = vec![center];
+    pts.extend((0..=segments).map(|i| {
+        let a = a0 + sweep * i as f32 / segments as f32;
+        plane.to_world(c[0] + radius * a.cos(), c[1] + radius * a.sin())
+    }));
+    // a full turn ends on its start: no zero-length side
+    if (sweep.abs() - std::f32::consts::TAU).abs() < 1e-4 {
+        pts.pop();
+    }
+    Some(if sweep > 0.0 { pts } else { pts.into_iter().rev().collect() })
 }
 
 fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -188,6 +246,39 @@ mod tests {
         h.push_pull(0, 1.0).unwrap();
         assert!((h.signed_volume() - expected).abs() < 1e-3);
         assert!(close(h.face_normal(h.face_count() - 1), [0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn rotated_rectangle_faces_up_on_either_side() {
+        let g = Plane::ground();
+        let (a, b) = ([0.0, 0.0, 0.0], [3.0, 4.0, 0.0]); // a 5 m side at an angle
+        for c in [[-4.0, 3.0, 0.0], [4.0, -3.0, 0.0]] {
+            let r = rotated_rectangle(&g, a, b, c).unwrap();
+            let mut h = face_of(&r);
+            assert!(close(h.face_normal(0), [0.0, 0.0, 1.0]));
+            h.push_pull(0, 1.0).unwrap();
+            assert!((h.signed_volume() - 5.0 * 5.0).abs() < 1e-3, "5 x 5 x 1");
+        }
+        assert!(rotated_rectangle(&g, a, b, [6.0, 8.0, 0.0]).is_none(), "c on the first side's line");
+    }
+
+    #[test]
+    fn pie_is_a_slice_with_the_right_area() {
+        let g = Plane::ground();
+        // a quarter of a 2 m circle, either way round
+        for sweep in [std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_2] {
+            let p = pie(&g, [0.0; 3], [2.0, 0.0, 0.0], sweep, 12).unwrap();
+            assert_eq!(p.len(), 14, "centre plus 13 points on the arc");
+            let mut h = face_of(&p);
+            assert!(close(h.face_normal(0), [0.0, 0.0, 1.0]));
+            h.push_pull(0, 1.0).unwrap();
+            // 12 triangles of the slice: 12 * 1/2 r^2 sin(step)
+            let expected = 12.0 * 0.5 * 4.0 * (std::f32::consts::FRAC_PI_2 / 12.0).sin();
+            assert!((h.signed_volume() - expected).abs() < 1e-3);
+        }
+        assert!(pie(&g, [0.0; 3], [0.0; 3], 1.0, 12).is_none());
+        let a = angle_between(&g, [0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+        assert!((a - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
     }
 
     #[test]

@@ -29,7 +29,8 @@ Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/c
   `tools.rs` is the GPU-free tool state machine (unit-tested); `render.rs` GPU; `ui.rs` egui chrome; `main.rs` events,
   snapping and the document (open, save, unsaved changes); `filedlg.rs` the built-in file browser (no GTK/Qt dialog);
   `icons.rs` the toolbar's vector icons (SketchUp-style pictures, no image files); `settings.rs` units and toolbar side;
-  `frame.rs` the window's own frame on Linux (resize edges; the menu bar is the title bar, see below)
+  `frame.rs` the window's own frame on Linux (resize edges; the menu bar is the title bar, see below); `theme.rs` light or
+  dark chrome from the desktop (XDG portal over zbus on Linux, winit on Windows)
 
 ## Conventions
 - Every kernel or format feature gets a unit test. Solids are verified with **signed volume and Euler
@@ -51,7 +52,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 80 tests pass (2026-11-06). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 94 tests pass (2026-11-06). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -74,6 +75,17 @@ the current state is:
   Hyprland reports a floating window as maximized, so "maximized" also needs the window to fill its screen
   (`frame::fills`). Opens at 1280x800. Windows keeps its system frame. Driven by hand on Hyprland 0.57: move, resize,
   maximize/restore, minimize, close.
+- SketchUp tool set, phase 1 (2026-11-06): the toolbar down the left is the Large Tool Set in SketchUp's order (two
+  columns; tools not built yet greyed out in their place), then views and face styles; left is the default. Added:
+  Rotated Rectangle, Pie, Move (M, axis lock incl. blue), Rotate (Q, 15 degree snaps, typed degrees), Scale (S, uniform
+  from the opposite bounding-box corner, typed factor or length), Tape Measure (T) and Protractor (guides, snapped to;
+  Edit > Delete Guides; not saved in the file yet), Zoom Window, Previous view, Front/Back/Left/Right, Position Camera,
+  Look Around, Walk (arrow keys too), face styles Wireframe / Hidden Line / Shaded / X-Ray and Back Edges (remembered).
+  Selection is a set: Ctrl adds, Shift toggles, triple-click selects everything joined, Ctrl+A, Delete erases.
+  Move/Rotate/Scale move vertices (`Model::transform_vertices`): a lone face moved sideways stretches its neighbours.
+- Light/dark (2026-11-06): the chrome follows the desktop live; the modelling area stays white until a background and
+  lighting are chosen. In dark mode each toolbar icon sits on a light tile (the icons are dark ink).
+- The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").
 - Next milestones: imprint and weld, arcs, Move/Rotate/Offset, groups/components,
   constraints, sheet metal inside the model, STEP export for bent parts.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),

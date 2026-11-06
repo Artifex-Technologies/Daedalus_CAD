@@ -1,6 +1,7 @@
 mod camera;
 mod filedlg;
 mod frame;
+mod theme;
 mod icons;
 mod settings;
 mod render;
@@ -11,20 +12,28 @@ use camera::Camera;
 use daedalus_core::inspect::{self, DEFAULT_TOLERANCE};
 use daedalus_core::{HalfEdgeMesh, Mesh, Model, Plane};
 use glam::Vec3;
-use render::{LineVertex, Renderer, UiFrame};
+use render::{FaceStyle, LineVertex, Renderer, Style, UiFrame};
 use filedlg::{FileDialog, Outcome, Purpose};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tools::{Cursor, Hit, Snap, Tool, Tools, AXIS_COLORS};
+use tools::{Cursor, Guide, Hit, Snap, Tool, Tools, AXIS_COLORS};
 use ui::{UiAction, UiView};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 /// How close (in pixels) the cursor must be to a point to snap onto it.
 const SNAP_RADIUS: f32 = 12.0;
+
+/// Position Camera: eye height above the point clicked (SketchUp's 5' 6").
+const EYE_HEIGHT: f32 = 1.676;
+
+/// How many earlier views Camera > Previous can go back through.
+const VIEW_HISTORY: usize = 50;
+
+const GUIDE_COLOR: [f32; 4] = [0.35, 0.35, 0.4, 1.0];
 
 struct State {
     window: Arc<Window>,
@@ -54,7 +63,14 @@ struct State {
     last_cursor: Option<Cursor>,
     /// The pointer is over the window (for the resize edges, which also lie over the chrome).
     pointer_in: bool,
-    shown_highlight: Option<usize>,
+    shown_highlight: Vec<usize>,
+    /// Display style (View > Face Style, Back Edges; remembered in settings.conf).
+    style: Style,
+    /// Earlier views, for Camera > Previous; when the last one was saved (a run of wheel steps counts as one view change).
+    views: Vec<Camera>,
+    view_saved_at: std::time::Instant,
+    /// Clicks in a row at about the same place: 2 is a double-click, 3 a triple-click (Select tool).
+    clicks: (u32, std::time::Instant, (f32, f32)),
     /// The document's file (None until it is saved), how many times the whole document was replaced (open, new, repair), and the
     /// (replacement, model state) it was saved or opened at: it is unchanged while those match.
     path: Option<PathBuf>,
@@ -80,10 +96,10 @@ enum Pending {
 }
 
 impl State {
-    fn new(window: Arc<Window>, mesh: &Mesh, path: Option<PathBuf>) -> State {
+    fn new(window: Arc<Window>, mesh: &Mesh, path: Option<PathBuf>, dark: bool) -> State {
         let gpu = pollster::block_on(Renderer::new(window.clone()));
         let egui_ctx = egui::Context::default();
-        egui_ctx.set_visuals(egui::Visuals::light());
+        egui_ctx.set_visuals(theme::visuals(dark));
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -128,7 +144,14 @@ impl State {
             message: None,
             last_cursor: None,
             pointer_in: false,
-            shown_highlight: None,
+            shown_highlight: Vec::new(),
+            style: Style {
+                faces: settings::load("style").as_deref().and_then(FaceStyle::from_key).unwrap_or(FaceStyle::Shaded),
+                back_edges: settings::load("back_edges").as_deref() == Some("on"),
+            },
+            views: Vec::new(),
+            view_saved_at: std::time::Instant::now(),
+            clicks: (0, std::time::Instant::now(), (0.0, 0.0)),
             // a .daedalus file opened at start is the document's file; an import is a new, unsaved document
             path: path.filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("daedalus"))),
             doc: 0,
@@ -138,7 +161,8 @@ impl State {
             after_save: None,
             quit: false,
             shown_title: String::new(),
-            toolbar_left: settings::load("toolbar").as_deref() == Some("left"),
+            // the Large Tool Set down the left side unless across the top was chosen
+            toolbar_left: settings::load("toolbar").as_deref() != Some("top"),
         };
         s.refresh();
         s
@@ -283,9 +307,9 @@ impl State {
             (None, Some(p)) => p.to_mesh(),
             (None, None) => self.model.mesh().to_mesh(),
         };
-        let highlight = if preview.is_some() { None } else { self.tools.highlight() };
+        let highlight = if preview.is_some() { Vec::new() } else { self.tools.highlight() };
+        self.gpu.set_scene(&self.display, &highlight, &self.flagged);
         self.shown_highlight = highlight;
-        self.gpu.set_scene(&self.display, highlight, &self.flagged);
         self.window.request_redraw();
     }
 
@@ -304,6 +328,22 @@ impl State {
             candidates.push(((pa + pb) * 0.5, Snap::Midpoint));
         }
         candidates.extend(self.tools.pending_points().into_iter().map(|p| (Vec3::from(p), Snap::Endpoint)));
+        // guide points, and the point of each guide line nearest the mouse
+        for g in &self.tools.guides {
+            match *g {
+                Guide::Point(p) => candidates.push((Vec3::from(p), Snap::OnGuide)),
+                Guide::Line(p, d) => {
+                    let (p, d) = (Vec3::from(p), Vec3::from(d));
+                    let b = d.dot(dir);
+                    let denom = 1.0 - b * b;
+                    if denom.abs() > 1e-6 {
+                        let w0 = p - origin;
+                        let s = (b * dir.dot(w0) - d.dot(w0)) / denom;
+                        candidates.push((p + d * s, Snap::OnGuide));
+                    }
+                }
+            }
+        }
 
         let visible = |p: Vec3| match face_hit {
             Some((_, t)) => (p - origin).dot(dir) <= t * 1.001 + 1e-4,
@@ -313,8 +353,12 @@ impl State {
         for (p, snap) in candidates {
             let Some((x, y)) = self.camera.project(p, w, h) else { continue };
             let d = ((x - self.cursor.0).powi(2) + (y - self.cursor.1).powi(2)).sqrt();
-            // Endpoints win over midpoints at the same distance.
-            let rank = d + if snap == Snap::Midpoint { 2.0 } else { 0.0 };
+            // Endpoints win over midpoints, and both over a guide, at the same distance.
+            let rank = d + match snap {
+                Snap::Midpoint => 2.0,
+                Snap::OnGuide => 3.0,
+                _ => 0.0,
+            };
             if d <= SNAP_RADIUS && best.is_none_or(|b| rank < b.2) && visible(p) {
                 best = Some((p, snap, rank));
             }
@@ -369,13 +413,30 @@ impl State {
             return;
         }
         self.message = None;
-        let result = match &self.readonly {
-            // Selection still works on a read-only import.
-            Some(_) => {
-                self.tools.selected = c.hit.and_then(|h| h.face);
+        // double- and triple-clicks: within half a second, a few pixels apart
+        let now = std::time::Instant::now();
+        let (n, at, pos) = self.clicks;
+        let near = (pos.0 - self.cursor.0).abs() < 5.0 && (pos.1 - self.cursor.1).abs() < 5.0;
+        let count = if near && now.duration_since(at).as_millis() < 500 { n + 1 } else { 1 };
+        self.clicks = (count, now, self.cursor);
+        if self.tools.tool == Tool::PositionCamera {
+            if let Some(h) = c.hit {
+                self.remember_view();
+                self.camera.stand_at(Vec3::from(h.point), EYE_HEIGHT);
+                self.set_tool(Tool::LookAround);
+            }
+            return;
+        }
+        let result = match (&self.readonly, self.tools.tool) {
+            // Select: Ctrl adds, Shift toggles, a triple-click takes everything joined (works on a read-only import too)
+            (_, Tool::Select) => {
+                let face = c.hit.and_then(|h| h.face);
+                let (add, toggle) = (self.modifiers.control_key(), self.modifiers.shift_key());
+                self.tools.select(&self.model, face, add, toggle, count >= 3);
                 Ok(())
             }
-            None => self.tools.click(&mut self.model, &c),
+            (Some(_), _) => Ok(()),
+            (None, _) => self.tools.click(&mut self.model, &c),
         };
         if let Err(e) = result {
             self.message = Some(e);
@@ -417,8 +478,10 @@ impl State {
     }
 
     fn erase_selected(&mut self) {
-        let Some(face) = self.tools.selected.filter(|_| self.readonly.is_none()) else { return };
-        if let Err(e) = self.model.erase_face(face) {
+        if self.readonly.is_some() || self.tools.selected.is_empty() {
+            return;
+        }
+        if let Err(e) = self.model.erase_faces(&self.tools.selected) {
             self.message = Some(e.to_string());
         }
         self.tools.model_changed();
@@ -482,7 +545,33 @@ impl State {
         }
     }
 
+    /// Keeps the current view for Camera > Previous (not when it is the one kept last).
+    fn remember_view(&mut self) {
+        if self.views.last() != Some(&self.camera) {
+            if self.views.len() >= VIEW_HISTORY {
+                self.views.remove(0);
+            }
+            self.views.push(self.camera);
+        }
+        self.view_saved_at = std::time::Instant::now();
+    }
+
+    /// A standard view (Top, Front, Iso, ...): the previous one can be gone back to.
+    fn view(&mut self, f: fn(&mut Camera)) {
+        self.remember_view();
+        f(&mut self.camera);
+    }
+
+    fn previous_view(&mut self) {
+        match self.views.pop() {
+            Some(c) => self.camera = c,
+            None => self.message = Some("No earlier view.".into()),
+        }
+        self.window.request_redraw();
+    }
+
     fn zoom_extents(&mut self) {
+        self.remember_view();
         if let Some((lo, hi)) = self.display.bounds() {
             self.camera.zoom_extents(Vec3::from(lo), Vec3::from(hi));
         }
@@ -510,8 +599,26 @@ impl State {
         match action {
             UiAction::Tool(t) => self.set_tool(t),
             UiAction::ZoomExtents => self.zoom_extents(),
-            UiAction::Top => self.camera.top(),
-            UiAction::Iso => self.camera.iso(),
+            UiAction::Top => self.view(Camera::top),
+            UiAction::Iso => self.view(Camera::iso),
+            UiAction::Front => self.view(Camera::front),
+            UiAction::Back => self.view(Camera::back),
+            UiAction::Right => self.view(Camera::right_side),
+            UiAction::Left => self.view(Camera::left_side),
+            UiAction::Previous => self.previous_view(),
+            UiAction::FaceStyle(f) => {
+                self.style.faces = f;
+                settings::save("style", f.key());
+            }
+            UiAction::BackEdges => {
+                self.style.back_edges = !self.style.back_edges;
+                settings::save("back_edges", if self.style.back_edges { "on" } else { "off" });
+            }
+            UiAction::SelectAll => {
+                self.tools.select_all(&self.model);
+                self.refresh();
+            }
+            UiAction::DeleteGuides => self.tools.delete_guides(),
             UiAction::ToggleOrtho => self.camera.ortho = !self.camera.ortho,
             UiAction::Undo => self.history(true),
             UiAction::Redo => self.history(false),
@@ -572,6 +679,12 @@ impl State {
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("s") => self.save(None),
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => self.history(true),
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("y") => self.history(false),
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => self.apply(UiAction::SelectAll),
+            // Walk: the arrow keys step and turn
+            Key::Named(NamedKey::ArrowUp) if self.tools.tool == Tool::Walk => self.camera.walk(0.3),
+            Key::Named(NamedKey::ArrowDown) if self.tools.tool == Tool::Walk => self.camera.walk(-0.3),
+            Key::Named(NamedKey::ArrowLeft) if self.tools.tool == Tool::Walk => self.camera.look_around(40.0, 0.0),
+            Key::Named(NamedKey::ArrowRight) if self.tools.tool == Tool::Walk => self.camera.look_around(-40.0, 0.0),
             Key::Character(_) if ctrl => {}
             Key::Character(c) if self.modifiers.shift_key() && c.eq_ignore_ascii_case("z") => self.zoom_extents(),
             // Digits go to the Measurements box without clicking it, as in SketchUp.
@@ -612,6 +725,33 @@ impl State {
                 out.push(LineVertex { position: end, color });
             }
         }
+        // guides: lines reach as far as the axes; points are small crosses
+        let guides = self.tools.guides.iter().copied().chain(self.tools.guide_preview());
+        let cross = self.camera.distance * 0.008;
+        for g in guides {
+            let mut seg = |a: Vec3, b: Vec3| {
+                out.push(LineVertex { position: a.into(), color: GUIDE_COLOR });
+                out.push(LineVertex { position: b.into(), color: GUIDE_COLOR });
+            };
+            match g {
+                Guide::Line(p, d) => {
+                    let (p, d) = (Vec3::from(p), Vec3::from(d));
+                    // dashed: pieces along the line
+                    let n = 400;
+                    let step = 2.0 * reach / n as f32;
+                    for i in (0..n).step_by(2) {
+                        let a = p + d * (-reach + step * i as f32);
+                        seg(a, a + d * step);
+                    }
+                }
+                Guide::Point(p) => {
+                    let p = Vec3::from(p);
+                    for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+                        seg(p - axis * cross, p + axis * cross);
+                    }
+                }
+            }
+        }
         out
     }
 
@@ -628,10 +768,24 @@ impl State {
         let (w, h) = self.size();
         let ppp = ctx.pixels_per_point();
         let marker = match self.tools.tool {
-            Tool::Line | Tool::Rectangle | Tool::Circle | Tool::Polygon if !self.over_ui => self
+            Tool::Line
+            | Tool::Rectangle
+            | Tool::RotatedRectangle
+            | Tool::Circle
+            | Tool::Polygon
+            | Tool::Pie
+            | Tool::Move
+            | Tool::Rotate
+            | Tool::TapeMeasure
+            | Tool::Protractor
+                if !self.over_ui =>
+            {
+                self
+
                 .last_cursor
                 .and_then(|c| self.tools.marker(&c))
-                .and_then(|(p, snap)| self.camera.project(Vec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), snap))),
+                .and_then(|(p, snap)| self.camera.project(Vec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), snap)))
+            }
             _ => None,
         };
         let (label, current) = self.tools.measurement();
@@ -649,12 +803,17 @@ impl State {
             measure_value: if self.typed.is_empty() { &current } else { &self.typed },
             typing: !self.typed.is_empty(),
             marker,
+            style: self.style,
+            can_go_back: !self.views.is_empty(),
             own_frame: frame::OWN_FRAME,
             maximized: self.maximized(),
             title: &self.shown_title,
         };
         // the resize handle under the pointer (own frame only, not while maximized)
         let resize_at = self.resize_edge();
+        let zoom_rect = (self.left_down && self.tools.tool == Tool::ZoomWindow).then(|| {
+            egui::Rect::from_two_pos(egui::pos2(self.press_at.0 / ppp, self.press_at.1 / ppp), egui::pos2(self.cursor.0 / ppp, self.cursor.1 / ppp))
+        });
         let raw = self.egui_state.take_egui_input(&self.window);
         let mut actions = Vec::new();
         // the file dialog and the "save changes?" question are drawn over the chrome; taken out while drawn
@@ -667,6 +826,15 @@ impl State {
             actions = ui::draw(ctx, &view);
             if let Some(d) = resize_at {
                 ctx.set_cursor_icon(frame::cursor(d));
+            }
+            // Zoom Window: the rectangle being dragged
+            if let Some(r) = zoom_rect {
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("zoom-window"))).rect_stroke(
+                    r,
+                    0.0,
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_gray(40)),
+                    egui::StrokeKind::Inside,
+                );
             }
             if view.own_frame && !view.maximized {
                 // a hairline around the window, so its edge shows without a system frame
@@ -702,7 +870,7 @@ impl State {
             pixels_per_point: out.pixels_per_point,
         };
         let (axes, overlay) = (self.axes(), self.overlay());
-        self.gpu.render(self.camera.view_proj(w / h), &axes, &overlay, ui);
+        self.gpu.render(self.camera.view_proj(w / h), self.style, &axes, &overlay, ui);
 
         if out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay.is_zero()) {
             self.window.request_redraw();
@@ -740,14 +908,29 @@ fn short(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string())
 }
 
+/// Events from outside the window: the desktop switched between light and dark.
+#[derive(Debug, Clone, Copy)]
+enum AppEvent {
+    Theme { dark: bool },
+}
+
 struct App {
+    proxy: EventLoopProxy<AppEvent>,
     mesh: Mesh,
     path: Option<PathBuf>,
     title: String,
     state: Option<State>,
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+        let AppEvent::Theme { dark } = event;
+        if let Some(s) = self.state.as_mut() {
+            s.egui_ctx.set_visuals(theme::visuals(dark));
+            s.window.request_redraw();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -764,7 +947,13 @@ impl ApplicationHandler for App {
             winit::platform::x11::WindowAttributesExtX11::with_name(attrs, "daedalus", "daedalus")
         };
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
-        self.state = Some(State::new(window, &self.mesh, self.path.clone()));
+        // light or dark like the desktop: the portal on Linux (and its later switches), else what the window reports
+        let proxy = self.proxy.clone();
+        let dark = theme::watch(move |dark| {
+            let _ = proxy.send_event(AppEvent::Theme { dark });
+        })
+        .unwrap_or(window.theme() == Some(winit::window::Theme::Dark));
+        self.state = Some(State::new(window, &self.mesh, self.path.clone(), dark));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -797,17 +986,32 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::ModifiersChanged(m) => s.modifiers = m.state(),
+            // Windows reports a switch of the system's light or dark style here
+            WindowEvent::ThemeChanged(t) => {
+                s.egui_ctx.set_visuals(theme::visuals(t == winit::window::Theme::Dark));
+                s.window.request_redraw();
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
                 // Presses that land on the toolbar or status bar belong to egui.
                 if down && s.egui_ctx.is_pointer_over_area() {
                     return;
                 }
+                // the view before an orbit, pan or zoom, for Camera > Previous
+                if down && (button == MouseButton::Middle || button == MouseButton::Right || s.tools.tool.navigates()) {
+                    s.remember_view();
+                }
                 match button {
                     MouseButton::Left => {
                         if down {
                             s.press_at = s.cursor;
                             s.left_down = true;
+                        } else if s.left_down && s.tools.tool == Tool::ZoomWindow {
+                            s.left_down = false;
+                            let (w, h) = s.size();
+                            let (a, b) = (s.press_at, s.cursor);
+                            s.camera.zoom_window(a.0, a.1, b.0, b.1, w, h);
+                            s.window.request_redraw();
                         } else if s.left_down {
                             s.left_down = false;
                             // A release close to the press point is a click, not a drag.
@@ -844,6 +1048,14 @@ impl ApplicationHandler for App {
                     s.camera.pan(dx, dy);
                 } else if s.left_down && tool == Tool::Zoom {
                     s.camera.zoom(-dy * 0.05, None);
+                } else if s.left_down && tool == Tool::ZoomWindow {
+                    // the rectangle is drawn in render()
+                } else if s.left_down && tool == Tool::LookAround {
+                    s.camera.look_around(-dx, dy);
+                } else if s.left_down && tool == Tool::Walk {
+                    // up walks forward, sideways turns
+                    s.camera.walk(-dy * 0.02);
+                    s.camera.look_around(-dx * 0.5, 0.0);
                 } else {
                     s.mouse_moved();
                     return;
@@ -863,6 +1075,12 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
+                // a run of wheel steps is one view change for Camera > Previous
+                if s.view_saved_at.elapsed().as_millis() > 800 {
+                    s.remember_view();
+                } else {
+                    s.view_saved_at = std::time::Instant::now();
+                }
                 // Zoom toward the point under the cursor.
                 let focus = s.resolve_cursor().hit.map(|h| Vec3::from(h.point));
                 s.camera.zoom(amount, focus);
@@ -888,7 +1106,7 @@ fn main() {
         }
         None => (Mesh::new(), "Daedalus".to_string(), None),
     };
-    let event_loop = EventLoop::new().expect("event loop");
-    let mut app = App { mesh, path, title, state: None };
+    let event_loop = EventLoop::<AppEvent>::with_user_event().build().expect("event loop");
+    let mut app = App { proxy: event_loop.create_proxy(), mesh, path, title, state: None };
     event_loop.run_app(&mut app).expect("run app");
 }
