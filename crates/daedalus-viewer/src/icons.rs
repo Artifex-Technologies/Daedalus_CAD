@@ -28,7 +28,6 @@ pub enum Icon {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Planned {
     MakeComponent,
-    FollowMe,
     Dimensions,
     Text,
     Axes,
@@ -40,7 +39,6 @@ impl Planned {
     pub fn label(self) -> &'static str {
         match self {
             Planned::MakeComponent => "Make Component",
-            Planned::FollowMe => "Follow Me",
             Planned::Dimensions => "Dimensions",
             Planned::Text => "Text",
             Planned::Axes => "Axes",
@@ -246,6 +244,11 @@ impl Draw<'_> {
                 self.line(&self.arc(0.36, 0.32, 0.2, 60.0, 200.0));
                 self.fill(&[(0.82, 0.56), (0.9, 0.74), (0.82, 0.84), (0.74, 0.74)], self.accent);
             }
+            Icon::Tool(Tool::FollowMe) => {
+                self.line(&self.arc(0.5, 0.56, 0.34, 180.0, 360.0));
+                self.closed(&[(0.06, 0.4), (0.26, 0.4), (0.26, 0.6), (0.06, 0.6)]);
+                self.head(0.84, 0.48, 0.0, -1.0, 0.16, ink);
+            }
             Icon::Tool(Tool::Pie) => {
                 let mut v = vec![(0.14, 0.86)];
                 v.extend(self.arc(0.14, 0.86, 0.72, 0.0, 90.0));
@@ -396,11 +399,6 @@ impl Draw<'_> {
                 self.dashed((0.96, 0.04), (0.96, 0.96));
                 self.dashed((0.96, 0.96), (0.04, 0.96));
                 self.dashed((0.04, 0.96), (0.04, 0.04));
-            }
-            Planned::FollowMe => {
-                self.line(&self.arc(0.5, 0.56, 0.34, 180.0, 360.0));
-                self.closed(&[(0.06, 0.4), (0.26, 0.4), (0.26, 0.6), (0.06, 0.6)]);
-                self.head(0.84, 0.48, 0.0, -1.0, 0.16, ink);
             }
             Planned::Dimensions => {
                 self.line(&[(0.12, 0.3), (0.12, 0.78)]);

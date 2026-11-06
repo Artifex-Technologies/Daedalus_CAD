@@ -123,6 +123,115 @@ impl Model {
         })
     }
 
+    /// Follow Me: sweeps face `profile` along `path` (points in order; `closed` when it runs round back to its start). The
+    /// profile is taken to stand at the path's first point; at every bend the cross-section is mitred (projected onto the
+    /// plane halfway between the two directions). An open path gets end caps (the profile's place and the far end); a
+    /// closed one makes a ring with no caps. One undo step; returns the end cap's face (or the last face made).
+    pub fn follow_me(&mut self, profile: usize, path: &[[f32; 3]], closed: bool) -> Result<usize, TopologyError> {
+        self.edit(|m| {
+            let mut mesh = m.to_mesh();
+            if profile >= mesh.faces.len() {
+                return Err(TopologyError::FaceOutOfRange(profile));
+            }
+            let n = path.len();
+            if n < 2 || (closed && n < 3) {
+                return Err(TopologyError::InvalidSplit);
+            }
+            let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+            let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            let unit = |a: [f32; 3]| {
+                let l = dot(a, a).sqrt();
+                if l > 0.0 { a.map(|c| c / l) } else { a }
+            };
+            // the directions along the path, one per piece (a closed path has one more, back to the start)
+            let pieces = if closed { n } else { n - 1 };
+            let dirs: Vec<[f32; 3]> = (0..pieces).map(|i| unit(sub(path[(i + 1) % n], path[i]))).collect();
+            if dirs.iter().any(|d| dot(*d, *d) < 0.5) {
+                return Err(TopologyError::DegenerateFace(profile));
+            }
+            let color = mesh.color_of(profile);
+            let mut ring = mesh.remove_face(profile);
+            // the profile wound counter-clockwise about the way the path sets off
+            let pts: Vec<[f32; 3]> = ring.iter().map(|&v| mesh.positions[v as usize]).collect();
+            let mut nrm = [0.0f32; 3];
+            for i in 0..pts.len() {
+                let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+                nrm[0] += (p[1] - q[1]) * (p[2] + q[2]);
+                nrm[1] += (p[2] - q[2]) * (p[0] + q[0]);
+                nrm[2] += (p[0] - q[0]) * (p[1] + q[1]);
+            }
+            if dot(nrm, dirs[0]) < 0.0 {
+                ring.reverse();
+            }
+            // a closed path has a corner at its start too: the profile is carried onto that corner's mitre plane first
+            if closed {
+                let d0 = dirs[0];
+                let last = dirs[pieces - 1];
+                let mitre = unit([last[0] + d0[0], last[1] + d0[1], last[2] + d0[2]]);
+                let denom = dot(d0, mitre);
+                if denom.abs() < 1e-6 {
+                    return Err(TopologyError::DegenerateNormal);
+                }
+                ring = ring
+                    .iter()
+                    .map(|&v| {
+                        let p = mesh.positions[v as usize];
+                        let t = dot(sub(path[0], p), mitre) / denom;
+                        mesh.add_vertex([p[0] + d0[0] * t, p[1] + d0[1] * t, p[2] + d0[2] * t])
+                    })
+                    .collect();
+            }
+            // each next cross-section: the last one carried along the piece onto the mitre plane at the next corner
+            let mut sections: Vec<Vec<u32>> = vec![ring.clone()];
+            let corners = if closed { n } else { n - 1 };
+            for i in 1..=corners {
+                let at = path[i % n];
+                let d_in = dirs[i - 1];
+                let mitre = if !closed && i == n - 1 { d_in } else { unit([d_in[0] + dirs[i % pieces][0], d_in[1] + dirs[i % pieces][1], d_in[2] + dirs[i % pieces][2]]) };
+                let denom = dot(d_in, mitre);
+                if denom.abs() < 1e-6 {
+                    return Err(TopologyError::DegenerateNormal); // a bend that turns right back
+                }
+                let prev = sections.last().expect("one at least").clone();
+                if closed && i == n {
+                    break; // the ring closes onto the first section
+                }
+                let next: Vec<u32> = prev
+                    .iter()
+                    .map(|&v| {
+                        let p = mesh.positions[v as usize];
+                        let t = dot(sub(at, p), mitre) / denom;
+                        mesh.add_vertex([p[0] + d_in[0] * t, p[1] + d_in[1] * t, p[2] + d_in[2] * t])
+                    })
+                    .collect();
+                sections.push(next);
+            }
+            if closed {
+                // the last corner's section is the profile itself, carried round: join back to it
+                let first = sections[0].clone();
+                sections.push(first);
+            }
+            let k = ring.len();
+            for w in sections.windows(2) {
+                let (s0, s1) = (&w[0], &w[1]);
+                for j in 0..k {
+                    let (a, b) = (s0[j], s0[(j + 1) % k]);
+                    let (a2, b2) = (s1[j], s1[(j + 1) % k]);
+                    mesh.faces.push(vec![a, b, b2, a2]);
+                }
+            }
+            if !closed {
+                // caps: the start faces back along the path, the end forward
+                mesh.faces.push(sections[0].iter().rev().copied().collect());
+                mesh.set_color(mesh.faces.len() - 1, color);
+                mesh.faces.push(sections.last().expect("two at least").clone());
+                mesh.set_color(mesh.faces.len() - 1, color);
+            }
+            *m = HalfEdgeMesh::from_mesh(&mesh)?;
+            Ok(m.face_count() - 1)
+        })
+    }
+
     /// An open chain of lines (an arc, a freehand stroke) in one undo step. Returns the face it closed, if any.
     pub fn add_polyline(&mut self, points: &[[f32; 3]]) -> Result<Option<usize>, TopologyError> {
         self.edit(|m| {
@@ -468,5 +577,33 @@ mod tests {
         m.undo();
         m.undo();
         assert_eq!(m.mesh().to_mesh().color_of(0), None);
+    }
+
+    #[test]
+    fn follow_me_along_a_line_and_round_a_corner() {
+        // a 1 x 1 square standing in the YZ plane at the origin, swept 3 m along +X: a 3 m bar
+        let mut m = Model::new();
+        let f = m.add_rectangle([0.0; 3], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+        m.follow_me(f, &[[0.0; 3], [3.0, 0.0, 0.0]], false).unwrap();
+        assert!(m.mesh().is_closed());
+        assert!((m.mesh().signed_volume() - 3.0).abs() < 1e-4, "{}", m.mesh().signed_volume());
+        // with a right-angle bend: 3 m out, then 2 m along +Y, mitred at the corner
+        let mut m = Model::new();
+        let f = m.add_rectangle([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+        m.follow_me(f, &[[0.0, 0.5, 0.0], [3.0, 0.5, 0.0], [3.0, 2.5, 0.0]], false).unwrap();
+        assert!(m.mesh().is_closed());
+        assert!((m.mesh().signed_volume() - 5.0).abs() < 1e-3, "{}", m.mesh().signed_volume());
+    }
+
+    #[test]
+    fn follow_me_round_a_closed_path_makes_a_ring() {
+        // a small square profile at the edge of a square path: a square frame with no caps
+        let mut m = Model::new();
+        let f = m.add_rectangle([0.0, -0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+        let path = [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 4.0, 0.0], [0.0, 4.0, 0.0]];
+        m.follow_me(f, &path, true).unwrap();
+        assert!(m.mesh().is_closed());
+        assert_eq!(m.mesh().euler_characteristic(), 0, "a ring (a torus)");
+        assert!((m.mesh().signed_volume().abs() - 16.0).abs() < 1e-3, "{}", m.mesh().signed_volume());
     }
 }

@@ -205,7 +205,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
             ui.menu_button("Tools", |ui| {
                 tool_items(ui, v, &[Tool::Select, Tool::Eraser], &mut actions);
                 ui.separator();
-                tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull, Tool::Offset], &mut actions);
+                tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull, Tool::Offset, Tool::FollowMe], &mut actions);
                 ui.separator();
                 tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor], &mut actions);
                 ui.separator();
@@ -480,7 +480,7 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
             t(Tool::Move),
             t(Tool::PushPull),
             t(Tool::Rotate),
-            P(Planned::FollowMe),
+            t(Tool::FollowMe),
             t(Tool::Scale),
             t(Tool::Offset),
             t(Tool::TapeMeasure),

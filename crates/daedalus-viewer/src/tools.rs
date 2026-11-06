@@ -21,6 +21,7 @@ pub enum Tool {
     Freehand,
     PushPull,
     Offset,
+    FollowMe,
     PaintBucket,
     Move,
     Rotate,
@@ -38,7 +39,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 27] = [
+    pub const ALL: [Tool; 28] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -52,6 +53,7 @@ impl Tool {
         Tool::Freehand,
         Tool::PushPull,
         Tool::Offset,
+        Tool::FollowMe,
         Tool::PaintBucket,
         Tool::Move,
         Tool::Rotate,
@@ -83,6 +85,7 @@ impl Tool {
             Tool::Freehand => "Freehand",
             Tool::Offset => "Offset",
             Tool::PaintBucket => "Paint Bucket",
+            Tool::FollowMe => "Follow Me",
             Tool::PushPull => "Push/Pull",
             Tool::Move => "Move",
             Tool::Rotate => "Rotate",
@@ -125,6 +128,7 @@ impl Tool {
             | Tool::Arc
             | Tool::ThreePointArc
             | Tool::Freehand
+            | Tool::FollowMe
             | Tool::Protractor
             | Tool::ZoomWindow
             | Tool::PositionCamera
@@ -257,6 +261,8 @@ enum Op {
     Arc3 { plane: Plane, a: [f32; 3], m: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
     /// Offset: the face's outline (counter-clockwise about `normal`) and how far in to copy it.
     Offset { ring: Vec<[f32; 3]>, normal: [f32; 3], d: f32 },
+    /// Follow Me: the profile face chosen; next, a line of the path.
+    Follow { face: usize },
     /// Freehand: the points of the stroke while the button is held.
     Free { plane: Plane, points: Vec<[f32; 3]> },
     /// Rotated Rectangle: the first side from `a` to `b` (once set), then the height toward the cursor.
@@ -458,6 +464,7 @@ impl Tools {
                 }
             }
             Op::Push { .. } | Op::Scale { .. } | Op::Offset { .. } => None,
+            Op::Follow { .. } => c.hit.map(|h| (h.point, h.snap)),
             Op::Idle => c.hit.map(|h| (h.point, h.snap)),
         }
     }
@@ -521,7 +528,7 @@ impl Tools {
                     *d = inside_distance(ring, *normal, p);
                 }
             }
-            Op::Rotate { .. } | Op::Protract { .. } | Op::Idle => {}
+            Op::Rotate { .. } | Op::Protract { .. } | Op::Follow { .. } | Op::Idle => {}
         }
     }
 
@@ -541,6 +548,28 @@ impl Tools {
                 (Some(b), Some((p, _))) => self.commit(model, sketch::rotated_rectangle(&plane, a, b, p))?,
                 (b, _) => self.op = Op::RotRect { plane, a, b, cursor: None },
             },
+            (Tool::FollowMe, Op::Idle) => {
+                let face = c.hit.and_then(|h| h.face).ok_or("click the face to sweep (the profile)")?;
+                self.op = Op::Follow { face };
+            }
+            (Tool::FollowMe, Op::Follow { face }) => {
+                let Some(line) = c.hit.and_then(|h| h.line) else {
+                    self.op = Op::Follow { face };
+                    return Err("now click a line of the path to follow".into());
+                };
+                let mesh = model.mesh();
+                let centre = {
+                    let vs = mesh.face_vertices(face);
+                    let mut c = [0.0f32; 3];
+                    for &v in &vs {
+                        c = add(c, mesh.positions[v as usize]);
+                    }
+                    scale(c, 1.0 / vs.len().max(1) as f32)
+                };
+                let (path, closed) = path_through(&mesh.lines, &mesh.positions, line, centre).ok_or("that line is not part of a path")?;
+                model.follow_me(face, &path, closed).map_err(|e| e.to_string())?;
+                self.model_changed();
+            }
             (Tool::PaintBucket, _) => {
                 // a selected face paints the whole selection, as in SketchUp
                 if let Some(face) = c.hit.and_then(|h| h.face) {
@@ -1056,6 +1085,8 @@ impl Tools {
             (Tool::ThreePointArc, _) => "Select end point.",
             (Tool::Freehand, _) => "Hold the button and draw.",
             (Tool::Offset, Op::Idle) => "Click a face to offset its edges.",
+            (Tool::FollowMe, Op::Idle) => "Click the face to sweep (the profile). Draw the path as lines first.",
+            (Tool::FollowMe, _) => "Click a line of the path. The profile follows the whole chain of lines.",
             (Tool::PaintBucket, _) => "Click a face to paint it (a selected face paints the selection). Alt+click picks up a face's colour.",
             (Tool::Offset, _) => "Move in to set the distance and click, or type it.",
             (Tool::Pie, Op::Pie { start: None, .. }) => "Select start of the arc, or type a radius.",
@@ -1114,7 +1145,7 @@ impl Tools {
             ),
             Op::Arc2 { a, b: None, cursor, .. } => ("Length", cursor.map(|c| fmt(dist(*a, c), self.units)).unwrap_or_default()),
             Op::Arc2 { plane, a, b: Some(b), cursor } => ("Bulge", cursor.map(|c| fmt(bulge_toward(plane, *a, *b, c).abs(), self.units)).unwrap_or_default()),
-            Op::Arc3 { .. } | Op::Free { .. } => ("Measurements", String::new()),
+            Op::Arc3 { .. } | Op::Free { .. } | Op::Follow { .. } => ("Measurements", String::new()),
             Op::Offset { d, .. } => ("Distance", fmt(d.abs(), self.units)),
             Op::Pie { center, start: None, cursor, .. } => ("Radius", cursor.map(|c| fmt(dist(*center, c), self.units)).unwrap_or_default()),
             Op::Pie { plane, center, start: Some(st), cursor } => (
@@ -1307,6 +1338,54 @@ fn closest_on_line(base: [f32; 3], dir_line: [f32; 3], origin: [f32; 3], dir: [f
         return None;
     }
     Some((b * dot(dir, w0) - dot(dir_line, w0)) / denom)
+}
+
+/// Follow Me's path: the chain of loose lines through line `line` (as far as it runs without branching), as points in
+/// order starting from the end nearest `near` (the profile), and whether it closes on itself.
+fn path_through(lines: &[[u32; 2]], positions: &[[f32; 3]], line: usize, near: [f32; 3]) -> Option<(Vec<[f32; 3]>, bool)> {
+    let &[a, b] = lines.get(line)?;
+    let mut by_vertex: std::collections::HashMap<u32, Vec<usize>> = std::collections::HashMap::new();
+    for (i, &[x, y]) in lines.iter().enumerate() {
+        by_vertex.entry(x).or_default().push(i);
+        by_vertex.entry(y).or_default().push(i);
+    }
+    // from `start` (an end of the clicked line), on along the chain while it does not branch; `back` is the clicked
+    // line's other end: reaching it means the chain closes
+    let walk = |start: u32, back: u32| -> (Vec<u32>, bool) {
+        let (mut v, mut l, mut out) = (start, line, vec![]);
+        loop {
+            let others: Vec<usize> = by_vertex[&v].iter().copied().filter(|&o| o != l).collect();
+            if others.len() != 1 || out.len() > lines.len() {
+                return (out, false);
+            }
+            l = others[0];
+            let [x, y] = lines[l];
+            let next = if x == v { y } else { x };
+            if next == back {
+                return (out, true);
+            }
+            out.push(next);
+            v = next;
+        }
+    };
+    let (ahead, closed) = walk(b, a);
+    if closed {
+        let mut pts: Vec<[f32; 3]> = [a, b].iter().chain(ahead.iter()).map(|&v| positions[v as usize]).collect();
+        // start at the corner nearest the profile
+        let start = (0..pts.len()).min_by(|&i, &j| dist(pts[i], near).total_cmp(&dist(pts[j], near)))?;
+        pts.rotate_left(start);
+        return Some((pts, true));
+    }
+    let (behind, _) = walk(a, b);
+    let mut chain: Vec<u32> = behind.into_iter().rev().collect();
+    chain.push(a);
+    chain.push(b);
+    chain.extend(ahead);
+    let mut pts: Vec<[f32; 3]> = chain.iter().map(|&v| positions[v as usize]).collect();
+    if dist(*pts.last()?, near) < dist(pts[0], near) {
+        pts.reverse();
+    }
+    Some((pts, false))
 }
 
 /// How far `p` lies inside the outline `ring` (in its plane): the distance to the nearest side, negative outside.
@@ -1823,5 +1902,30 @@ mod tests {
         t.click(&mut m, &c).unwrap();
         t.hover(&at(2.0, 2.0));
         assert!(t.type_entry(&mut m, "3").is_err());
+    }
+
+    #[test]
+    fn follow_me_sweeps_a_profile_along_drawn_lines() {
+        let mut m = Model::new();
+        // the profile: a 1 x 1 square standing at the start of the path, across it
+        m.add_rectangle([0.0, -0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+        // the path, drawn with the Line tool: 3 m along +X, then 2 m along +Y
+        let mut t = Tools::default();
+        t.set_tool(Tool::Line);
+        t.click(&mut m, &at(0.0, 0.0)).unwrap();
+        t.click(&mut m, &at(3.0, 0.0)).unwrap();
+        t.click(&mut m, &at(3.0, 2.0)).unwrap();
+        t.cancel();
+        assert_eq!(m.mesh().lines.len(), 2);
+        t.set_tool(Tool::FollowMe);
+        let mut c = at(0.0, 0.0);
+        c.hit.as_mut().unwrap().face = Some(0);
+        t.click(&mut m, &c).unwrap();
+        // the second line of the path: the whole chain is followed
+        let mut c = at(3.0, 1.0);
+        c.hit.as_mut().unwrap().line = Some(1);
+        t.click(&mut m, &c).unwrap();
+        assert!(m.mesh().is_closed());
+        assert!((m.mesh().signed_volume() - 5.0).abs() < 1e-3, "{}", m.mesh().signed_volume());
     }
 }
