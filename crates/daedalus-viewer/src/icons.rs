@@ -30,7 +30,6 @@ pub enum Planned {
     MakeComponent,
     PaintBucket,
     FollowMe,
-    Offset,
     Dimensions,
     Text,
     Axes,
@@ -44,7 +43,6 @@ impl Planned {
             Planned::MakeComponent => "Make Component",
             Planned::PaintBucket => "Paint Bucket",
             Planned::FollowMe => "Follow Me",
-            Planned::Offset => "Offset",
             Planned::Dimensions => "Dimensions",
             Planned::Text => "Text",
             Planned::Axes => "Axes",
@@ -241,6 +239,10 @@ impl Draw<'_> {
                 self.dot(0.5, 0.4);
                 self.dot(0.88, 0.78);
             }
+            Icon::Tool(Tool::Offset) => {
+                self.closed(&[(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]);
+                self.closed(&[(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)]);
+            }
             Icon::Tool(Tool::Pie) => {
                 let mut v = vec![(0.14, 0.86)];
                 v.extend(self.arc(0.14, 0.86, 0.72, 0.0, 90.0));
@@ -400,10 +402,6 @@ impl Draw<'_> {
                 self.line(&self.arc(0.5, 0.56, 0.34, 180.0, 360.0));
                 self.closed(&[(0.06, 0.4), (0.26, 0.4), (0.26, 0.6), (0.06, 0.6)]);
                 self.head(0.84, 0.48, 0.0, -1.0, 0.16, ink);
-            }
-            Planned::Offset => {
-                self.closed(&[(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]);
-                self.closed(&[(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)]);
             }
             Planned::Dimensions => {
                 self.line(&[(0.12, 0.3), (0.12, 0.78)]);

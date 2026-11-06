@@ -20,6 +20,7 @@ pub enum Tool {
     Pie,
     Freehand,
     PushPull,
+    Offset,
     Move,
     Rotate,
     Scale,
@@ -36,7 +37,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 25] = [
+    pub const ALL: [Tool; 26] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -49,6 +50,7 @@ impl Tool {
         Tool::Pie,
         Tool::Freehand,
         Tool::PushPull,
+        Tool::Offset,
         Tool::Move,
         Tool::Rotate,
         Tool::Scale,
@@ -77,6 +79,7 @@ impl Tool {
             Tool::TwoPointArc => "2 Point Arc",
             Tool::ThreePointArc => "3 Point Arc",
             Tool::Freehand => "Freehand",
+            Tool::Offset => "Offset",
             Tool::PushPull => "Push/Pull",
             Tool::Move => "Move",
             Tool::Rotate => "Rotate",
@@ -103,6 +106,7 @@ impl Tool {
             Tool::Circle => Some("C"),
             Tool::PushPull => Some("P"),
             Tool::TwoPointArc => Some("A"),
+            Tool::Offset => Some("F"),
             Tool::Move => Some("M"),
             Tool::Rotate => Some("Q"),
             Tool::Scale => Some("S"),
@@ -247,6 +251,8 @@ enum Op {
     Arc2 { plane: Plane, a: [f32; 3], b: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
     /// 3 Point Arc: the start, a point the arc passes through (once set), then the end at the cursor.
     Arc3 { plane: Plane, a: [f32; 3], m: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
+    /// Offset: the face's outline (counter-clockwise about `normal`) and how far in to copy it.
+    Offset { ring: Vec<[f32; 3]>, normal: [f32; 3], d: f32 },
     /// Freehand: the points of the stroke while the button is held.
     Free { plane: Plane, points: Vec<[f32; 3]> },
     /// Rotated Rectangle: the first side from `a` to `b` (once set), then the height toward the cursor.
@@ -444,7 +450,7 @@ impl Tools {
                     _ => ray_axis_lock(*base, c).map(|(p, a)| (p, Snap::OnAxis(a))).or(c.hit.map(|h| (h.point, h.snap))),
                 }
             }
-            Op::Push { .. } | Op::Scale { .. } => None,
+            Op::Push { .. } | Op::Scale { .. } | Op::Offset { .. } => None,
             Op::Idle => c.hit.map(|h| (h.point, h.snap)),
         }
     }
@@ -502,6 +508,12 @@ impl Tools {
                     *distance = d;
                 }
             }
+            Op::Offset { ring, normal, d } => {
+                // how far the mouse is inside the outline (negative outside), in the face's plane
+                if let Some(p) = Plane::from_point_normal(ring[0], *normal).and_then(|pl| pl.intersect_ray(c.origin, c.dir)) {
+                    *d = inside_distance(ring, *normal, p);
+                }
+            }
             Op::Rotate { .. } | Op::Protract { .. } | Op::Idle => {}
         }
     }
@@ -522,6 +534,16 @@ impl Tools {
                 (Some(b), Some((p, _))) => self.commit(model, sketch::rotated_rectangle(&plane, a, b, p))?,
                 (b, _) => self.op = Op::RotRect { plane, a, b, cursor: None },
             },
+            (Tool::Offset, Op::Idle) => {
+                let face = c.hit.and_then(|h| h.face).ok_or("click a face to offset its edges")?;
+                let ring: Vec<[f32; 3]> = model.mesh().face_vertices(face).iter().map(|&v| model.mesh().positions[v as usize]).collect();
+                let normal = model.mesh().face_normal(face);
+                if normal != [0.0; 3] {
+                    self.op = Op::Offset { ring, normal, d: 0.0 };
+                    self.hover(c);
+                }
+            }
+            (Tool::Offset, Op::Offset { ring, normal, d }) => self.offset(model, &ring, normal, d)?,
             (Tool::TwoPointArc, Op::Idle) => {
                 if let Some(h) = c.hit {
                     self.op = Op::Arc2 { plane: Plane { origin: h.point, ..h.plane }, a: h.point, b: None, cursor: None };
@@ -732,6 +754,10 @@ impl Tools {
                 self.arc_segments = n;
                 self.op = op;
             }
+            (Entry::Value(d), Op::Offset { ring, normal, d: shown }) => {
+                // typed: in or out as the mouse is
+                self.offset(model, &ring, normal, d.abs() * if shown < 0.0 { -1.0 } else { 1.0 })?
+            }
             (Entry::Value(l), Op::Arc2 { plane, a, b: None, cursor }) => {
                 let dir = cursor.and_then(|c| normalize(sub(c, a))).unwrap_or(plane.u);
                 self.op = Op::Arc2 { plane, a, b: Some(add(a, scale(dir, l.abs()))), cursor };
@@ -805,6 +831,17 @@ impl Tools {
                 return None;
             }
         })
+    }
+
+    /// Offset: the face's outline copied `d` inside it, as lines (so the face gets an inner face and a ring around it).
+    fn offset(&mut self, model: &mut Model, ring: &[[f32; 3]], normal: [f32; 3], d: f32) -> Result<(), String> {
+        if d < 0.0 {
+            self.op = Op::Idle;
+            return Err("offsetting outward is not built yet; move the mouse inside the face".into());
+        }
+        let r = sketch::offset_ring(ring, normal, d).ok_or("that is too far in for this face")?;
+        self.op = Op::Idle;
+        self.commit(model, Some(r))
     }
 
     /// Draws an arc (open, as lines) into the model.
@@ -934,6 +971,11 @@ impl Tools {
                 },
             },
             Op::Free { points, .. } => chain_lines(points, &mut out),
+            Op::Offset { ring, normal, d } => {
+                if let Some(r) = sketch::offset_ring(ring, *normal, *d) {
+                    ring_lines(&r, &mut out);
+                }
+            }
             Op::Pie { plane, center, start: Some(st), cursor: Some(c) } if self.tool == Tool::Arc => {
                 out.push((*center, *st, PUSH_GUIDE));
                 let sweep = sketch::angle_between(plane, *center, *st, *c).map(snap_angle).unwrap_or(0.0);
@@ -999,6 +1041,8 @@ impl Tools {
             (Tool::ThreePointArc, Op::Arc3 { m: None, .. }) => "Select a point the arc passes through.",
             (Tool::ThreePointArc, _) => "Select end point.",
             (Tool::Freehand, _) => "Hold the button and draw.",
+            (Tool::Offset, Op::Idle) => "Click a face to offset its edges.",
+            (Tool::Offset, _) => "Move in to set the distance and click, or type it.",
             (Tool::Pie, Op::Pie { start: None, .. }) => "Select start of the arc, or type a radius.",
             (Tool::Pie, _) => "Select end of the arc, or type an angle in degrees.",
             (Tool::Move, Op::Idle) => "Pick a point to move from. Moves the selection, or the face under the mouse.",
@@ -1056,6 +1100,7 @@ impl Tools {
             Op::Arc2 { a, b: None, cursor, .. } => ("Length", cursor.map(|c| fmt(dist(*a, c), self.units)).unwrap_or_default()),
             Op::Arc2 { plane, a, b: Some(b), cursor } => ("Bulge", cursor.map(|c| fmt(bulge_toward(plane, *a, *b, c).abs(), self.units)).unwrap_or_default()),
             Op::Arc3 { .. } | Op::Free { .. } => ("Measurements", String::new()),
+            Op::Offset { d, .. } => ("Distance", fmt(d.abs(), self.units)),
             Op::Pie { center, start: None, cursor, .. } => ("Radius", cursor.map(|c| fmt(dist(*center, c), self.units)).unwrap_or_default()),
             Op::Pie { plane, center, start: Some(st), cursor } => (
                 "Angle",
@@ -1247,6 +1292,31 @@ fn closest_on_line(base: [f32; 3], dir_line: [f32; 3], origin: [f32; 3], dir: [f
         return None;
     }
     Some((b * dot(dir, w0) - dot(dir_line, w0)) / denom)
+}
+
+/// How far `p` lies inside the outline `ring` (in its plane): the distance to the nearest side, negative outside.
+fn inside_distance(ring: &[[f32; 3]], normal: [f32; 3], p: [f32; 3]) -> f32 {
+    let Some(plane) = Plane::from_point_normal(ring[0], normal) else { return 0.0 };
+    let pts: Vec<[f32; 2]> = ring.iter().map(|&q| plane.to_local(q)).collect();
+    let q = plane.to_local(p);
+    let n = pts.len();
+    let mut nearest = f32::INFINITY;
+    let mut inside = false;
+    for i in 0..n {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 > 0.0 { (((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        nearest = nearest.min((q[0] - a[0] - t * dx).hypot(q[1] - a[1] - t * dy));
+        if (a[1] > q[1]) != (b[1] > q[1]) && q[0] < a[0] + (q[1] - a[1]) / (b[1] - a[1]) * dx {
+            inside = !inside;
+        }
+    }
+    if inside {
+        nearest
+    } else {
+        -nearest
+    }
 }
 
 fn chain_lines(r: &[[f32; 3]], out: &mut Vec<([f32; 3], [f32; 3], [f32; 4])>) {
@@ -1709,5 +1779,34 @@ mod tests {
         t.freehand_release(&mut m).unwrap();
         assert!(m.mesh().lines.len() > 10, "a stroke of many short lines: {}", m.mesh().lines.len());
         assert!(!t.is_busy());
+    }
+
+    #[test]
+    fn offset_a_face_then_push_the_middle_up() {
+        let mut m = Model::new();
+        m.add_rectangle([0.0; 3], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0]).unwrap();
+        let mut t = Tools::default();
+        t.set_tool(Tool::Offset);
+        let mut c = at(2.0, 2.0);
+        c.hit.as_mut().unwrap().face = Some(0);
+        t.click(&mut m, &c).unwrap();
+        // the mouse 1 m in from the left side
+        t.hover(&at(1.0, 2.0));
+        assert_eq!(t.measurement(), ("Distance", "1 m".into()));
+        t.click(&mut m, &at(1.0, 2.0)).unwrap();
+        assert_eq!(m.mesh().face_count(), 3, "the middle and the two faces of the ring around it");
+        let middle = (0..3).find(|&f| m.mesh().face_vertices(f).len() == 4 && {
+            let p = m.mesh().positions[m.mesh().face_vertices(f)[0] as usize];
+            (1.0..=3.0).contains(&p[0]) && (1.0..=3.0).contains(&p[1])
+        });
+        let middle = middle.expect("the 2 x 2 middle face");
+        m.push_pull(middle, 1.0).unwrap();
+        // the ring stays flat; the middle is a 2 x 2 x 1 block standing on it
+        let up: f32 = m.mesh().positions.iter().filter(|p| p[2] > 0.5).count() as f32;
+        assert_eq!(up, 4.0);
+        // too far in
+        t.click(&mut m, &c).unwrap();
+        t.hover(&at(2.0, 2.0));
+        assert!(t.type_entry(&mut m, "3").is_err());
     }
 }

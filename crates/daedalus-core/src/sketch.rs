@@ -235,6 +235,47 @@ pub fn arc_from_center(plane: &Plane, center: [f32; 3], start: [f32; 3], sweep: 
     Some(v)
 }
 
+/// Offset: the outline `ring` (counter-clockwise about `normal`) moved `d` inward (negative: outward), each corner where its
+/// two moved sides meet. None when it collapses (a side would turn round) or the outline has no area.
+pub fn offset_ring(ring: &[[f32; 3]], normal: [f32; 3], d: f32) -> Option<Vec<[f32; 3]>> {
+    let n = ring.len();
+    if n < 3 {
+        return None;
+    }
+    let plane = Plane::from_point_normal(ring[0], normal)?;
+    let pts: Vec<[f32; 2]> = ring.iter().map(|&p| plane.to_local(p)).collect();
+    // the inward side of each edge (left of a counter-clockwise ring)
+    let side = |i: usize| -> Option<([f32; 2], [f32; 2])> {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = dx.hypot(dy);
+        (l > EPS).then(|| ([a[0] - dy / l * d, a[1] + dx / l * d], [dx / l, dy / l]))
+    };
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let (p1, d1) = side((i + n - 1) % n)?;
+        let (p2, d2) = side(i)?;
+        let den = d1[0] * d2[1] - d1[1] * d2[0];
+        let q = if den.abs() < 1e-6 {
+            // straight on: the corner just moves in
+            p2
+        } else {
+            let t = ((p2[0] - p1[0]) * d2[1] - (p2[1] - p1[1]) * d2[0]) / den;
+            [p1[0] + d1[0] * t, p1[1] + d1[1] * t]
+        };
+        out.push(q);
+    }
+    // collapsed: a side that now runs backwards
+    for i in 0..n {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let (c, e) = (out[i], out[(i + 1) % n]);
+        if (b[0] - a[0]) * (e[0] - c[0]) + (b[1] - a[1]) * (e[1] - c[1]) <= 0.0 {
+            return None;
+        }
+    }
+    Some(out.into_iter().map(|q| plane.to_world(q[0], q[1])).collect())
+}
+
 fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
@@ -385,6 +426,22 @@ mod tests {
         let q = arc_from_center(&g, [0.0; 3], [1.0, 0.0, 0.0], std::f32::consts::FRAC_PI_2, 6).unwrap();
         assert_eq!(q.len(), 7);
         assert!(close(q[0], [1.0, 0.0, 0.0]) && close(q[6], [0.0, 1.0, 0.0]));
+    }
+
+    #[test]
+    fn offset_moves_every_side_in() {
+        let sq = [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 4.0, 0.0], [0.0, 4.0, 0.0]];
+        let inner = offset_ring(&sq, [0.0, 0.0, 1.0], 1.0).unwrap();
+        for (p, q) in inner.iter().zip([[1.0, 1.0, 0.0], [3.0, 1.0, 0.0], [3.0, 3.0, 0.0], [1.0, 3.0, 0.0]]) {
+            assert!(close(*p, q), "{p:?} vs {q:?}");
+        }
+        let outer = offset_ring(&sq, [0.0, 0.0, 1.0], -1.0).unwrap();
+        assert!(close(outer[0], [-1.0, -1.0, 0.0]));
+        assert!(offset_ring(&sq, [0.0, 0.0, 1.0], 2.5).is_none(), "past the middle it collapses");
+        // an L: the inside corner moves the right way too
+        let l = [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 2.0, 0.0], [2.0, 2.0, 0.0], [2.0, 4.0, 0.0], [0.0, 4.0, 0.0]];
+        let inner = offset_ring(&l, [0.0, 0.0, 1.0], 0.5).unwrap();
+        assert!(close(inner[3], [1.5, 1.5, 0.0]), "{:?}", inner[3]);
     }
 
     #[test]

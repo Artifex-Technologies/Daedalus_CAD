@@ -111,7 +111,7 @@ impl State {
         let (model, readonly) = match HalfEdgeMesh::from_mesh(mesh) {
             Ok(h) => (Model::from_mesh(h), None),
             Err(e) => {
-                eprintln!("note: model is read-only until repaired with F ({e})");
+                eprintln!("note: model is read-only until repaired with Tools > Repair Solid ({e})");
                 (Model::new(), Some(mesh.clone()))
             }
         };
@@ -188,7 +188,7 @@ impl State {
         let (model, readonly) = match HalfEdgeMesh::from_mesh(mesh) {
             Ok(h) => (Model::from_mesh(h), None),
             Err(e) => {
-                eprintln!("note: model is read-only until repaired with F ({e})");
+                eprintln!("note: model is read-only until repaired with Tools > Repair Solid ({e})");
                 (Model::new(), Some(mesh.clone()))
             }
         };
@@ -429,7 +429,7 @@ impl State {
     fn click(&mut self) {
         let c = self.resolve_cursor();
         if self.readonly.is_some() && self.tools.tool.edits() {
-            self.message = Some("This model is read-only; press F to repair it.".into());
+            self.message = Some("This model is read-only; use Tools > Repair Solid to repair it.".into());
             return;
         }
         self.message = None;
@@ -551,7 +551,7 @@ impl State {
 
     fn merge_coplanar(&mut self) {
         if self.readonly.is_some() {
-            self.message = Some("This model is read-only; press F to repair it.".into());
+            self.message = Some("This model is read-only; use Tools > Repair Solid to repair it.".into());
             return;
         }
         match self.model.merge_coplanar() {
@@ -717,11 +717,10 @@ impl State {
             }
             Key::Character(c) if c.eq_ignore_ascii_case("s") && !self.typed.is_empty() => self.typed.push('s'),
             Key::Character(c) if c.eq_ignore_ascii_case("i") => self.inspect(),
-            Key::Character(c) if c.eq_ignore_ascii_case("f") => self.repair(),
             Key::Character(c) => {
                 if let Some(t) = Tool::from_key(c) {
                     if self.readonly.is_some() && t.edits() {
-                        self.message = Some("This model is read-only; press F to repair it.".into());
+                        self.message = Some("This model is read-only; use Tools > Repair Solid to repair it.".into());
                     } else {
                         self.set_tool(t);
                     }

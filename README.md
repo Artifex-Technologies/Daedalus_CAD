@@ -34,7 +34,7 @@ Laid out like SketchUp: menus and toolbar on top, hints and the Measurements box
 - Points snap to endpoints and midpoints; lines lock to the red/green axes within 3 degrees.
   Shapes are drawn on the face under the first click, or on the ground.
 - Camera menu: Top, Iso, Parallel Projection. Ctrl+Z / Ctrl+Y undo and redo.
-- `I` inspects the solid, `F` repairs it. Imports with non-manifold topology open read-only until repaired.
+- `I` inspects the solid, Tools > Repair Solid repairs it (`F` is Offset, as in SketchUp). Imports with non-manifold topology open read-only until repaired.
 
 ## Solid inspector
 Checks whether a model is a valid solid (open borders, non-manifold edges, flipped or inverted
@@ -43,7 +43,7 @@ faces, duplicate and zero-area faces, short edges, stray vertices) and repairs w
 cargo run -p daedalus-app -- inspect model.stl                 # report; exit code 1 if not a solid
 cargo run -p daedalus-app -- inspect model.stl --fix fixed.stl # repair and write
 ```
-In the viewer press `I` to inspect (problem faces turn red) and `F` to repair.
+In the viewer press `I` to inspect (problem faces turn red) and use Tools > Repair Solid to repair.
 
 ## Sheet metal flat patterns
 ```sh
@@ -105,7 +105,7 @@ no source from those projects is used.
 
 ## Coplanar faces
 As in SketchUp, neighbouring faces that lie in one plane are one face: pushing a face of a solid again leaves no seam, and
-Repair (F) turns an imported mesh's triangle pairs back into the faces they were drawn as. Tools > Merge Coplanar Faces does
+Repair (Tools > Repair Solid) turns an imported mesh's triangle pairs back into the faces they were drawn as. Tools > Merge Coplanar Faces does
 it by hand. A group whose outline would have a hole is left as it is until faces with holes are supported.
 
 ## Toolbar

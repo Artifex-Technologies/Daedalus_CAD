@@ -202,7 +202,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
             ui.menu_button("Tools", |ui| {
                 tool_items(ui, v, &[Tool::Select, Tool::Eraser], &mut actions);
                 ui.separator();
-                tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull], &mut actions);
+                tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull, Tool::Offset], &mut actions);
                 ui.separator();
                 tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor], &mut actions);
                 ui.separator();
@@ -214,7 +214,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     actions.push(UiAction::MergeCoplanar);
                     ui.close_menu();
                 }
-                if ui.add(egui::Button::new("Repair Solid").shortcut_text("F")).clicked() {
+                if ui.button("Repair Solid").clicked() {
                     actions.push(UiAction::Repair);
                     ui.close_menu();
                 }
@@ -437,7 +437,7 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
             t(Tool::Rotate),
             P(Planned::FollowMe),
             t(Tool::Scale),
-            P(Planned::Offset),
+            t(Tool::Offset),
             t(Tool::TapeMeasure),
             P(Planned::Dimensions),
             t(Tool::Protractor),
