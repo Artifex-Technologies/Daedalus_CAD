@@ -61,6 +61,10 @@ sudo pacman -S --needed base-devel git rustup vulkan-icd-loader mesa libxkbcommo
 rustup default stable
 cargo run -p daedalus-viewer
 ```
+**On Labyrinth OS** Daedalus CAD is in Agora, the app store (Create > 3D & CAD): one click installs the signed build from
+Labyrinth's package repository (`daedalus-cad-git`: `daedalus` and `daedalus-cli`, with the application-menu entry and icon from
+`packaging/`), and Agora's updates keep it current.
+
 To install it for your user (binary in `~/.local/bin/daedalus`, plus an application-menu entry and icon):
 ```sh
 packaging/install.sh              # run again after `git pull` to update
