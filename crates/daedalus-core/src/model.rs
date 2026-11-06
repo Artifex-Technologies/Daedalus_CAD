@@ -108,6 +108,19 @@ impl Model {
         })
     }
 
+    /// An open chain of lines (an arc, a freehand stroke) in one undo step. Returns the face it closed, if any.
+    pub fn add_polyline(&mut self, points: &[[f32; 3]]) -> Result<Option<usize>, TopologyError> {
+        self.edit(|m| {
+            let mut made = None;
+            for w in points.windows(2) {
+                if let Some(f) = m.add_line(w[0], w[1])? {
+                    made = Some(f);
+                }
+            }
+            Ok(made)
+        })
+    }
+
     pub fn erase_line(&mut self, i: usize) -> Result<(), TopologyError> {
         self.edit(|m| m.erase_line(i))
     }

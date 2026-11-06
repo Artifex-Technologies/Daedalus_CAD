@@ -193,7 +193,9 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 ui.label(egui::RichText::new("Type any unit whatever is shown: 300mm, 1.2m, 4' 6\"").weak());
             });
             ui.menu_button("Draw", |ui| {
-                tool_items(ui, v, &[Tool::Line], &mut actions);
+                tool_items(ui, v, &[Tool::Line, Tool::Freehand], &mut actions);
+                ui.separator();
+                tool_items(ui, v, &[Tool::Arc, Tool::TwoPointArc, Tool::ThreePointArc], &mut actions);
                 ui.separator();
                 tool_items(ui, v, &[Tool::Rectangle, Tool::RotatedRectangle, Tool::Circle, Tool::Polygon, Tool::Pie], &mut actions);
             });
@@ -421,14 +423,14 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
             P(Planned::PaintBucket),
             t(Tool::Eraser),
             t(Tool::Line),
-            P(Planned::Freehand),
+            t(Tool::Freehand),
             t(Tool::Rectangle),
             t(Tool::RotatedRectangle),
             t(Tool::Circle),
             t(Tool::Polygon),
-            P(Planned::Arc),
-            P(Planned::TwoPointArc),
-            P(Planned::ThreePointArc),
+            t(Tool::Arc),
+            t(Tool::TwoPointArc),
+            t(Tool::ThreePointArc),
             t(Tool::Pie),
             t(Tool::Move),
             t(Tool::PushPull),

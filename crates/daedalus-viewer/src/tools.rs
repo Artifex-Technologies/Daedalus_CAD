@@ -14,7 +14,11 @@ pub enum Tool {
     RotatedRectangle,
     Circle,
     Polygon,
+    Arc,
+    TwoPointArc,
+    ThreePointArc,
     Pie,
+    Freehand,
     PushPull,
     Move,
     Rotate,
@@ -32,14 +36,18 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 21] = [
+    pub const ALL: [Tool; 25] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
         Tool::RotatedRectangle,
         Tool::Circle,
         Tool::Polygon,
+        Tool::Arc,
+        Tool::TwoPointArc,
+        Tool::ThreePointArc,
         Tool::Pie,
+        Tool::Freehand,
         Tool::PushPull,
         Tool::Move,
         Tool::Rotate,
@@ -65,6 +73,10 @@ impl Tool {
             Tool::Circle => "Circle",
             Tool::Polygon => "Polygon",
             Tool::Pie => "Pie",
+            Tool::Arc => "Arc",
+            Tool::TwoPointArc => "2 Point Arc",
+            Tool::ThreePointArc => "3 Point Arc",
+            Tool::Freehand => "Freehand",
             Tool::PushPull => "Push/Pull",
             Tool::Move => "Move",
             Tool::Rotate => "Rotate",
@@ -90,6 +102,7 @@ impl Tool {
             Tool::Rectangle => Some("R"),
             Tool::Circle => Some("C"),
             Tool::PushPull => Some("P"),
+            Tool::TwoPointArc => Some("A"),
             Tool::Move => Some("M"),
             Tool::Rotate => Some("Q"),
             Tool::Scale => Some("S"),
@@ -101,6 +114,9 @@ impl Tool {
             Tool::Polygon
             | Tool::RotatedRectangle
             | Tool::Pie
+            | Tool::Arc
+            | Tool::ThreePointArc
+            | Tool::Freehand
             | Tool::Protractor
             | Tool::ZoomWindow
             | Tool::PositionCamera
@@ -227,6 +243,12 @@ enum Op {
     Rect { plane: Plane, start: [f32; 3], cursor: Option<[f32; 3]> },
     Round { plane: Plane, center: [f32; 3], cursor: Option<[f32; 3]> },
     Push { face: usize, base: [f32; 3], normal: [f32; 3], distance: f32 },
+    /// 2 Point Arc: the ends `a` and `b` (once set), then the bulge toward the cursor.
+    Arc2 { plane: Plane, a: [f32; 3], b: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
+    /// 3 Point Arc: the start, a point the arc passes through (once set), then the end at the cursor.
+    Arc3 { plane: Plane, a: [f32; 3], m: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
+    /// Freehand: the points of the stroke while the button is held.
+    Free { plane: Plane, points: Vec<[f32; 3]> },
     /// Rotated Rectangle: the first side from `a` to `b` (once set), then the height toward the cursor.
     RotRect { plane: Plane, a: [f32; 3], b: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
     /// Pie: the centre, the start of the arc (once set, it gives the radius), then the angle.
@@ -369,6 +391,8 @@ impl Tools {
             Op::Line { last, .. } => vec![*last],
             Op::Rect { start, .. } => vec![*start],
             Op::Round { center, .. } | Op::Pie { center, .. } => vec![*center],
+            Op::Arc2 { a, b, .. } => std::iter::once(*a).chain(*b).collect(),
+            Op::Arc3 { a, m, .. } => std::iter::once(*a).chain(*m).collect(),
             Op::RotRect { a, b, .. } => std::iter::once(*a).chain(*b).collect(),
             Op::Move { base, .. } => vec![*base],
             Op::Tape { start, .. } => vec![*start],
@@ -411,6 +435,7 @@ impl Tools {
                 Some((p, snap))
             }
             Op::Rect { plane, .. } | Op::Round { plane, .. } | Op::RotRect { plane, .. } | Op::Pie { plane, .. } => on_plane(plane, c),
+            Op::Arc2 { plane, .. } | Op::Arc3 { plane, .. } | Op::Free { plane, .. } => on_plane(plane, c),
             Op::Rotate { plane, .. } | Op::Protract { plane, .. } => on_plane(plane, c),
             Op::Move { base, .. } | Op::Tape { start: base, .. } => {
                 // a snap wins; else the mouse locks onto an axis through the start point when it is close to one
@@ -439,7 +464,16 @@ impl Tools {
             Op::Rect { cursor, .. } | Op::Round { cursor, .. } | Op::RotRect { cursor, .. } | Op::Pie { cursor, .. } => {
                 *cursor = marker.map(|m| m.0)
             }
-            Op::Tape { cursor, .. } => *cursor = marker.map(|m| m.0),
+            Op::Tape { cursor, .. } | Op::Arc2 { cursor, .. } | Op::Arc3 { cursor, .. } => *cursor = marker.map(|m| m.0),
+            Op::Free { points, .. } => {
+                // a new point once the mouse has moved a little way from the last
+                if let (Some((p, _)), Some(&last)) = (marker, points.last()) {
+                    let reach = points.first().map_or(1.0, |&f| dist(f, last)).max(0.02);
+                    if dist(p, last) > reach * 0.02 && points.len() < 2000 {
+                        points.push(p);
+                    }
+                }
+            }
             Op::Move { cursor, axis, .. } => {
                 *cursor = marker.map(|m| m.0);
                 *axis = match marker {
@@ -487,6 +521,42 @@ impl Tools {
                 (None, Some((p, _))) if dist(a, p) > 1e-6 => self.op = Op::RotRect { plane, a, b: Some(p), cursor: None },
                 (Some(b), Some((p, _))) => self.commit(model, sketch::rotated_rectangle(&plane, a, b, p))?,
                 (b, _) => self.op = Op::RotRect { plane, a, b, cursor: None },
+            },
+            (Tool::TwoPointArc, Op::Idle) => {
+                if let Some(h) = c.hit {
+                    self.op = Op::Arc2 { plane: Plane { origin: h.point, ..h.plane }, a: h.point, b: None, cursor: None };
+                }
+            }
+            (Tool::TwoPointArc, Op::Arc2 { plane, a, b, .. }) => match (b, marker) {
+                (None, Some((p, _))) if dist(a, p) > 1e-6 => self.op = Op::Arc2 { plane, a, b: Some(p), cursor: None },
+                (Some(b), Some((p, _))) => {
+                    let bulge = bulge_toward(&plane, a, b, p);
+                    self.draw_arc(model, sketch::arc_by_bulge(&plane, a, b, bulge, self.arc_segments))?
+                }
+                (b, _) => self.op = Op::Arc2 { plane, a, b, cursor: None },
+            },
+            (Tool::ThreePointArc, Op::Idle) => {
+                if let Some(h) = c.hit {
+                    self.op = Op::Arc3 { plane: Plane { origin: h.point, ..h.plane }, a: h.point, m: None, cursor: None };
+                }
+            }
+            (Tool::ThreePointArc, Op::Arc3 { plane, a, m, .. }) => match (m, marker) {
+                (None, Some((p, _))) if dist(a, p) > 1e-6 => self.op = Op::Arc3 { plane, a, m: Some(p), cursor: None },
+                (Some(m), Some((p, _))) => self.draw_arc(model, sketch::arc_three_points(&plane, a, m, p, self.arc_segments))?,
+                (m, _) => self.op = Op::Arc3 { plane, a, m, cursor: None },
+            },
+            (Tool::Arc, Op::Idle) => {
+                if let Some(h) = c.hit {
+                    self.op = Op::Pie { plane: Plane { origin: h.point, ..h.plane }, center: h.point, start: None, cursor: None };
+                }
+            }
+            (Tool::Arc, Op::Pie { plane, center, start, .. }) => match (start, marker) {
+                (None, Some((p, _))) if dist(center, p) > 1e-6 => self.op = Op::Pie { plane, center, start: Some(p), cursor: None },
+                (Some(st), Some((p, _))) => {
+                    let sweep = sketch::angle_between(&plane, center, st, p).map(snap_angle).unwrap_or(0.0);
+                    self.draw_arc(model, sketch::arc_from_center(&plane, center, st, sweep, self.arc_segments))?
+                }
+                (start, _) => self.op = Op::Pie { plane, center, start, cursor: None },
             },
             (Tool::Pie, Op::Idle) => {
                 if let Some(h) = c.hit {
@@ -655,7 +725,22 @@ impl Tools {
                 self.arc_segments = n;
                 self.op = op;
             }
-            (Entry::Sides(n), Op::Idle) if self.tool == Tool::Pie => self.arc_segments = n,
+            (Entry::Sides(n), Op::Idle) if matches!(self.tool, Tool::Pie | Tool::Arc | Tool::TwoPointArc | Tool::ThreePointArc) => {
+                self.arc_segments = n
+            }
+            (Entry::Sides(n), op @ (Op::Arc2 { .. } | Op::Arc3 { .. })) => {
+                self.arc_segments = n;
+                self.op = op;
+            }
+            (Entry::Value(l), Op::Arc2 { plane, a, b: None, cursor }) => {
+                let dir = cursor.and_then(|c| normalize(sub(c, a))).unwrap_or(plane.u);
+                self.op = Op::Arc2 { plane, a, b: Some(add(a, scale(dir, l.abs()))), cursor };
+            }
+            (Entry::Value(h), Op::Arc2 { plane, a, b: Some(b), cursor }) => {
+                // the bulge, to the side of the chord the mouse is on
+                let side = cursor.map(|c| bulge_toward(&plane, a, b, c).signum()).unwrap_or(1.0);
+                self.draw_arc(model, sketch::arc_by_bulge(&plane, a, b, h.abs() * side, self.arc_segments))?;
+            }
             (Entry::Value(r), Op::Pie { plane, center, start: None, cursor }) => {
                 let dir = cursor.and_then(|c| normalize(sub(c, center))).unwrap_or(plane.u);
                 self.op = Op::Pie { plane, center, start: Some(add(center, scale(dir, r.abs()))), cursor };
@@ -709,6 +794,9 @@ impl Tools {
                 self.add_protractor_guide(&plane, center, st, rad);
                 Ok(())
             }
+            Op::Pie { plane, center, start: Some(st), .. } if self.tool == Tool::Arc => {
+                self.draw_arc(model, sketch::arc_from_center(&plane, center, st, rad, self.arc_segments))
+            }
             Op::Pie { plane, center, start: Some(st), .. } => self.commit(model, sketch::pie(&plane, center, st, rad, self.arc_segments)),
             Op::Scale { verts, anchor, .. } if n != 0.0 => self.transform(model, &verts, |q| scale_about(q, anchor, n)),
             Op::Scale { .. } => Err("a scale of 0 would flatten it to a point".into()),
@@ -717,6 +805,33 @@ impl Tools {
                 return None;
             }
         })
+    }
+
+    /// Draws an arc (open, as lines) into the model.
+    fn draw_arc(&mut self, model: &mut Model, arc: Option<Vec<[f32; 3]>>) -> Result<(), String> {
+        let arc = arc.ok_or("the arc has no size")?;
+        model.add_polyline(&arc).map_err(|e| e.to_string())?;
+        self.op = Op::Idle;
+        Ok(())
+    }
+
+    /// Freehand: the button went down here.
+    pub fn freehand_press(&mut self, c: &Cursor) {
+        if self.tool == Tool::Freehand {
+            if let Some(h) = c.hit {
+                self.op = Op::Free { plane: Plane { origin: h.point, ..h.plane }, points: vec![h.point] };
+            }
+        }
+    }
+
+    /// Freehand: the button came up; the stroke goes into the model as lines.
+    pub fn freehand_release(&mut self, model: &mut Model) -> Result<(), String> {
+        let Op::Free { points, .. } = std::mem::replace(&mut self.op, Op::Idle) else { return Ok(()) };
+        if points.len() < 2 {
+            return Ok(());
+        }
+        model.add_polyline(&points).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     fn add_tape_guides(&mut self, start: [f32; 3], end: [f32; 3]) {
@@ -803,6 +918,29 @@ impl Tools {
                     }
                 }
             },
+            Op::Arc2 { plane, a, b, cursor: Some(c) } => match b {
+                None => out.push((*a, *c, RUBBER_BAND)),
+                Some(b) => {
+                    if let Some(arc) = sketch::arc_by_bulge(plane, *a, *b, bulge_toward(plane, *a, *b, *c), self.arc_segments) {
+                        chain_lines(&arc, &mut out);
+                    }
+                }
+            },
+            Op::Arc3 { plane, a, m, cursor: Some(c) } => match m {
+                None => out.push((*a, *c, RUBBER_BAND)),
+                Some(m) => match sketch::arc_three_points(plane, *a, *m, *c, self.arc_segments) {
+                    Some(arc) => chain_lines(&arc, &mut out),
+                    None => out.push((*a, *c, RUBBER_BAND)),
+                },
+            },
+            Op::Free { points, .. } => chain_lines(points, &mut out),
+            Op::Pie { plane, center, start: Some(st), cursor: Some(c) } if self.tool == Tool::Arc => {
+                out.push((*center, *st, PUSH_GUIDE));
+                let sweep = sketch::angle_between(plane, *center, *st, *c).map(snap_angle).unwrap_or(0.0);
+                if let Some(arc) = sketch::arc_from_center(plane, *center, *st, sweep, self.arc_segments) {
+                    chain_lines(&arc, &mut out);
+                }
+            }
             Op::Pie { plane, center, start, cursor: Some(c) } => match start {
                 None => out.push((*center, *c, RUBBER_BAND)),
                 Some(st) => {
@@ -851,7 +989,16 @@ impl Tools {
             (Tool::RotatedRectangle, Op::Idle) => "Select first corner.",
             (Tool::RotatedRectangle, Op::RotRect { b: None, .. }) => "Select second corner, or type a length. The first side may point any way.",
             (Tool::RotatedRectangle, _) => "Select the height, or type it.",
-            (Tool::Pie, Op::Idle) => "Select center point. Type a number followed by s to set segments.",
+            (Tool::Pie | Tool::Arc, Op::Idle) => "Select center point. Type a number followed by s to set segments.",
+            (Tool::Arc, Op::Pie { start: None, .. }) => "Select start of the arc, or type a radius.",
+            (Tool::Arc, _) => "Select end of the arc, or type an angle in degrees.",
+            (Tool::TwoPointArc, Op::Idle) => "Select start point. Type a number followed by s to set segments.",
+            (Tool::TwoPointArc, Op::Arc2 { b: None, .. }) => "Select end point, or type the length.",
+            (Tool::TwoPointArc, _) => "Move to bow the arc and click, or type the bulge.",
+            (Tool::ThreePointArc, Op::Idle) => "Select start point.",
+            (Tool::ThreePointArc, Op::Arc3 { m: None, .. }) => "Select a point the arc passes through.",
+            (Tool::ThreePointArc, _) => "Select end point.",
+            (Tool::Freehand, _) => "Hold the button and draw.",
             (Tool::Pie, Op::Pie { start: None, .. }) => "Select start of the arc, or type a radius.",
             (Tool::Pie, _) => "Select end of the arc, or type an angle in degrees.",
             (Tool::Move, Op::Idle) => "Pick a point to move from. Moves the selection, or the face under the mouse.",
@@ -906,6 +1053,9 @@ impl Tools {
                     .map(|h| fmt(h, self.units))
                     .unwrap_or_default(),
             ),
+            Op::Arc2 { a, b: None, cursor, .. } => ("Length", cursor.map(|c| fmt(dist(*a, c), self.units)).unwrap_or_default()),
+            Op::Arc2 { plane, a, b: Some(b), cursor } => ("Bulge", cursor.map(|c| fmt(bulge_toward(plane, *a, *b, c).abs(), self.units)).unwrap_or_default()),
+            Op::Arc3 { .. } | Op::Free { .. } => ("Measurements", String::new()),
             Op::Pie { center, start: None, cursor, .. } => ("Radius", cursor.map(|c| fmt(dist(*center, c), self.units)).unwrap_or_default()),
             Op::Pie { plane, center, start: Some(st), cursor } => (
                 "Angle",
@@ -921,7 +1071,7 @@ impl Tools {
             Op::Idle => match self.tool {
                 Tool::Circle => ("Segments", self.circle_segments.to_string()),
                 Tool::Polygon => ("Sides", self.polygon_sides.to_string()),
-                Tool::Pie => ("Segments", self.arc_segments.to_string()),
+                Tool::Pie | Tool::Arc | Tool::TwoPointArc | Tool::ThreePointArc => ("Segments", self.arc_segments.to_string()),
                 Tool::PushPull => ("Distance", self.last_push.map(|(_, d)| fmt(d, self.units)).unwrap_or_default()),
                 _ => ("Measurements", String::new()),
             },
@@ -1097,6 +1247,23 @@ fn closest_on_line(base: [f32; 3], dir_line: [f32; 3], origin: [f32; 3], dir: [f
         return None;
     }
     Some((b * dot(dir, w0) - dot(dir_line, w0)) / denom)
+}
+
+fn chain_lines(r: &[[f32; 3]], out: &mut Vec<([f32; 3], [f32; 3], [f32; 4])>) {
+    for w in r.windows(2) {
+        out.push((w[0], w[1], RUBBER_BAND));
+    }
+}
+
+/// The bulge of a 2 Point Arc from `a` to `b` toward `p`: how far `p` is from the chord, positive on its left.
+fn bulge_toward(plane: &Plane, a: [f32; 3], b: [f32; 3], p: [f32; 3]) -> f32 {
+    let (la, lb, lp) = (plane.to_local(a), plane.to_local(b), plane.to_local(p));
+    let (dx, dy) = (lb[0] - la[0], lb[1] - la[1]);
+    let l = dx.hypot(dy);
+    if l < 1e-9 {
+        return 0.0;
+    }
+    ((lp[0] - la[0]) * -dy + (lp[1] - la[1]) * dx) / l
 }
 
 fn ring_lines(r: &[[f32; 3]], out: &mut Vec<([f32; 3], [f32; 3], [f32; 4])>) {
@@ -1503,5 +1670,44 @@ mod tests {
         assert!(r.click(&mut m, &at(2.0, 0.0)).is_err(), "zero height");
         assert!(!r.is_busy());
         assert_eq!(m.mesh().face_count(), 0);
+    }
+
+    #[test]
+    fn an_arc_and_a_line_make_a_half_disc() {
+        let (mut t, mut m) = with(Tool::TwoPointArc);
+        t.click(&mut m, &at(0.0, 0.0)).unwrap();
+        t.click(&mut m, &at(2.0, 0.0)).unwrap();
+        t.hover(&at(1.0, 0.5));
+        t.type_entry(&mut m, "1").unwrap();
+        assert_eq!(m.mesh().lines.len(), 12, "a 12-piece arc");
+        let mesh = m.mesh().to_mesh();
+        assert!(mesh.positions.iter().any(|p| (p[0] - 1.0).abs() < 1e-5 && (p[1] - 1.0).abs() < 1e-5), "bowed toward the mouse");
+        // close it with a line along the chord
+        t.set_tool(Tool::Line);
+        t.click(&mut m, &ground_hit([2.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        t.click(&mut m, &ground_hit([0.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        assert_eq!(m.mesh().face_count(), 1);
+        m.push_pull(0, 1.0).unwrap();
+        let half_disc = 0.5 * 12.0 * (std::f32::consts::PI / 12.0).sin();
+        assert!((m.mesh().signed_volume() - half_disc).abs() < 1e-3, "{}", m.mesh().signed_volume());
+    }
+
+    #[test]
+    fn three_point_arc_and_freehand() {
+        let (mut t, mut m) = with(Tool::ThreePointArc);
+        for (x, y) in [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)] {
+            t.click(&mut m, &at(x, y)).unwrap();
+        }
+        assert_eq!(m.mesh().lines.len(), 12);
+
+        let (mut t, mut m) = with(Tool::Freehand);
+        t.freehand_press(&at(0.0, 0.0));
+        for i in 1..=50 {
+            let x = i as f32 * 0.05;
+            t.hover(&at(x, (x * 3.0).sin()));
+        }
+        t.freehand_release(&mut m).unwrap();
+        assert!(m.mesh().lines.len() > 10, "a stroke of many short lines: {}", m.mesh().lines.len());
+        assert!(!t.is_busy());
     }
 }

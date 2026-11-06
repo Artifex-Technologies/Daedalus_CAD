@@ -151,6 +151,90 @@ pub fn pie(plane: &Plane, center: [f32; 3], start: [f32; 3], sweep: f32, segment
     Some(if sweep > 0.0 { pts } else { pts.into_iter().rev().collect() })
 }
 
+/// 2 Point Arc: from `a` to `b`, bowed out by `bulge` (the height of its middle above the chord, measured along the plane's
+/// normal turned onto the chord's left; negative bows the other way), in `segments` straight pieces. Points from `a` to
+/// `b`. None for a zero chord; a zero bulge is the straight line.
+pub fn arc_by_bulge(plane: &Plane, a: [f32; 3], b: [f32; 3], bulge: f32, segments: u32) -> Option<Vec<[f32; 3]>> {
+    let (la, lb) = (plane.to_local(a), plane.to_local(b));
+    let (dx, dy) = (lb[0] - la[0], lb[1] - la[1]);
+    let chord = dx.hypot(dy);
+    if chord < EPS || segments == 0 {
+        return None;
+    }
+    if bulge.abs() < EPS {
+        return Some(vec![a, b]);
+    }
+    let half = chord / 2.0;
+    // radius from the chord and the bulge; the centre sits on the chord's perpendicular through its middle
+    let r = (half * half + bulge * bulge) / (2.0 * bulge.abs());
+    let (nx, ny) = (-dy / chord, dx / chord); // left of a -> b
+    let side = bulge.signum();
+    let (mx, my) = (la[0] + dx / 2.0, la[1] + dy / 2.0);
+    let off = r - bulge.abs(); // from the middle of the chord to the centre, away from the bulge
+    let (cx, cy) = (mx - nx * side * off, my - ny * side * off);
+    let a0 = (la[1] - cy).atan2(la[0] - cx);
+    let a1 = (lb[1] - cy).atan2(lb[0] - cx);
+    // the sweep that passes through the bulge's side
+    let mut sweep = a1 - a0;
+    let tau = std::f32::consts::TAU;
+    let want_ccw = side < 0.0; // bulging left of a -> b goes clockwise round the centre
+    if want_ccw && sweep < 0.0 {
+        sweep += tau;
+    }
+    if !want_ccw && sweep > 0.0 {
+        sweep -= tau;
+    }
+    Some(
+        (0..=segments)
+            .map(|i| {
+                let t = a0 + sweep * i as f32 / segments as f32;
+                plane.to_world(cx + r * t.cos(), cy + r * t.sin())
+            })
+            .collect(),
+    )
+}
+
+/// 3 Point Arc: the arc from `a` through `m` to `b`, in `segments` pieces. None when the three points are in a line.
+pub fn arc_three_points(plane: &Plane, a: [f32; 3], m: [f32; 3], b: [f32; 3], segments: u32) -> Option<Vec<[f32; 3]>> {
+    let (p, q, r) = (plane.to_local(a), plane.to_local(m), plane.to_local(b));
+    let d = 2.0 * (p[0] * (q[1] - r[1]) + q[0] * (r[1] - p[1]) + r[0] * (p[1] - q[1]));
+    if d.abs() < EPS || segments == 0 {
+        return None;
+    }
+    let sq = |v: [f32; 2]| v[0] * v[0] + v[1] * v[1];
+    let cx = (sq(p) * (q[1] - r[1]) + sq(q) * (r[1] - p[1]) + sq(r) * (p[1] - q[1])) / d;
+    let cy = (sq(p) * (r[0] - q[0]) + sq(q) * (p[0] - r[0]) + sq(r) * (q[0] - p[0])) / d;
+    let rad = (p[0] - cx).hypot(p[1] - cy);
+    let ang = |v: [f32; 2]| (v[1] - cy).atan2(v[0] - cx);
+    let tau = std::f32::consts::TAU;
+    let (a0, am, a1) = (ang(p), ang(q), ang(r));
+    // counter-clockwise from a: does it meet m before b? if not, go the other way round
+    let ccw = |x: f32| (x - a0).rem_euclid(tau);
+    let sweep = if ccw(am) <= ccw(a1) { ccw(a1) } else { ccw(a1) - tau };
+    Some(
+        (0..=segments)
+            .map(|i| {
+                let t = a0 + sweep * i as f32 / segments as f32;
+                plane.to_world(cx + rad * t.cos(), cy + rad * t.sin())
+            })
+            .collect(),
+    )
+}
+
+/// Arc (by its centre): around `center` from `start` (which sets the radius), turning `sweep` radians counter-clockwise
+/// about the normal. Points along the arc only (a pie without its two radii).
+pub fn arc_from_center(plane: &Plane, center: [f32; 3], start: [f32; 3], sweep: f32, segments: u32) -> Option<Vec<[f32; 3]>> {
+    let mut v = pie(plane, center, start, sweep, segments)?;
+    // pie() puts the centre first (or last when it turned the ring round)
+    if sweep > 0.0 {
+        v.remove(0);
+    } else {
+        v.pop();
+        v.reverse();
+    }
+    Some(v)
+}
+
 fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
@@ -279,6 +363,28 @@ mod tests {
         assert!(pie(&g, [0.0; 3], [0.0; 3], 1.0, 12).is_none());
         let a = angle_between(&g, [0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
         assert!((a - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn arcs_pass_through_their_points() {
+        let g = Plane::ground();
+        // a half circle over a 2 m chord: bulge 1 gives radius 1
+        let arc = arc_by_bulge(&g, [0.0, 0.0, 0.0], [2.0, 0.0, 0.0], 1.0, 12).unwrap();
+        assert_eq!(arc.len(), 13);
+        assert!(close(arc[0], [0.0; 3]) && close(arc[12], [2.0, 0.0, 0.0]));
+        assert!(arc.iter().all(|p| ((p[0] - 1.0).hypot(p[1]) - 1.0).abs() < 1e-5));
+        assert!(close(arc[6], [1.0, 1.0, 0.0]), "bulging to the left of a -> b: {:?}", arc[6]);
+        let other = arc_by_bulge(&g, [0.0, 0.0, 0.0], [2.0, 0.0, 0.0], -0.5, 12).unwrap();
+        assert!((other[6][1] + 0.5).abs() < 1e-5, "a shallow arc the other way: {:?}", other[6]);
+        // 3 points: through the middle one
+        let arc = arc_three_points(&g, [0.0, 0.0, 0.0], [1.0, -1.0, 0.0], [2.0, 0.0, 0.0], 12).unwrap();
+        assert!(close(arc[6], [1.0, -1.0, 0.0]), "{:?}", arc[6]);
+        assert!(close(arc[12], [2.0, 0.0, 0.0]));
+        assert!(arc_three_points(&g, [0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], 12).is_none(), "in a line");
+        // by its centre: a quarter
+        let q = arc_from_center(&g, [0.0; 3], [1.0, 0.0, 0.0], std::f32::consts::FRAC_PI_2, 6).unwrap();
+        assert_eq!(q.len(), 7);
+        assert!(close(q[0], [1.0, 0.0, 0.0]) && close(q[6], [0.0, 1.0, 0.0]));
     }
 
     #[test]

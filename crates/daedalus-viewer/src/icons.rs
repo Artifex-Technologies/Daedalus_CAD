@@ -29,10 +29,6 @@ pub enum Icon {
 pub enum Planned {
     MakeComponent,
     PaintBucket,
-    Freehand,
-    Arc,
-    TwoPointArc,
-    ThreePointArc,
     FollowMe,
     Offset,
     Dimensions,
@@ -47,10 +43,6 @@ impl Planned {
         match self {
             Planned::MakeComponent => "Make Component",
             Planned::PaintBucket => "Paint Bucket",
-            Planned::Freehand => "Freehand",
-            Planned::Arc => "Arc",
-            Planned::TwoPointArc => "2 Point Arc",
-            Planned::ThreePointArc => "3 Point Arc",
             Planned::FollowMe => "Follow Me",
             Planned::Offset => "Offset",
             Planned::Dimensions => "Dimensions",
@@ -232,6 +224,23 @@ impl Draw<'_> {
                     .collect();
                 self.closed(&hex);
             }
+            Icon::Tool(Tool::Freehand) => self.line(&[(0.1, 0.8), (0.24, 0.4), (0.38, 0.72), (0.56, 0.24), (0.72, 0.62), (0.9, 0.3)]),
+            Icon::Tool(Tool::Arc) => {
+                self.line(&self.arc(0.5, 0.78, 0.38, 0.0, 180.0));
+                self.dot(0.5, 0.78);
+                self.dot(0.88, 0.78);
+            }
+            Icon::Tool(Tool::TwoPointArc) => {
+                self.line(&self.arc(0.5, 0.78, 0.38, 0.0, 180.0));
+                self.dot(0.12, 0.78);
+                self.dot(0.88, 0.78);
+            }
+            Icon::Tool(Tool::ThreePointArc) => {
+                self.line(&self.arc(0.5, 0.78, 0.38, 0.0, 180.0));
+                self.dot(0.12, 0.78);
+                self.dot(0.5, 0.4);
+                self.dot(0.88, 0.78);
+            }
             Icon::Tool(Tool::Pie) => {
                 let mut v = vec![(0.14, 0.86)];
                 v.extend(self.arc(0.14, 0.86, 0.72, 0.0, 90.0));
@@ -386,23 +395,6 @@ impl Draw<'_> {
                 self.closed(&[(0.16, 0.42), (0.56, 0.22), (0.78, 0.66), (0.38, 0.86)]);
                 self.line(&self.arc(0.36, 0.32, 0.2, 60.0, 200.0));
                 self.fill(&[(0.82, 0.56), (0.9, 0.74), (0.82, 0.84), (0.74, 0.74)], self.accent);
-            }
-            Planned::Freehand => self.line(&[(0.1, 0.8), (0.24, 0.4), (0.38, 0.72), (0.56, 0.24), (0.72, 0.62), (0.9, 0.3)]),
-            Planned::Arc => {
-                self.line(&self.arc(0.5, 0.78, 0.38, 0.0, 180.0));
-                self.dot(0.5, 0.78);
-                self.dot(0.88, 0.78);
-            }
-            Planned::TwoPointArc => {
-                self.line(&self.arc(0.5, 0.78, 0.38, 0.0, 180.0));
-                self.dot(0.12, 0.78);
-                self.dot(0.88, 0.78);
-            }
-            Planned::ThreePointArc => {
-                self.line(&self.arc(0.5, 0.78, 0.38, 0.0, 180.0));
-                self.dot(0.12, 0.78);
-                self.dot(0.5, 0.4);
-                self.dot(0.88, 0.78);
             }
             Planned::FollowMe => {
                 self.line(&self.arc(0.5, 0.56, 0.34, 180.0, 360.0));

@@ -794,6 +794,10 @@ impl State {
             | Tool::Circle
             | Tool::Polygon
             | Tool::Pie
+            | Tool::Arc
+            | Tool::TwoPointArc
+            | Tool::ThreePointArc
+            | Tool::Freehand
             | Tool::Move
             | Tool::Rotate
             | Tool::TapeMeasure
@@ -1028,6 +1032,15 @@ impl ApplicationHandler<AppEvent> for App {
                         if down {
                             s.press_at = s.cursor;
                             s.left_down = true;
+                            if s.tools.tool == Tool::Freehand && s.readonly.is_none() {
+                                let c = s.resolve_cursor();
+                                s.tools.freehand_press(&c);
+                            }
+                        } else if s.left_down && s.tools.tool == Tool::Freehand {
+                            s.left_down = false;
+                            let r = s.tools.freehand_release(&mut s.model);
+                            s.message = r.err();
+                            s.after_edit();
                         } else if s.left_down && s.tools.tool == Tool::ZoomWindow {
                             s.left_down = false;
                             let (w, h) = s.size();
