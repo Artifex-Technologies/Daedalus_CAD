@@ -321,7 +321,7 @@ impl State {
         let face_hit = self.display.pick_face(origin.into(), dir.into());
 
         let mut candidates: Vec<(Vec3, Snap)> = Vec::new();
-        for (a, b) in self.display.all_edges() {
+        for (a, b) in self.display.visible_edges() {
             let (pa, pb) = (Vec3::from(self.display.positions[a as usize]), Vec3::from(self.display.positions[b as usize]));
             candidates.push((pa, Snap::Endpoint));
             candidates.push((pb, Snap::Endpoint));

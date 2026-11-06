@@ -11,6 +11,8 @@ pub struct Mesh {
     pub faces: Vec<Vec<u32>>,
     /// Loose edges: lines drawn that do not border a face (yet), as SketchUp keeps them. Vertex pairs.
     pub lines: Vec<[u32; 2]>,
+    /// Face edges that are not drawn: the seams that join the two faces around a hole (see `imprint::cut_hole`).
+    pub seams: Vec<[u32; 2]>,
 }
 
 impl Mesh {
@@ -60,6 +62,12 @@ impl Mesh {
         out.sort_unstable();
         out.dedup();
         out
+    }
+
+    /// The edges to draw and snap to: [`Mesh::all_edges`] without the hidden seams.
+    pub fn visible_edges(&self) -> Vec<(u32, u32)> {
+        let hidden: std::collections::HashSet<(u32, u32)> = self.seams.iter().map(|&[a, b]| (a.min(b), a.max(b))).collect();
+        self.all_edges().into_iter().filter(|e| !hidden.contains(e)).collect()
     }
 
     /// Nearest face hit by a ray, as (face index, distance along the ray).

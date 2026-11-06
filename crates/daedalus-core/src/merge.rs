@@ -189,6 +189,7 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f32) -> (Mesh, Vec<usize>) {
         out.add_face(f.iter().map(|&v| renumber[v as usize]).collect());
     }
     out.lines = mesh.lines.iter().map(|l| l.map(|v| renumber[v as usize])).collect();
+    out.seams = mesh.seams.iter().map(|l| l.map(|v| renumber[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
     (out, map)
 }
 

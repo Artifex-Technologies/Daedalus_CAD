@@ -91,6 +91,23 @@ impl Model {
         self.edit(|m| m.add_line(a, b))
     }
 
+    /// A shape's outline (Rectangle, Circle, Polygon, Pie ...) drawn as its lines in one undo step, so it joins and cuts what
+    /// is there like lines do: on a face it splits it, or cuts a hole that it fills. Returns the face it made, if any.
+    pub fn add_outline(&mut self, points: &[[f32; 3]]) -> Result<Option<usize>, TopologyError> {
+        if points.len() < 3 {
+            return Err(TopologyError::DegenerateFace(self.mesh.face_count()));
+        }
+        self.edit(|m| {
+            let mut made = None;
+            for i in 0..points.len() {
+                if let Some(f) = m.add_line(points[i], points[(i + 1) % points.len()])? {
+                    made = Some(f);
+                }
+            }
+            Ok(made)
+        })
+    }
+
     pub fn erase_line(&mut self, i: usize) -> Result<(), TopologyError> {
         self.edit(|m| m.erase_line(i))
     }
@@ -325,5 +342,81 @@ mod tests {
         assert!(mesh.lines.iter().all(|l| l.iter().all(|&v| mesh.positions[v as usize][0] < 2.0)), "still the old square");
         m.erase_line(0).unwrap();
         assert_eq!(m.mesh().lines.len(), 3);
+    }
+
+    #[test]
+    fn a_line_across_a_face_splits_it() {
+        let mut m = Model::new();
+        m.add_rectangle([0.0; 3], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
+        // from the middle of one side to the middle of the other: two faces, the sides get a corner each
+        m.add_line([1.0, 0.0, 0.0], [1.0, 2.0, 0.0]).unwrap();
+        assert_eq!(m.mesh().face_count(), 2);
+        assert!(m.mesh().lines.is_empty());
+        assert_eq!(m.mesh().vertex_count(), 6);
+        // corner to corner: a triangle splits off
+        let mut m = Model::new();
+        m.add_rectangle([0.0; 3], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
+        m.add_line([0.0, 0.0, 0.0], [2.0, 2.0, 0.0]).unwrap();
+        assert_eq!(m.mesh().face_count(), 2);
+        assert!((0..2).all(|f| m.mesh().face_vertices(f).len() == 3));
+        // one half pulls up on its own
+        let half = (0..2).find(|&f| m.mesh().face_normal(f)[2] > 0.9).unwrap();
+        m.push_pull(half, 1.0).unwrap();
+        assert!((m.mesh().signed_volume() - 2.0).abs() < 1e-4, "a triangular prism of 2 x 2 / 2 x 1");
+    }
+
+    #[test]
+    fn crossing_lines_meet() {
+        let mut m = Model::new();
+        m.add_line([0.0, 1.0, 0.0], [2.0, 1.0, 0.0]).unwrap();
+        m.add_line([1.0, 0.0, 0.0], [1.0, 2.0, 0.0]).unwrap();
+        assert_eq!(m.mesh().lines.len(), 4, "both lines broke where they cross");
+        assert_eq!(m.mesh().vertex_count(), 5);
+        // a line ending on another's middle breaks it too
+        m.add_line([0.0, 1.0, 0.0], [0.0, 3.0, 0.0]).unwrap();
+        m.add_line([-1.0, 2.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
+        assert_eq!(m.mesh().lines.len(), 7);
+    }
+
+    #[test]
+    fn lines_close_a_face_against_a_face_edge() {
+        let mut m = Model::new();
+        m.add_rectangle([0.0; 3], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
+        m.add_line([2.0, 0.0, 0.0], [3.0, 0.0, 0.0]).unwrap();
+        m.add_line([3.0, 0.0, 0.0], [3.0, 2.0, 0.0]).unwrap();
+        let f = m.add_line([3.0, 2.0, 0.0], [2.0, 2.0, 0.0]).unwrap();
+        assert!(f.is_some(), "the square's side closes the new face");
+        assert_eq!(m.mesh().face_count(), 2);
+        assert!(m.mesh().lines.is_empty());
+        // the two faces share the side: pulled together they make one closed box
+        let up = m.mesh().to_mesh();
+        assert_eq!(up.edges().len(), 7);
+    }
+
+    #[test]
+    fn a_square_drawn_inside_a_face_becomes_a_hole_that_pushes_in() {
+        let mut m = Model::new();
+        m.add_rectangle([0.0; 3], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0]).unwrap();
+        let top = m.push_pull(0, 2.0).unwrap();
+        assert_eq!(m.mesh().face_normal(top), [0.0, 0.0, 1.0]);
+        let sq = [[1.0, 1.0, 2.0], [3.0, 1.0, 2.0], [3.0, 3.0, 2.0], [1.0, 3.0, 2.0]];
+        let mut inner = None;
+        for i in 0..4 {
+            inner = m.add_line(sq[i], sq[(i + 1) % 4]).unwrap();
+        }
+        let inner = inner.expect("the square closed into a face");
+        assert!(m.mesh().lines.is_empty());
+        assert_eq!(m.mesh().face_vertices(inner).len(), 4);
+        assert!((m.mesh().face_normal(inner)[2] - 1.0).abs() < 1e-6, "faces up like the top around it");
+        assert!(m.mesh().is_closed(), "still a closed solid");
+        assert!((m.mesh().signed_volume() - 32.0).abs() < 1e-3);
+        // the two seams of the ring around it are not drawn; the square's own edges are
+        let mesh = m.mesh().to_mesh();
+        assert_eq!(mesh.seams.len(), 2);
+        assert_eq!(mesh.all_edges().len() - mesh.visible_edges().len(), 2);
+        // pushed in by 1: a pocket of 2 x 2 x 1
+        m.push_pull(inner, -1.0).unwrap();
+        assert!(m.mesh().is_closed());
+        assert!((m.mesh().signed_volume() - 28.0).abs() < 1e-3, "{}", m.mesh().signed_volume());
     }
 }

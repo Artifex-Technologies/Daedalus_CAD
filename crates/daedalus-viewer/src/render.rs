@@ -106,7 +106,7 @@ fn face_vertices(mesh: &Mesh, selected: &[usize], flagged: &[usize]) -> Vec<Vert
 }
 
 fn edge_vertices(mesh: &Mesh) -> Vec<LineVertex> {
-    mesh.all_edges()
+    mesh.visible_edges()
         .into_iter()
         .flat_map(|(a, b)| [a, b])
         .map(|v| LineVertex { position: mesh.positions[v as usize], color: EDGE_COLOR })

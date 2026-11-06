@@ -58,6 +58,8 @@ pub struct HalfEdgeMesh {
     faces: Vec<u32>,
     /// Loose edges (lines that are no face's edge), as vertex pairs.
     pub lines: Vec<[u32; 2]>,
+    /// Hidden face edges (seams around holes).
+    pub seams: Vec<[u32; 2]>,
 }
 
 impl HalfEdgeMesh {
@@ -67,6 +69,9 @@ impl HalfEdgeMesh {
             return Err(TopologyError::VertexOutOfRange(a.max(b)));
         }
         he.lines = mesh.lines.clone();
+        // a seam is kept only while it is still some face's edge
+        let face_edges: std::collections::HashSet<(u32, u32)> = mesh.edges().into_iter().collect();
+        he.seams = mesh.seams.iter().copied().filter(|&[a, b]| face_edges.contains(&(a.min(b), a.max(b)))).collect();
         let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
 
         for (fi, face) in mesh.faces.iter().enumerate() {
@@ -106,7 +111,7 @@ impl HalfEdgeMesh {
     }
 
     pub fn to_mesh(&self) -> Mesh {
-        let mut m = Mesh { positions: self.positions.clone(), faces: Vec::new(), lines: self.lines.clone() };
+        let mut m = Mesh { positions: self.positions.clone(), faces: Vec::new(), lines: self.lines.clone(), seams: self.seams.clone() };
         for f in 0..self.faces.len() {
             m.faces.push(self.face_vertices(f));
         }
@@ -233,35 +238,26 @@ impl HalfEdgeMesh {
         Ok(())
     }
 
-    /// The vertex at `p` (within `tol`), or a new one there: lines drawn from a corner share it.
-    fn weld_vertex(&mut self, p: [f32; 3], tol: f32) -> u32 {
-        let found = self.positions.iter().position(|q| (0..3).all(|i| (q[i] - p[i]).abs() <= tol));
-        match found {
-            Some(i) => i as u32,
-            None => {
-                self.positions.push(p);
-                (self.positions.len() - 1) as u32
-            }
-        }
-    }
-
-    /// Line tool: a loose edge from `a` to `b`, sharing vertices with what is already there. When it closes a loop of loose
-    /// lines that lie in one plane, the loop becomes a face, as in SketchUp; that face's index is returned. A line that is
-    /// already there (or has no length) changes nothing.
+    /// Line tool: a line from `a` to `b` drawn into what is there (see [`crate::imprint`]): it joins the corners and edges it
+    /// meets, splits a face it crosses from edge to edge, and is otherwise a loose line. A closed loop it completes, of
+    /// loose lines and face edges lying in one plane, becomes a face, as in SketchUp. Returns the face that was made or
+    /// split off, if any. A line that is already there (or has no length) changes nothing.
     pub fn add_line(&mut self, a: [f32; 3], b: [f32; 3]) -> Result<Option<usize>, TopologyError> {
         let scale = a.iter().chain(b.iter()).fold(1.0f32, |m, c| m.max(c.abs()));
         let tol = 1e-5 * scale;
-        let (ia, ib) = (self.weld_vertex(a, tol), self.weld_vertex(b, tol));
-        if ia == ib {
-            return Ok(None);
+        let mut m = self.to_mesh();
+        let (added, split) = crate::imprint::add_segment(&mut m, a, b, tol);
+        *self = Self::from_mesh(&m)?;
+        let mut made = split.then(|| self.face_count() - 1);
+        // each new loose line may close a loop; later ones first, as closing removes lines and shifts the numbers
+        for &line in added.iter().rev() {
+            if line < self.lines.len() {
+                if let Some(f) = self.close_loop(line, tol * 10.0) {
+                    made = Some(f);
+                }
+            }
         }
-        let key = (ia.min(ib), ia.max(ib));
-        let exists = self.lines.iter().any(|&[x, y]| (x.min(y), x.max(y)) == key) || self.to_mesh().edges().binary_search(&key).is_ok();
-        if exists {
-            return Ok(None);
-        }
-        self.lines.push([ia, ib]);
-        Ok(self.close_loop(ia, ib, tol * 10.0))
+        Ok(made)
     }
 
     /// Erases loose line `i` (the Eraser on a line). Its vertices stay so indices stay valid.
@@ -273,16 +269,23 @@ impl HalfEdgeMesh {
         Ok(())
     }
 
-    /// After the line `a`-`b` was added: the shortest path of other loose lines from `b` back to `a`, if it lies in one
-    /// plane with at least three corners, becomes a face (its lines turn into the face's edges).
-    fn close_loop(&mut self, a: u32, b: u32, tol: f32) -> Option<usize> {
-        let new_line = self.lines.len() - 1;
+    /// Loose line number `new_line` may close a loop: the shortest path of other loose lines and face edges from one of
+    /// its ends back to the other, if it lies in one plane with at least three corners and covers no face already there,
+    /// becomes a face (its loose lines turn into the face's edges).
+    fn close_loop(&mut self, new_line: usize, tol: f32) -> Option<usize> {
+        let [a, b] = self.lines[new_line];
+        let mesh = self.to_mesh();
         let mut adjacent: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
         for (i, &[x, y]) in self.lines.iter().enumerate() {
             if i != new_line {
                 adjacent.entry(x).or_default().push((y, i));
                 adjacent.entry(y).or_default().push((x, i));
             }
+        }
+        // face edges can close a loop too (usize::MAX marks them: not a loose line)
+        for (x, y) in mesh.edges() {
+            adjacent.entry(x).or_default().push((y, usize::MAX));
+            adjacent.entry(y).or_default().push((x, usize::MAX));
         }
         // breadth first from b to a
         let mut came: HashMap<u32, (u32, usize)> = HashMap::new();
@@ -307,7 +310,9 @@ impl HalfEdgeMesh {
         while v != b {
             let (prev, line) = came[&v];
             ring.push(prev);
-            used.push(line);
+            if line != usize::MAX {
+                used.push(line);
+            }
             v = prev;
         }
         if ring.len() < 3 {
@@ -330,6 +335,15 @@ impl HalfEdgeMesh {
         if pts.iter().any(|&p| dot(sub(p, pts[0]), n).abs() > tol.max(1e-6)) {
             return None;
         }
+        // not over a face already there: the middle of the new face (a point just inside its first corner) is in none
+        let probe = {
+            let k = pts.len();
+            let (p0, p1, pl) = (pts[0], pts[1], pts[k - 1]);
+            let c = [(p0[0] + p1[0] + pl[0]) / 3.0, (p0[1] + p1[1] + pl[1]) / 3.0, (p0[2] + p1[2] + pl[2]) / 3.0];
+            c
+        };
+        let host = mesh.faces.iter().position(|f| crate::imprint::inside_face(&mesh, f, probe, tol));
+
         // which way it faces: up if it lies flat, else toward the front (-Y), else toward +X
         let want = if n[2].abs() > 0.1 { n[2] > 0.0 } else if n[1].abs() > 0.1 { n[1] < 0.0 } else { n[0] > 0.0 };
         if !want {
@@ -339,6 +353,23 @@ impl HalfEdgeMesh {
         let mut m = self.to_mesh();
         for &i in &used {
             m.lines.remove(i);
+        }
+        // drawn inside a face (a rectangle on a box's top): the face gets a hole there, filled by the new face
+        if let Some(f) = host {
+            let all_inside = pts.iter().all(|&p| crate::imprint::inside_face(&mesh, &mesh.faces[f], p, tol));
+            if !all_inside {
+                return None; // it overlaps the face's edge without meeting it: leave the lines
+            }
+            let (hn, _) = crate::imprint::face_plane(&mesh, &mesh.faces[f])?;
+            // the ring's normal now (it may have been turned round above), to wind as the face around it does
+            let now = if want { n } else { n.map(|c| -c) };
+            if dot(hn, now) < 0.0 {
+                ring.reverse();
+            }
+            let inner = crate::imprint::cut_hole(&mut m, f, &ring)?;
+            let h = Self::from_mesh(&m).ok()?;
+            *self = h;
+            return Some(inner);
         }
         // the other winding when this one runs the same way as a neighbouring face's edge
         for attempt in 0..2 {

@@ -341,6 +341,7 @@ pub fn repair(mesh: &Mesh, tol: f32) -> (Mesh, RepairSummary) {
     }
     faces.iter_mut().flatten().for_each(|v| *v = new_index[*v as usize]);
     let lines: Vec<[u32; 2]> = mesh.lines.iter().map(|l| l.map(|v| new_index[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
+    let seams: Vec<[u32; 2]> = mesh.seams.iter().map(|l| l.map(|v| new_index[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
     s.removed_unused_vertices = mesh.positions.len() - s.welded_vertices - positions.len();
 
     // 5-7. Orientation, holes, inverted solids.
@@ -348,7 +349,7 @@ pub fn repair(mesh: &Mesh, tol: f32) -> (Mesh, RepairSummary) {
     s.filled_holes = fill_holes(&positions, &mut faces, tol);
     s.inverted_solids_flipped = fix_inverted(&positions, &mut faces);
 
-    (Mesh { positions, faces, lines }, s)
+    (Mesh { positions, faces, lines, seams }, s)
 }
 
 fn edge_faces(faces: &[Vec<u32>]) -> HashMap<(u32, u32), Vec<usize>> {

@@ -956,7 +956,8 @@ impl Tools {
 
     fn commit(&mut self, model: &mut Model, outline: Option<Vec<[f32; 3]>>) -> Result<(), String> {
         let outline = outline.ok_or("the shape has no area")?;
-        model.add_polygon(&outline).map_err(|e| e.to_string())?;
+        // drawn as lines, so a shape on a face splits it or cuts a hole in it, as in SketchUp
+        model.add_outline(&outline).map_err(|e| e.to_string())?;
         self.model_changed();
         Ok(())
     }
