@@ -230,7 +230,11 @@ fn face_polys(b: &Block, f: &FaceIn, points: &mut Points, colors: &HashMap<i64, 
         }
         return vec![Poly { ring, color }];
     }
-    // holes: the outlines laid out on the face's plane and covered as Daedalus covers them (core profile)
+    // holes: cut one by one into the face, each pair of seams keeping clear of the holes still to come; when that cannot
+    // be done (a hole touching the outline or another hole), the outlines are covered as Daedalus covers them (core profile)
+    if let Some(polys) = cut_holes(b, f, points, color, seams) {
+        return polys;
+    }
     let first = b.positions[f.rings[0][0] as usize];
     let normal = if f.normal == [0.0; 3] { newell(&b.positions, &f.rings[0]) } else { f.normal };
     let Some(plane) = Plane::from_point_normal(first, normal) else { return Vec::new() };
@@ -239,6 +243,38 @@ fn face_polys(b: &Block, f: &FaceIn, points: &mut Points, colors: &HashMap<i64, 
     let map: Vec<u32> = cap.positions.iter().map(|&p| points.add(p)).collect();
     seams.extend(cap.seams.iter().map(|s| s.map(|v| map[v as usize])));
     cap.faces.iter().map(|ring| Poly { ring: ring.iter().map(|&v| map[v as usize]).collect(), color }).collect()
+}
+
+/// A face with holes as the faces that cover it: the outline, a hole cut at a time (`imprint::cut_hole_avoiding`), each
+/// filling face removed again. None when a hole cannot be cut.
+fn cut_holes(b: &Block, f: &FaceIn, points: &mut Points, color: Option<[u8; 3]>, seams: &mut Vec<[u32; 2]>) -> Option<Vec<Poly>> {
+    let rings: Vec<Vec<u32>> = f.rings.iter().map(|r| {
+        let mut r: Vec<u32> = r.iter().map(|&i| points.add(b.positions[i as usize])).collect();
+        r.dedup();
+        while r.len() > 1 && r.first() == r.last() {
+            r.pop();
+        }
+        r
+    }).collect();
+    if rings.iter().any(|r| r.len() < 3) {
+        return None;
+    }
+    let mut m = Mesh { positions: points.positions.clone(), ..Default::default() };
+    let mut outer = rings[0].clone();
+    let n = newell(&m.positions, &outer);
+    if n[0] * f.normal[0] + n[1] * f.normal[1] + n[2] * f.normal[2] < 0.0 {
+        outer.reverse();
+    }
+    m.faces.push(outer);
+    for (h, hole) in rings.iter().enumerate().skip(1) {
+        // the face piece the hole lies in (all its corners inside it)
+        let host = (0..m.faces.len()).find(|&fi| hole.iter().all(|&v| daedalus_core::imprint::inside_face(&m, &m.faces[fi], m.positions[v as usize], 1e-4)))?;
+        let later: Vec<Vec<u32>> = rings[h + 1..].to_vec();
+        daedalus_core::imprint::cut_hole_avoiding(&mut m, host, hole, &later)?;
+        m.faces.pop(); // the face that filled the hole: it is a hole
+    }
+    seams.extend(m.seams.iter().copied());
+    Some(m.faces.into_iter().map(|ring| Poly { ring, color }).collect())
 }
 
 /// A context's geometry: the faces that make one editable surface, and the rest (to go into a group of their own).
@@ -542,5 +578,72 @@ mod timing {
             let _ = m.parts();
             println!("parts: {:?}", t.elapsed());
         }
+    }
+}
+
+#[cfg(test)]
+mod holes_check {
+    use super::*;
+    /// `DSKP=file`: every face with holes, covered, and its triangles' area against the face's own (outer minus holes).
+    #[test]
+    #[ignore]
+    fn faces_with_holes_are_covered_exactly() {
+        let Some(path) = std::env::var_os("DSKP") else { return };
+        let s = std::fs::read_to_string(path).unwrap();
+        let mut b = Block::default();
+        let (mut bad, mut all) = (0, 0);
+        for line in s.lines() {
+            let w = words(line);
+            match w.first().map(String::as_str) {
+                Some("def") | Some("top") => b = Block::default(),
+                Some("v") => b.positions.push([w[1].parse().unwrap(), w[2].parse().unwrap(), w[3].parse().unwrap()]),
+                Some("f") => {
+                    let loops: usize = w[5].parse().unwrap();
+                    if loops < 2 {
+                        continue;
+                    }
+                    let mut at = 6;
+                    let mut rings = vec![];
+                    for _ in 0..loops {
+                        let n: usize = w[at].parse().unwrap();
+                        at += 1;
+                        rings.push((at..at + n).map(|i| w[i].parse().unwrap()).collect::<Vec<u32>>());
+                        at += n;
+                    }
+                    let f = FaceIn { material: -1, normal: [w[2].parse().unwrap(), w[3].parse().unwrap(), w[4].parse().unwrap()], rings };
+                    let area = |pts: &[[f32; 3]]| {
+                        let mut n = [0.0f64; 3];
+                        for i in 0..pts.len() {
+                            let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+                            n[0] += ((p[1] - q[1]) * (p[2] + q[2])) as f64;
+                            n[1] += ((p[2] - q[2]) * (p[0] + q[0])) as f64;
+                            n[2] += ((p[0] - q[0]) * (p[1] + q[1])) as f64;
+                        }
+                        (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0
+                    };
+                    let rp = |r: &Vec<u32>| r.iter().map(|&i| b.positions[i as usize]).collect::<Vec<_>>();
+                    let want = area(&rp(&f.rings[0])) - f.rings[1..].iter().map(|r| area(&rp(r))).sum::<f64>();
+                    let mut points = Points::default();
+                    let mut seams = vec![];
+                    let polys = face_polys(&b, &f, &mut points, &HashMap::new(), &mut seams);
+                    let faces_area: f64 = polys.iter().map(|p| area(&p.ring.iter().map(|&i| points.positions[i as usize]).collect::<Vec<_>>())).sum();
+                    let tri_area: f64 = polys
+                        .iter()
+                        .flat_map(|p| daedalus_core::triangulate::triangulate(&points.positions, &p.ring))
+                        .map(|t| area(&t.iter().map(|&i| points.positions[i as usize]).collect::<Vec<_>>()))
+                        .sum();
+                    all += 1;
+                    let off = |x: f64| (x - want).abs() > 1e-3 * want.max(1e-6);
+                    if off(faces_area) || off(tri_area) {
+                        bad += 1;
+                        if bad <= 6 {
+                            println!("{} holes: area {want:.4}, faces {faces_area:.4} ({} faces), triangles {tri_area:.4}", f.rings.len() - 1, polys.len());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        println!("faces with holes: {all}, covered wrongly: {bad}");
     }
 }

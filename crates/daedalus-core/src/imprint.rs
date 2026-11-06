@@ -231,61 +231,212 @@ pub fn add_segment(m: &mut Mesh, a: V, b: V, tol: f32) -> (Vec<usize>, bool) {
 /// `outer` the ring around it. A face here has one outline and no holes, so the ring is made of two faces, joined by two
 /// short seams from the outline to the outside edge, kept in `Mesh::seams` and not drawn. `inner` must wind the same way as `outer`. Returns the new inner face's index.
 pub fn cut_hole(m: &mut Mesh, outer: usize, inner: &[u32]) -> Option<usize> {
+    cut_hole_avoiding(m, outer, inner, &[])
+}
+
+/// [`cut_hole`], with seams that also keep clear of `avoid`: other holes of the same face still to be cut (a seam through
+/// one of them would leave it in two faces, and it could not be cut).
+pub fn cut_hole_avoiding(m: &mut Mesh, outer: usize, inner: &[u32], avoid: &[Vec<u32>]) -> Option<usize> {
     let ring = m.faces.get(outer)?.clone();
     let (n, k) = (ring.len(), inner.len());
     if k < 3 || n < 3 || inner.iter().any(|v| ring.contains(v)) {
         return None;
     }
-    let pos = |v: u32| m.positions[v as usize];
-    let nearest = |q: u32, not: Option<usize>| -> Option<usize> {
-        (0..n).filter(|&i| Some(i) != not).min_by(|&i, &j| len(sub(pos(ring[i]), pos(q))).total_cmp(&len(sub(pos(ring[j]), pos(q)))))
+    // everything is judged flat, in the face's plane
+    let (normal, _) = face_plane(m, &ring)?;
+    let (u, v) = {
+        let t = if normal[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        let u = unit(cross(t, normal))?;
+        (u, cross(normal, u))
     };
-    // two seams: from the outline's first corner and from the one halfway round, each to its nearest outer corner
-    let (q1, q2) = (0usize, k / 2);
-    let p1 = nearest(inner[q1], None)?;
-    let p2 = nearest(inner[q2], Some(p1))?;
-    // the outer walk from p1 to p2 and from p2 to p1 (both counter-clockwise, as the face winds)
+    let flat = |q: u32| {
+        let p = m.positions[q as usize];
+        [dot(p, u), dot(p, v)]
+    };
+    let outer2: Vec<[f32; 2]> = ring.iter().map(|&q| flat(q)).collect();
+    let others: Vec<Vec<[f32; 2]>> = avoid.iter().map(|r| r.iter().map(|&q| flat(q)).collect()).collect();
+    // the hole's outline taken the same way round as the face's (the walk below goes back along it), and the face that
+    // fills it then faces the same way as the face
+    let mut inner: Vec<u32> = inner.to_vec();
+    let mut inner2: Vec<[f32; 2]> = inner.iter().map(|&q| flat(q)).collect();
+    if signed_area(&outer2).signum() != signed_area(&inner2).signum() {
+        inner.reverse();
+        inner2.reverse();
+    }
+    let inner = &inner[..];
+    let span = outer2.iter().chain(&inner2).fold(0.0f32, |s, p| s.max(p[0].abs()).max(p[1].abs())).max(1e-6);
+    let eps = span * 1e-6;
+    // a seam may join outer corner p and hole corner q only if it stays inside the face: it crosses no edge of the outline
+    // or of the hole (touching them only at its own two ends), and its middle is inside the outline and outside the hole
+    let clear = |pi: usize, qi: usize| -> bool {
+        let (a, b) = (outer2[pi], inner2[qi]);
+        let crosses = |poly: &[[f32; 2]], skip: Option<usize>| {
+            (0..poly.len()).any(|i| {
+                let j = (i + 1) % poly.len();
+                if skip.is_some_and(|s| s == i || s == j) {
+                    return false;
+                }
+                segments_cross(a, b, poly[i], poly[j], eps)
+            })
+        };
+        let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+        !crosses(&outer2, Some(pi))
+            && !crosses(&inner2, Some(qi))
+            && point_in(&outer2, mid)
+            && !point_in(&inner2, mid)
+            && others.iter().all(|o| !crosses(o, None) && !point_in(o, mid))
+    };
+    let d2 = |pi: usize, qi: usize| {
+        let (a, b) = (outer2[pi], inner2[qi]);
+        (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
+    };
+    let mut pairs: Vec<(usize, usize)> = (0..n).flat_map(|pi| (0..k).map(move |qi| (pi, qi))).filter(|&(pi, qi)| clear(pi, qi)).collect();
+    pairs.sort_by(|x, y| d2(x.0, x.1).total_cmp(&d2(y.0, y.1)));
+    let area = |r: &[u32]| {
+        let pts: Vec<[f32; 2]> = r.iter().map(|&q| flat(q)).collect();
+        signed_area(&pts).abs()
+    };
+    let want = signed_area(&outer2).abs() - signed_area(&inner2).abs();
+    // the outer walk from p1 to p2 (as the face winds), and the hole's outline walked backwards from q2 to q1
     let walk = |from: usize, to: usize| -> Vec<u32> {
-        let mut v = vec![ring[from]];
+        let mut out = vec![ring[from]];
         let mut i = from;
         while i != to {
             i = (i + 1) % n;
-            v.push(ring[i]);
+            out.push(ring[i]);
         }
-        v
+        out
     };
-    // the inner outline walked backwards (the ring goes round it the other way), from index `from` to index `to`
     let back = |from: usize, to: usize| -> Vec<u32> {
-        let mut v = vec![inner[from]];
+        let mut out = vec![inner[from]];
         let mut i = from;
         while i != to {
             i = (i + k - 1) % k;
-            v.push(inner[i]);
+            out.push(inner[i]);
         }
-        v
+        out
     };
-    let mut a = walk(p1, p2);
-    a.extend(back(q2, q1));
-    let mut b = walk(p2, p1);
-    b.extend(back(q1, q2));
-    if a.len() < 3 || b.len() < 3 {
-        return None;
+    // the two seams: the shortest clear one, then the shortest clear one that does not cross it, ends elsewhere, and leaves
+    // two faces that are each simple and together cover the face minus the hole
+    for (i, &(p1, q1)) in pairs.iter().enumerate() {
+        for &(p2, q2) in pairs.iter().skip(i + 1).take(64) {
+            if p2 == p1 || q2 == q1 || segments_cross(outer2[p1], inner2[q1], outer2[p2], inner2[q2], eps) {
+                continue;
+            }
+            let mut a = walk(p1, p2);
+            a.extend(back(q2, q1));
+            let mut b = walk(p2, p1);
+            b.extend(back(q1, q2));
+            if a.len() < 3 || b.len() < 3 {
+                continue;
+            }
+            let simple = |r: &[u32]| {
+                let pts: Vec<[f32; 2]> = r.iter().map(|&q| flat(q)).collect();
+                !self_crossing(&pts, eps)
+            };
+            if (area(&a) + area(&b) - want).abs() > want.abs() * 1e-3 + eps || !simple(&a) || !simple(&b) {
+                continue;
+            }
+            m.faces[outer] = a;
+            m.faces.push(b);
+            m.faces.push(inner.to_vec());
+            // the ring and the new face inside it keep the face's colour
+            let c = m.color_of(outer);
+            m.set_color(m.faces.len() - 2, c);
+            m.set_color(m.faces.len() - 1, c);
+            m.seams.push([ring[p1], inner[q1]]);
+            m.seams.push([ring[p2], inner[q2]]);
+            return Some(m.faces.len() - 1);
+        }
     }
-    m.faces[outer] = a;
-    m.faces.push(b);
-    m.faces.push(inner.to_vec());
-    // the ring and the new face inside it keep the face's colour
-    let c = m.color_of(outer);
-    m.set_color(m.faces.len() - 2, c);
-    m.set_color(m.faces.len() - 1, c);
-    m.seams.push([ring[p1], inner[q1]]);
-    m.seams.push([ring[p2], inner[q2]]);
-    Some(m.faces.len() - 1)
+    None
+}
+
+fn cross(a: V, b: V) -> V {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+fn unit(a: V) -> Option<V> {
+    let l = len(a);
+    (l > 1e-12).then(|| [a[0] / l, a[1] / l, a[2] / l])
+}
+
+fn signed_area(pts: &[[f32; 2]]) -> f32 {
+    let mut s = 0.0;
+    for i in 0..pts.len() {
+        let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+        s += a[0] * b[1] - b[0] * a[1];
+    }
+    s * 0.5
+}
+
+/// Whether segments a-b and c-d cross or touch anywhere but at a shared end.
+fn segments_cross(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2], eps: f32) -> bool {
+    let same = |p: [f32; 2], q: [f32; 2]| (p[0] - q[0]).abs() <= eps && (p[1] - q[1]).abs() <= eps;
+    if same(a, c) || same(a, d) || same(b, c) || same(b, d) {
+        return false;
+    }
+    let o = |p: [f32; 2], q: [f32; 2], r: [f32; 2]| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    let (d1, d2, d3, d4) = (o(c, d, a), o(c, d, b), o(a, b, c), o(a, b, d));
+    let tol = eps * eps.max(1e-12).sqrt().max(eps);
+    if ((d1 > tol && d2 < -tol) || (d1 < -tol && d2 > tol)) && ((d3 > tol && d4 < -tol) || (d3 < -tol && d4 > tol)) {
+        return true;
+    }
+    // touching: an end of one lying on the other
+    let on = |p: [f32; 2], q: [f32; 2], r: [f32; 2], v: f32| {
+        v.abs() <= tol && r[0] >= p[0].min(q[0]) - eps && r[0] <= p[0].max(q[0]) + eps && r[1] >= p[1].min(q[1]) - eps && r[1] <= p[1].max(q[1]) + eps
+    };
+    on(c, d, a, d1) || on(c, d, b, d2) || on(a, b, c, d3) || on(a, b, d, d4)
+}
+
+/// Even-odd point in polygon.
+fn point_in(poly: &[[f32; 2]], p: [f32; 2]) -> bool {
+    let mut c = false;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+            c = !c;
+        }
+    }
+    c
+}
+
+/// Whether a closed outline crosses itself (two edges that are not neighbours meet).
+fn self_crossing(pts: &[[f32; 2]], eps: f32) -> bool {
+    let n = pts.len();
+    for i in 0..n {
+        for j in i + 2..n {
+            if i == 0 && j == n - 1 {
+                continue;
+            }
+            if segments_cross(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n], eps) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_square_hole_in_a_square_face() {
+        let mut m = Mesh::new();
+        for p in [[0.0, 0.0, 0.0], [9.0, 0.0, 0.0], [9.0, 9.0, 0.0], [0.0, 9.0, 0.0], [2.0, 2.0, 0.0], [7.0, 2.0, 0.0], [7.0, 7.0, 0.0], [2.0, 7.0, 0.0]] {
+            m.add_vertex(p);
+        }
+        m.add_face(vec![0, 1, 2, 3]);
+        for inner in [vec![4u32, 5, 6, 7], vec![7u32, 6, 5, 4]] {
+            let mut t = m.clone();
+            let f = cut_hole(&mut t, 0, &inner);
+            assert!(f.is_some(), "{inner:?}");
+            let area: f32 = t.faces[..2].iter().map(|r| { let p: Vec<[f32; 2]> = r.iter().map(|&v| [t.positions[v as usize][0], t.positions[v as usize][1]]).collect(); signed_area(&p) }).sum();
+            assert!((area - 56.0).abs() < 1e-3, "{area}");
+            assert_eq!(t.seams.len(), 2);
+        }
+    }
 
     #[test]
     fn crossing_segments_meet_and_parallel_ones_do_not() {

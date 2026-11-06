@@ -1109,9 +1109,12 @@ impl State {
                 self.refresh();
             }
             Key::Named(NamedKey::Enter) if !self.typed.is_empty() => self.enter_typed(),
-            Key::Named(NamedKey::Backspace) => {
+            // Backspace takes back a typed character; with nothing typed it erases the selection, as Delete does (a Mac's,
+            // and an iPad's, "delete" key is Backspace)
+            Key::Named(NamedKey::Backspace) if !self.typed.is_empty() => {
                 self.typed.pop();
             }
+            Key::Named(NamedKey::Backspace) => self.erase_selected(),
             Key::Named(NamedKey::Delete) => self.erase_selected(),
             // while a value is being typed, a space belongs to it (4' 6 1/2")
             Key::Named(NamedKey::Space) if !self.typed.is_empty() => self.typed.push(' '),
