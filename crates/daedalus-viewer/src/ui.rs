@@ -386,17 +386,15 @@ const ICON: f32 = 30.0;
 fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, enabled: bool) -> bool {
     let (rect, r) = ui.allocate_exact_size(egui::vec2(ICON, ICON), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
     let visuals = ui.visuals();
-    // the icons are drawn in dark ink, as SketchUp's: on a dark panel each sits on a light tile
-    if visuals.dark_mode {
-        ui.painter().rect_filled(rect, 5.0, if enabled { Color32::from_gray(214) } else { Color32::from_gray(120) });
-    }
     if selected {
         ui.painter().rect_filled(rect, 5.0, visuals.selection.bg_fill.gamma_multiply(0.55));
         ui.painter().rect_stroke(rect, 5.0, Stroke::new(1.0_f32, visuals.selection.stroke.color), egui::StrokeKind::Inside);
     } else if r.hovered() && enabled {
         ui.painter().rect_filled(rect, 5.0, visuals.widgets.hovered.weak_bg_fill);
     }
-    icons::paint(ui.painter(), rect.shrink(4.0), icon, !enabled);
+    // line icons in the text colour: dark on the light style, light on the dark one
+    let ink = visuals.strong_text_color();
+    icons::paint(ui.painter(), rect.shrink(4.0), icon, !enabled, ink);
     let r = r.on_hover_text(icons::name(icon));
     enabled && r.clicked()
 }
