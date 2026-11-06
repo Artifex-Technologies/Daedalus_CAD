@@ -252,7 +252,41 @@ fn surface(polys: Vec<Vec<Poly>>, points: &Points) -> (Mesh, Vec<Vec<Poly>>) {
             .map(|(a, b)| if rev { (b, a) } else { (a, b) })
             .collect()
     };
-    for unit in polys {
+    // faces in the order of a walk across their shared edges, so each one meets its neighbours already placed and takes its
+    // facing from them (SketchUp lets neighbours face opposite ways; in file order two far-apart faces could be set facing
+    // opposite ways before the face between them came, which then fitted neither way)
+    let order = {
+        let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for (k, unit) in polys.iter().enumerate() {
+            for (a, b) in edges(unit, false) {
+                by_edge.entry((a.min(b), a.max(b))).or_default().push(k);
+            }
+        }
+        let mut seen = vec![false; polys.len()];
+        let mut order = Vec::with_capacity(polys.len());
+        for start in 0..polys.len() {
+            if seen[start] {
+                continue;
+            }
+            seen[start] = true;
+            let mut queue = std::collections::VecDeque::from([start]);
+            while let Some(k) = queue.pop_front() {
+                order.push(k);
+                for (a, b) in edges(&polys[k], false) {
+                    for &n in by_edge.get(&(a.min(b), a.max(b))).map(Vec::as_slice).unwrap_or(&[]) {
+                        if !seen[n] {
+                            seen[n] = true;
+                            queue.push_back(n);
+                        }
+                    }
+                }
+            }
+        }
+        order
+    };
+    let mut slots: Vec<Option<Vec<Poly>>> = polys.into_iter().map(Some).collect();
+    for k in order {
+        let unit = slots[k].take().expect("each once");
         let fits = |es: &[(u32, u32)]| {
             let set: HashSet<&(u32, u32)> = es.iter().collect();
             set.len() == es.len() && es.iter().all(|e| !taken.contains(e))
@@ -282,6 +316,17 @@ fn context(b: &Block, colors: &HashMap<i64, [u8; 3]>, scene: &mut Scene, ids: &H
     let mut points = Points::default();
     let mut seams = Vec::new();
     let polys: Vec<Vec<Poly>> = b.faces.iter().map(|f| face_polys(b, f, &mut points, colors, &mut seams)).filter(|u| !u.is_empty()).collect();
+    // a face exactly on top of another (the same corners) is shown as one in SketchUp and adds nothing: kept once (Dream
+    // House v3's top level had 72 such repeats, some edges under 17 faces)
+    let mut seen: HashSet<Vec<u32>> = HashSet::new();
+    let polys: Vec<Vec<Poly>> = polys
+        .into_iter()
+        .filter(|u| {
+            let mut key: Vec<u32> = u.iter().flat_map(|p| p.ring.iter().copied()).collect();
+            key.sort_unstable();
+            seen.insert(key)
+        })
+        .collect();
     let line_at = |points: &mut Points, [a, c]: [u32; 2]| [points.add(b.positions[a as usize]), points.add(b.positions[c as usize])];
     let lines: Vec<[u32; 2]> = b.lines.iter().map(|&l| line_at(&mut points, l)).filter(|l| l[0] != l[1]).collect();
     let soft: Vec<[u32; 2]> = b.soft.iter().map(|&l| line_at(&mut points, l)).collect();
@@ -443,6 +488,14 @@ end
     }
 
     #[test]
+    fn a_face_stored_twice_comes_in_once() {
+        let twice = "daedalus-skp 1\ntop\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf -1 0 0 1 1 4 0 1 2 3\nf -1 0 0 1 1 4 1 2 3 0\nf -1 0 0 -1 1 4 3 2 1 0\nend\n";
+        let s = read(twice.as_bytes()).unwrap();
+        assert_eq!(s.root.mesh.faces.len(), 1);
+        assert!(s.root.instances.is_empty(), "nothing left over for an overlap group");
+    }
+
+    #[test]
     fn bad_files_are_refused() {
         assert!(read(b"hello\n").is_err());
         assert!(read(b"daedalus-skp 1\ntop\nf -1 0 0 1 1 3 0 1 2\nend\n").unwrap_err().to_string().contains("vertex not defined"));
@@ -479,6 +532,11 @@ mod timing {
         let t = std::time::Instant::now();
         let hit2 = flat.pick_triangles(&tris, [10.0, -30.0, 20.0], [0.0, 0.8, -0.6]);
         println!("pick_triangles (each move): {:?} {:?}", t.elapsed(), hit2.map(|h| h.0));
+        let spilled: usize = s.defs.iter().filter(|d| d.name.contains("(overlapping faces")).map(|d| d.ctx.mesh.faces.len()).sum();
+        let tri_spilled: usize = s.defs.iter().filter(|d| d.name.contains("(overlapping faces")).map(|d| d.ctx.mesh.faces.iter().filter(|f| f.len() == 3).count()).sum();
+        let all: usize = s.root.mesh.faces.len() + s.defs.iter().map(|d| d.ctx.mesh.faces.len()).sum::<usize>();
+        let tris_all: usize = s.root.mesh.faces.iter().chain(s.defs.iter().flat_map(|d| d.ctx.mesh.faces.iter())).filter(|f| f.len() == 3).count();
+        println!("faces {all} (triangles {tris_all}); in overlapping groups {spilled} (triangles {tri_spilled})");
         if let Ok(m) = m {
             let t = std::time::Instant::now();
             let _ = m.parts();
