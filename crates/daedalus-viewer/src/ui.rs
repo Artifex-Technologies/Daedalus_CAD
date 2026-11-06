@@ -26,6 +26,8 @@ pub enum UiAction {
     ToggleOrtho,
     FaceStyle(FaceStyle),
     BackEdges,
+    /// Paint Bucket's colour (None: the default material).
+    PaintColor(Option<[u8; 3]>),
     SelectAll,
     DeleteGuides,
     Undo,
@@ -59,6 +61,7 @@ pub struct UiView<'a> {
     pub can_undo: bool,
     pub can_redo: bool,
     pub style: Style,
+    pub paint_color: Option<[u8; 3]>,
     /// Camera > Previous has a view to go back to.
     pub can_go_back: bool,
     pub status: &'a str,
@@ -287,6 +290,48 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
         });
     });
 
+    // Paint Bucket's colours, while it is the tool
+    if v.tool == Tool::PaintBucket {
+        egui::Window::new("Colours")
+            .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
+            .resizable(false)
+            .collapsible(true)
+            .show(ctx, |ui| {
+                const SWATCHES: [[u8; 3]; 16] = [
+                    [196, 92, 64], [214, 150, 60], [230, 200, 90], [120, 170, 80],
+                    [60, 130, 90], [70, 150, 170], [70, 110, 190], [120, 90, 170],
+                    [170, 90, 130], [140, 100, 70], [180, 150, 120], [230, 225, 215],
+                    [160, 160, 160], [100, 100, 104], [60, 60, 64], [250, 250, 250],
+                ];
+                egui::Grid::new("swatches").spacing([4.0, 4.0]).show(ui, |ui| {
+                    for (i, c) in SWATCHES.iter().enumerate() {
+                        let (rect, r) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                        ui.painter().rect_filled(rect, 4.0, Color32::from_rgb(c[0], c[1], c[2]));
+                        if v.paint_color == Some(*c) {
+                            ui.painter().rect_stroke(rect, 4.0, Stroke::new(2.0_f32, ui.visuals().strong_text_color()), egui::StrokeKind::Outside);
+                        }
+                        if r.clicked() {
+                            actions.push(UiAction::PaintColor(Some(*c)));
+                        }
+                        if i % 4 == 3 {
+                            ui.end_row();
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let mut rgb = v.paint_color.unwrap_or([200, 200, 205]);
+                    if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
+                        actions.push(UiAction::PaintColor(Some(rgb)));
+                    }
+                    ui.label("Any colour");
+                });
+                if ui.radio(v.paint_color.is_none(), "Default (takes paint off)").clicked() {
+                    actions.push(UiAction::PaintColor(None));
+                }
+            });
+    }
+
     if let Some((pos, snap)) = v.marker {
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("inference")));
         let color = match snap {
@@ -420,7 +465,7 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
         vec![
             t(Tool::Select),
             P(Planned::MakeComponent),
-            P(Planned::PaintBucket),
+            t(Tool::PaintBucket),
             t(Tool::Eraser),
             t(Tool::Line),
             t(Tool::Freehand),
@@ -471,7 +516,7 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
             Act(Icon::Style(FaceStyle::Wireframe), UiAction::FaceStyle(FaceStyle::Wireframe)),
             Act(Icon::Style(FaceStyle::HiddenLine), UiAction::FaceStyle(FaceStyle::HiddenLine)),
             Act(Icon::Style(FaceStyle::Shaded), UiAction::FaceStyle(FaceStyle::Shaded)),
-            Empty,
+            Act(Icon::Style(FaceStyle::Monochrome), UiAction::FaceStyle(FaceStyle::Monochrome)),
         ],
     ]
 }

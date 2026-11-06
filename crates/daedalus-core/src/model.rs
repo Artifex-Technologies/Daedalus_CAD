@@ -108,6 +108,21 @@ impl Model {
         })
     }
 
+    /// Paint Bucket: paints `faces` with `color` (None: back to the default material), as one undo step.
+    pub fn paint(&mut self, faces: &[usize], color: Option<[u8; 3]>) -> Result<(), TopologyError> {
+        self.edit(|m| {
+            let mut mesh = m.to_mesh();
+            for &f in faces {
+                if f >= mesh.faces.len() {
+                    return Err(TopologyError::FaceOutOfRange(f));
+                }
+                mesh.set_color(f, color);
+            }
+            *m = HalfEdgeMesh::from_mesh(&mesh)?;
+            Ok(())
+        })
+    }
+
     /// An open chain of lines (an arc, a freehand stroke) in one undo step. Returns the face it closed, if any.
     pub fn add_polyline(&mut self, points: &[[f32; 3]]) -> Result<Option<usize>, TopologyError> {
         self.edit(|m| {
@@ -431,5 +446,27 @@ mod tests {
         m.push_pull(inner, -1.0).unwrap();
         assert!(m.mesh().is_closed());
         assert!((m.mesh().signed_volume() - 28.0).abs() < 1e-3, "{}", m.mesh().signed_volume());
+    }
+
+    #[test]
+    fn paint_stays_on_its_face_through_edits() {
+        let red = Some([200, 40, 30]);
+        let mut m = Model::new();
+        let f = m.add_rectangle([0.0; 3], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
+        m.paint(&[f], red).unwrap();
+        // a line across splits it: both halves red
+        m.add_line([1.0, 0.0, 0.0], [1.0, 2.0, 0.0]).unwrap();
+        let mesh = m.mesh().to_mesh();
+        assert_eq!((0..2).filter(|&i| mesh.color_of(i) == red).count(), 2);
+        // pushed up: the top stays red, the new walls are unpainted
+        let top = m.push_pull(0, 1.0).unwrap();
+        let mesh = m.mesh().to_mesh();
+        assert_eq!(mesh.color_of(top), red);
+        assert!((0..mesh.faces.len()).any(|i| mesh.color_of(i).is_none()));
+        // undo takes the paint back too
+        m.undo();
+        m.undo();
+        m.undo();
+        assert_eq!(m.mesh().to_mesh().color_of(0), None);
     }
 }

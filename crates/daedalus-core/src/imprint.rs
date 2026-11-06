@@ -214,6 +214,8 @@ pub fn add_segment(m: &mut Mesh, a: V, b: V, tol: f32) -> (Vec<usize>, bool) {
                 debug_assert!(first.len() >= 3 && second.len() >= 3 && first.len() + second.len() == n + 2);
                 m.faces[f] = first;
                 m.faces.push(second);
+                let c = m.color_of(f);
+                m.set_color(m.faces.len() - 1, c);
                 split = true;
             }
             None => {
@@ -272,6 +274,10 @@ pub fn cut_hole(m: &mut Mesh, outer: usize, inner: &[u32]) -> Option<usize> {
     m.faces[outer] = a;
     m.faces.push(b);
     m.faces.push(inner.to_vec());
+    // the ring and the new face inside it keep the face's colour
+    let c = m.color_of(outer);
+    m.set_color(m.faces.len() - 2, c);
+    m.set_color(m.faces.len() - 1, c);
     m.seams.push([ring[p1], inner[q1]]);
     m.seams.push([ring[p2], inner[q2]]);
     Some(m.faces.len() - 1)

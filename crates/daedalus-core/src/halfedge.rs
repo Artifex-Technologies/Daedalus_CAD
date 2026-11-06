@@ -60,6 +60,8 @@ pub struct HalfEdgeMesh {
     pub lines: Vec<[u32; 2]>,
     /// Hidden face edges (seams around holes).
     pub seams: Vec<[u32; 2]>,
+    /// Face colours (see `Mesh::colors`).
+    pub colors: Vec<Option<[u8; 3]>>,
 }
 
 impl HalfEdgeMesh {
@@ -69,6 +71,10 @@ impl HalfEdgeMesh {
             return Err(TopologyError::VertexOutOfRange(a.max(b)));
         }
         he.lines = mesh.lines.clone();
+        he.colors = mesh.colors.iter().copied().take(mesh.faces.len()).collect();
+        while he.colors.last() == Some(&None) {
+            he.colors.pop();
+        }
         // a seam is kept only while it is still some face's edge
         let face_edges: std::collections::HashSet<(u32, u32)> = mesh.edges().into_iter().collect();
         he.seams = mesh.seams.iter().copied().filter(|&[a, b]| face_edges.contains(&(a.min(b), a.max(b)))).collect();
@@ -111,7 +117,7 @@ impl HalfEdgeMesh {
     }
 
     pub fn to_mesh(&self) -> Mesh {
-        let mut m = Mesh { positions: self.positions.clone(), faces: Vec::new(), lines: self.lines.clone(), seams: self.seams.clone() };
+        let mut m = Mesh { positions: self.positions.clone(), faces: Vec::new(), lines: self.lines.clone(), seams: self.seams.clone(), colors: self.colors.clone() };
         for f in 0..self.faces.len() {
             m.faces.push(self.face_vertices(f));
         }
@@ -226,7 +232,7 @@ impl HalfEdgeMesh {
             return Err(TopologyError::FaceOutOfRange(face));
         }
         let mut m = self.to_mesh();
-        let ring = m.faces.remove(face);
+        let ring = m.remove_face(face);
         let still: std::collections::HashSet<(u32, u32)> = m.edges().into_iter().collect();
         for i in 0..ring.len() {
             let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
@@ -424,9 +430,12 @@ impl HalfEdgeMesh {
             (Some(ring.clone()), reversed(&top), false)
         };
 
-        m.faces.remove(face);
+        // the pushed face keeps its colour (and so does the base it leaves behind); the new side walls start unpainted
+        let color = m.color_of(face);
+        m.remove_face(face);
         if let Some(b) = base {
             m.faces.push(b);
+            m.set_color(m.faces.len() - 1, color);
         }
         let n_ring = ring.len();
         for i in 0..n_ring {
@@ -435,6 +444,7 @@ impl HalfEdgeMesh {
             m.faces.push(if outward { vec![a, b, b2, a2] } else { vec![b, a, a2, b2] });
         }
         m.faces.push(far);
+        m.set_color(m.faces.len() - 1, color);
 
         *self = Self::from_mesh(&m)?;
         Ok(self.face_count() - 1)
@@ -484,6 +494,11 @@ impl HalfEdgeMesh {
         }
         self.faces[face] = he_a;
         self.faces.push(he_b);
+        // the new half keeps the face's colour
+        if let Some(&c @ Some(_)) = self.colors.get(face) {
+            self.colors.resize(new_face as usize + 1, None);
+            self.colors[new_face as usize] = c;
+        }
         Ok(new_face as usize)
     }
 }

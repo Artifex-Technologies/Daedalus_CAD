@@ -20,7 +20,12 @@ struct Vertex {
     normal: [f32; 3],
     /// 0.0 normal, 1.0 selected, 2.0 flagged by the inspector.
     highlight: f32,
+    /// The face's colour (Paint Bucket), or the default material's.
+    color: [f32; 3],
 }
+
+/// The default material: the light grey faces have when nothing is painted on them.
+const DEFAULT_FACE: [f32; 3] = [0.78, 0.80, 0.84];
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -49,10 +54,12 @@ pub enum FaceStyle {
     Shaded,
     /// Faces see-through, so edges behind them show.
     XRay,
+    /// Lit faces, all in the default material (paint not shown).
+    Monochrome,
 }
 
 impl FaceStyle {
-    pub const ALL: [FaceStyle; 4] = [FaceStyle::Wireframe, FaceStyle::HiddenLine, FaceStyle::Shaded, FaceStyle::XRay];
+    pub const ALL: [FaceStyle; 5] = [FaceStyle::Wireframe, FaceStyle::HiddenLine, FaceStyle::Shaded, FaceStyle::Monochrome, FaceStyle::XRay];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -60,6 +67,7 @@ impl FaceStyle {
             FaceStyle::HiddenLine => "Hidden Line",
             FaceStyle::Shaded => "Shaded",
             FaceStyle::XRay => "X-Ray",
+            FaceStyle::Monochrome => "Monochrome",
         }
     }
 
@@ -69,6 +77,7 @@ impl FaceStyle {
             FaceStyle::HiddenLine => "hidden-line",
             FaceStyle::Shaded => "shaded",
             FaceStyle::XRay => "x-ray",
+            FaceStyle::Monochrome => "monochrome",
         }
     }
 
@@ -96,9 +105,10 @@ fn face_vertices(mesh: &Mesh, selected: &[usize], flagged: &[usize]) -> Vec<Vert
         } else {
             0.0
         };
+        let color = mesh.color_of(fi).map_or(DEFAULT_FACE, |c| c.map(|x| x as f32 / 255.0));
         for tri in daedalus_core::triangulate::triangulate(&mesh.positions, face) {
             for v in tri {
-                out.push(Vertex { position: mesh.positions[v as usize], normal, highlight });
+                out.push(Vertex { position: mesh.positions[v as usize], normal, highlight, color });
             }
         }
     }
@@ -244,7 +254,7 @@ impl Renderer {
         let face_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32],
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32x3],
         };
         // a pair of line vertices (one segment) per instance: the shader turns it into a strip
         let line_layout = wgpu::VertexBufferLayout {
@@ -436,6 +446,7 @@ impl Renderer {
         let mode = match style.faces {
             FaceStyle::HiddenLine => 1.0,
             FaceStyle::XRay => 2.0,
+            FaceStyle::Monochrome => 3.0,
             _ => 0.0,
         };
         let uniforms = Uniforms { view_proj: view_proj.to_cols_array_2d(), light: [0.4, -0.6, 0.9, 0.0], style: [mode, self.config.width as f32, self.config.height as f32, line_width] };
@@ -465,7 +476,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            if matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded) {
+            if matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded | FaceStyle::Monochrome) {
                 pass.set_pipeline(&self.face_pipeline);
                 pass.set_vertex_buffer(0, self.faces.0.slice(..));
                 pass.draw(0..self.faces.1, 0..1);
@@ -473,7 +484,7 @@ impl Renderer {
             pass.set_pipeline(&self.edge_pipeline);
             pass.set_vertex_buffer(0, self.edges.0.slice(..));
             pass.draw(0..6, 0..self.edges.1 / 2);
-            if style.back_edges && matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded) {
+            if style.back_edges && matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded | FaceStyle::Monochrome) {
                 pass.set_pipeline(&self.back_edge_pipeline);
                 pass.draw(0..6, 0..self.edges.1 / 2);
             }

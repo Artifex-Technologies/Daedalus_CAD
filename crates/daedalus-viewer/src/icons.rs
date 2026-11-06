@@ -28,7 +28,6 @@ pub enum Icon {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Planned {
     MakeComponent,
-    PaintBucket,
     FollowMe,
     Dimensions,
     Text,
@@ -41,7 +40,6 @@ impl Planned {
     pub fn label(self) -> &'static str {
         match self {
             Planned::MakeComponent => "Make Component",
-            Planned::PaintBucket => "Paint Bucket",
             Planned::FollowMe => "Follow Me",
             Planned::Dimensions => "Dimensions",
             Planned::Text => "Text",
@@ -243,6 +241,11 @@ impl Draw<'_> {
                 self.closed(&[(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]);
                 self.closed(&[(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)]);
             }
+            Icon::Tool(Tool::PaintBucket) => {
+                self.closed(&[(0.16, 0.42), (0.56, 0.22), (0.78, 0.66), (0.38, 0.86)]);
+                self.line(&self.arc(0.36, 0.32, 0.2, 60.0, 200.0));
+                self.fill(&[(0.82, 0.56), (0.9, 0.74), (0.82, 0.84), (0.74, 0.74)], self.accent);
+            }
             Icon::Tool(Tool::Pie) => {
                 let mut v = vec![(0.14, 0.86)];
                 v.extend(self.arc(0.14, 0.86, 0.72, 0.0, 90.0));
@@ -374,7 +377,8 @@ impl Draw<'_> {
             }
             Icon::Style(FaceStyle::Wireframe) => self.cube(Hidden::Solid, None),
             Icon::Style(FaceStyle::HiddenLine) => self.cube(Hidden::None, None),
-            Icon::Style(FaceStyle::Shaded) => self.cube(Hidden::None, Some(ink)),
+            Icon::Style(FaceStyle::Shaded) => self.cube(Hidden::None, Some(self.accent)),
+            Icon::Style(FaceStyle::Monochrome) => self.cube(Hidden::None, Some(ink)),
             Icon::Style(FaceStyle::XRay) => {
                 self.cube(Hidden::Solid, Some(ink.gamma_multiply(0.5)));
             }
@@ -392,11 +396,6 @@ impl Draw<'_> {
                 self.dashed((0.96, 0.04), (0.96, 0.96));
                 self.dashed((0.96, 0.96), (0.04, 0.96));
                 self.dashed((0.04, 0.96), (0.04, 0.04));
-            }
-            Planned::PaintBucket => {
-                self.closed(&[(0.16, 0.42), (0.56, 0.22), (0.78, 0.66), (0.38, 0.86)]);
-                self.line(&self.arc(0.36, 0.32, 0.2, 60.0, 200.0));
-                self.fill(&[(0.82, 0.56), (0.9, 0.74), (0.82, 0.84), (0.74, 0.74)], self.accent);
             }
             Planned::FollowMe => {
                 self.line(&self.arc(0.5, 0.56, 0.34, 180.0, 360.0));

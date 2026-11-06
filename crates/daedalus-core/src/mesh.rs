@@ -13,6 +13,8 @@ pub struct Mesh {
     pub lines: Vec<[u32; 2]>,
     /// Face edges that are not drawn: the seams that join the two faces around a hole (see `imprint::cut_hole`).
     pub seams: Vec<[u32; 2]>,
+    /// Paint Bucket colours, one per face (None: the default material). May be shorter than `faces`: the rest are unpainted.
+    pub colors: Vec<Option<[u8; 3]>>,
 }
 
 impl Mesh {
@@ -28,6 +30,30 @@ impl Mesh {
     pub fn add_face(&mut self, indices: Vec<u32>) {
         debug_assert!(indices.len() >= 3);
         self.faces.push(indices);
+    }
+
+    /// The colour face `f` is painted, if any.
+    pub fn color_of(&self, f: usize) -> Option<[u8; 3]> {
+        self.colors.get(f).copied().flatten()
+    }
+
+    /// Paints face `f` (None: back to the default material).
+    pub fn set_color(&mut self, f: usize, c: Option<[u8; 3]>) {
+        if self.colors.len() <= f {
+            if c.is_none() {
+                return;
+            }
+            self.colors.resize(f + 1, None);
+        }
+        self.colors[f] = c;
+    }
+
+    /// Removes face `f` and its colour; later faces move down one.
+    pub fn remove_face(&mut self, f: usize) -> Vec<u32> {
+        if f < self.colors.len() {
+            self.colors.remove(f);
+        }
+        self.faces.remove(f)
     }
 
     /// Axis-aligned bounds as (min, max), or None if the mesh has no vertices.

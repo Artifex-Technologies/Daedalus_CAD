@@ -439,6 +439,13 @@ impl State {
         let near = (pos.0 - self.cursor.0).abs() < 5.0 && (pos.1 - self.cursor.1).abs() < 5.0;
         let count = if near && now.duration_since(at).as_millis() < 500 { n + 1 } else { 1 };
         self.clicks = (count, now, self.cursor);
+        // Paint Bucket with Alt: pick up the face's colour instead of painting
+        if self.tools.tool == Tool::PaintBucket && self.modifiers.alt_key() {
+            if let Some(f) = c.hit.and_then(|h| h.face) {
+                self.tools.paint_color = self.display.color_of(f);
+            }
+            return;
+        }
         if self.tools.tool == Tool::PositionCamera {
             if let Some(h) = c.hit {
                 self.remember_view();
@@ -630,6 +637,7 @@ impl State {
                 self.style.faces = f;
                 settings::save("style", f.key());
             }
+            UiAction::PaintColor(c) => self.tools.paint_color = c,
             UiAction::BackEdges => {
                 self.style.back_edges = !self.style.back_edges;
                 settings::save("back_edges", if self.style.back_edges { "on" } else { "off" });
@@ -827,6 +835,7 @@ impl State {
             typing: !self.typed.is_empty(),
             marker,
             style: self.style,
+            paint_color: self.tools.paint_color,
             can_go_back: !self.views.is_empty(),
             own_frame: frame::OWN_FRAME,
             maximized: self.maximized(),

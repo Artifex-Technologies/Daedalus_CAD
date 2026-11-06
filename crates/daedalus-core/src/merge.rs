@@ -117,20 +117,25 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f32) -> (Mesh, Vec<usize>) {
         groups.entry(r).or_default().push(fi);
     }
     let mut faces: Vec<Vec<u32>> = vec![];
+    let mut colors: Vec<Option<[u8; 3]>> = vec![];
     let mut map = vec![0usize; mesh.faces.len()];
     for members in groups.values() {
-        let merged = if members.len() > 1 { outline(&members.iter().map(|&i| &mesh.faces[i]).collect::<Vec<_>>()) } else { None };
+        // faces of different colours stay apart
+        let same_color = members.iter().all(|&i| mesh.color_of(i) == mesh.color_of(members[0]));
+        let merged = if members.len() > 1 && same_color { outline(&members.iter().map(|&i| &mesh.faces[i]).collect::<Vec<_>>()) } else { None };
         match merged {
             Some(loop_) => {
                 for &i in members {
                     map[i] = faces.len();
                 }
                 faces.push(loop_);
+                colors.push(mesh.color_of(members[0]));
             }
             None => {
                 for &i in members {
                     map[i] = faces.len();
                     faces.push(mesh.faces[i].clone());
+                    colors.push(mesh.color_of(i));
                 }
             }
         }
@@ -189,6 +194,7 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f32) -> (Mesh, Vec<usize>) {
         out.add_face(f.iter().map(|&v| renumber[v as usize]).collect());
     }
     out.lines = mesh.lines.iter().map(|l| l.map(|v| renumber[v as usize])).collect();
+    out.colors = colors;
     out.seams = mesh.seams.iter().map(|l| l.map(|v| renumber[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
     (out, map)
 }

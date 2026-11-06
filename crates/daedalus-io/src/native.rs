@@ -16,7 +16,7 @@
 use crate::{IoError, MeshExporter, MeshImporter};
 use daedalus_core::Mesh;
 
-/// Version 2 adds loose lines (`l a b`) and hidden seams (`s a b`, face edges not drawn); a file without lines is still written as version 1, which older Daedalus reads.
+/// Version 2 adds loose lines (`l a b`), hidden seams (`s a b`, face edges not drawn) and face colours (`c face r g b`); a file without lines is still written as version 1, which older Daedalus reads.
 pub const VERSION: u32 = 2;
 const MAGIC: &str = "daedalus";
 
@@ -70,6 +70,14 @@ impl MeshImporter for Native {
                     }
                     mesh.lines.push([a, b]);
                 }
+                Some("c") if version >= 2 => {
+                    let v: Vec<u32> = parts.map(|p| p.parse::<u32>()).collect::<Result<_, _>>().map_err(|_| IoError::Parse(format!("line {n}: a colour is a face number and red, green, blue")))?;
+                    let [f, r, g, b] = v[..] else { return Err(IoError::Parse(format!("line {n}: a colour is a face number and red, green, blue"))) };
+                    if f as usize >= mesh.faces.len() || r.max(g).max(b) > 255 {
+                        return Err(IoError::Parse(format!("line {n}: face {f} is not defined above, or a colour is over 255")));
+                    }
+                    mesh.set_color(f as usize, Some([r as u8, g as u8, b as u8]));
+                }
                 Some("s") if version >= 2 => {
                     let idx: Vec<u32> = parts.map(|p| p.parse::<u32>()).collect::<Result<_, _>>().map_err(|_| IoError::Parse(format!("line {n}: a seam lists two vertex numbers")))?;
                     let [a, b] = idx[..] else { return Err(IoError::Parse(format!("line {n}: a seam lists two vertex numbers"))) };
@@ -92,7 +100,8 @@ impl MeshExporter for Native {
     }
 
     fn export(&self, mesh: &Mesh) -> Result<Vec<u8>, IoError> {
-        let version = if mesh.lines.is_empty() && mesh.seams.is_empty() { 1 } else { VERSION };
+        let painted = mesh.colors.iter().any(|c| c.is_some());
+        let version = if mesh.lines.is_empty() && mesh.seams.is_empty() && !painted { 1 } else { VERSION };
         let mut s = format!("{MAGIC} {version}\n# Daedalus CAD model: v x y z (metres), f vertex numbers counter-clockwise from outside, l a loose line\n");
         for p in &mesh.positions {
             s.push_str(&format!("v {} {} {}\n", p[0], p[1], p[2]));
@@ -109,6 +118,11 @@ impl MeshExporter for Native {
         }
         for [a, b] in &mesh.seams {
             s.push_str(&format!("s {a} {b}\n"));
+        }
+        for (f, c) in mesh.colors.iter().enumerate() {
+            if let Some([r, g, b]) = c {
+                s.push_str(&format!("c {f} {r} {g} {b}\n"));
+            }
         }
         Ok(s.into_bytes())
     }
@@ -146,6 +160,7 @@ mod tests {
         m.add_vertex([5.0, 0.0, 0.0]);
         m.lines.push([0, 8]);
         m.seams.push([0, 1]);
+        m.set_color(2, Some([10, 200, 30]));
         let bytes = Native.export(&m).unwrap();
         assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 2\n"));
         let back = Native.import(&bytes).unwrap();

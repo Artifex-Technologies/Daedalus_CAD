@@ -349,7 +349,8 @@ pub fn repair(mesh: &Mesh, tol: f32) -> (Mesh, RepairSummary) {
     s.filled_holes = fill_holes(&positions, &mut faces, tol);
     s.inverted_solids_flipped = fix_inverted(&positions, &mut faces);
 
-    (Mesh { positions, faces, lines, seams }, s)
+    // repair renumbers and drops faces, so colours are not carried (it is for imported meshes, which have none)
+    (Mesh { positions, faces, lines, seams, colors: Vec::new() }, s)
 }
 
 fn edge_faces(faces: &[Vec<u32>]) -> HashMap<(u32, u32), Vec<usize>> {

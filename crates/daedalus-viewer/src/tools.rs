@@ -21,6 +21,7 @@ pub enum Tool {
     Freehand,
     PushPull,
     Offset,
+    PaintBucket,
     Move,
     Rotate,
     Scale,
@@ -37,7 +38,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 26] = [
+    pub const ALL: [Tool; 27] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -51,6 +52,7 @@ impl Tool {
         Tool::Freehand,
         Tool::PushPull,
         Tool::Offset,
+        Tool::PaintBucket,
         Tool::Move,
         Tool::Rotate,
         Tool::Scale,
@@ -80,6 +82,7 @@ impl Tool {
             Tool::ThreePointArc => "3 Point Arc",
             Tool::Freehand => "Freehand",
             Tool::Offset => "Offset",
+            Tool::PaintBucket => "Paint Bucket",
             Tool::PushPull => "Push/Pull",
             Tool::Move => "Move",
             Tool::Rotate => "Rotate",
@@ -107,6 +110,7 @@ impl Tool {
             Tool::PushPull => Some("P"),
             Tool::TwoPointArc => Some("A"),
             Tool::Offset => Some("F"),
+            Tool::PaintBucket => Some("B"),
             Tool::Move => Some("M"),
             Tool::Rotate => Some("Q"),
             Tool::Scale => Some("S"),
@@ -281,6 +285,8 @@ pub struct Tools {
     pub selected: Vec<usize>,
     /// Segments in a pie's arc.
     pub arc_segments: u32,
+    /// Paint Bucket's colour (None: the default material, which takes paint off).
+    pub paint_color: Option<[u8; 3]>,
     /// Construction guides from Tape Measure and Protractor.
     pub guides: Vec<Guide>,
     hover_face: Option<usize>,
@@ -299,6 +305,7 @@ impl Default for Tools {
             units: Units::Metres,
             selected: Vec::new(),
             arc_segments: DEFAULT_ARC_SEGMENTS,
+            paint_color: Some([196, 92, 64]),
             guides: Vec::new(),
             hover_face: None,
             op: Op::Idle,
@@ -534,6 +541,13 @@ impl Tools {
                 (Some(b), Some((p, _))) => self.commit(model, sketch::rotated_rectangle(&plane, a, b, p))?,
                 (b, _) => self.op = Op::RotRect { plane, a, b, cursor: None },
             },
+            (Tool::PaintBucket, _) => {
+                // a selected face paints the whole selection, as in SketchUp
+                if let Some(face) = c.hit.and_then(|h| h.face) {
+                    let faces = if self.selected.binary_search(&face).is_ok() { self.selected.clone() } else { vec![face] };
+                    model.paint(&faces, self.paint_color).map_err(|e| e.to_string())?;
+                }
+            }
             (Tool::Offset, Op::Idle) => {
                 let face = c.hit.and_then(|h| h.face).ok_or("click a face to offset its edges")?;
                 let ring: Vec<[f32; 3]> = model.mesh().face_vertices(face).iter().map(|&v| model.mesh().positions[v as usize]).collect();
@@ -1042,6 +1056,7 @@ impl Tools {
             (Tool::ThreePointArc, _) => "Select end point.",
             (Tool::Freehand, _) => "Hold the button and draw.",
             (Tool::Offset, Op::Idle) => "Click a face to offset its edges.",
+            (Tool::PaintBucket, _) => "Click a face to paint it (a selected face paints the selection). Alt+click picks up a face's colour.",
             (Tool::Offset, _) => "Move in to set the distance and click, or type it.",
             (Tool::Pie, Op::Pie { start: None, .. }) => "Select start of the arc, or type a radius.",
             (Tool::Pie, _) => "Select end of the arc, or type an angle in degrees.",
