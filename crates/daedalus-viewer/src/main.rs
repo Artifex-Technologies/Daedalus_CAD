@@ -1,6 +1,8 @@
 mod camera;
 mod filedlg;
 mod frame;
+#[cfg(target_os = "linux")]
+mod portal;
 mod theme;
 mod icons;
 mod settings;
@@ -95,6 +97,11 @@ struct State {
     shown_title: String,
     /// View > Toolbar: down the left side instead of across the top (remembered in settings.conf).
     toolbar_left: bool,
+    /// Sends events to the window (the file chooser's answer comes back this way).
+    proxy: EventLoopProxy<AppEvent>,
+    /// The desktop's file chooser is open; and the name it was asked with (for the built-in one, should there be no portal).
+    picking: bool,
+    pending_name: String,
     /// Text being typed into: its number in the notes and the words so far.
     label_edit: Option<(usize, String)>,
     /// The text box opens this frame (its words get selected).
@@ -124,7 +131,7 @@ enum Pending {
 }
 
 impl State {
-    fn new(window: Arc<Window>, scene: &Scene, path: Option<PathBuf>, dark: bool) -> State {
+    fn new(window: Arc<Window>, scene: &Scene, path: Option<PathBuf>, dark: bool, proxy: EventLoopProxy<AppEvent>) -> State {
         let gpu = pollster::block_on(Renderer::new(window.clone()));
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(theme::visuals(dark));
@@ -192,6 +199,9 @@ impl State {
             toolbar_left: settings::load("toolbar").as_deref() != Some("top"),
             label_edit: None,
             label_fresh: false,
+            proxy,
+            picking: false,
+            pending_name: String::new(),
             cut_lines: Vec::new(),
             text3d: Text3dForm {
                 text: "Enter text".into(),
@@ -260,8 +270,8 @@ impl State {
                 self.replace(&Scene::default(), None);
                 self.message = Some("New model.".into());
             }
-            Pending::Open => self.dialog = Some(FileDialog::new(Purpose::Open, self.path.as_deref(), "")),
-            Pending::Import => self.dialog = Some(FileDialog::new(Purpose::Import, self.path.as_deref(), "")),
+            Pending::Open => self.choose(Purpose::Open, ""),
+            Pending::Import => self.choose(Purpose::Import, ""),
             Pending::Quit => self.quit = true,
         }
     }
@@ -283,7 +293,7 @@ impl State {
     fn save_as(&mut self, then: Option<Pending>) {
         self.after_save = then;
         let name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        self.dialog = Some(FileDialog::new(Purpose::SaveAs, self.path.as_deref(), &name));
+        self.choose(Purpose::SaveAs, &name);
     }
 
     fn save_to(&mut self, path: &Path) -> bool {
@@ -302,6 +312,13 @@ impl State {
     }
 
     fn open_file(&mut self, path: &Path, import: bool) {
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("skp") || e.eq_ignore_ascii_case("skb")) {
+            self.message = Some(format!(
+                "{} is a SketchUp file, which Daedalus cannot read yet (SketchUp's format is closed). In SketchUp: File > Export > 3D Model, as COLLADA (.dae) or OBJ, then Import that here.",
+                short(path)
+            ));
+            return;
+        }
         match daedalus_io::open_scene(path) {
             Ok(m) => {
                 self.replace(&m, if import { None } else { Some(path.to_path_buf()) });
@@ -309,6 +326,55 @@ impl State {
             }
             Err(e) => self.message = Some(format!("Could not open {}: {e}.", short(path))),
         }
+    }
+
+    /// Asks for a file: the desktop's own dialog (Minos on Yggdrasil) through the portal, else the built-in browser.
+    fn choose(&mut self, purpose: Purpose, name: &str) {
+        #[cfg(target_os = "linux")]
+        {
+            if self.picking {
+                return; // one is open already
+            }
+            self.picking = true;
+            let proxy = self.proxy.clone();
+            portal::ask(purpose, self.path.as_deref(), name, move |answer| {
+                let _ = proxy.send_event(AppEvent::Picked(purpose, answer));
+            });
+            self.pending_name = name.to_string();
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.dialog = Some(FileDialog::new(purpose, self.path.as_deref(), name));
+        }
+    }
+
+    /// The portal's answer.
+    #[cfg(target_os = "linux")]
+    fn picked(&mut self, purpose: Purpose, answer: portal::Answer) {
+        self.picking = false;
+        match answer {
+            portal::Answer::Chosen(mut path) => {
+                // a save dialog may hand back a name without its ending
+                if path.extension().is_none() {
+                    match purpose {
+                        Purpose::SaveAs => {
+                            path.set_extension("daedalus");
+                        }
+                        Purpose::Export => {
+                            path.set_extension("stl");
+                        }
+                        _ => {}
+                    }
+                }
+                self.dialog_done(purpose, path);
+            }
+            portal::Answer::Cancelled => self.after_save = None,
+            portal::Answer::NoPortal => {
+                let name = std::mem::take(&mut self.pending_name);
+                self.dialog = Some(FileDialog::new(purpose, self.path.as_deref(), &name));
+            }
+        }
+        self.window.request_redraw();
     }
 
     /// A file chosen in the dialog.
@@ -986,7 +1052,7 @@ impl State {
             UiAction::Close => self.begin(Pending::Quit),
             UiAction::Export => {
                 let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|n| format!("{}.stl", n.to_string_lossy())).unwrap_or_default();
-                self.dialog = Some(FileDialog::new(Purpose::Export, self.path.as_deref(), &stem));
+                self.choose(Purpose::Export, &stem);
             }
         }
         self.window.request_redraw();
@@ -1392,10 +1458,12 @@ fn short(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string())
 }
 
-/// Events from outside the window: the desktop switched between light and dark.
-#[derive(Debug, Clone, Copy)]
+/// Events from outside the window: the desktop switched between light and dark; the file chooser answered.
+#[derive(Debug, Clone)]
 enum AppEvent {
     Theme { dark: bool },
+    #[cfg(target_os = "linux")]
+    Picked(Purpose, portal::Answer),
 }
 
 struct App {
@@ -1408,10 +1476,14 @@ struct App {
 
 impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
-        let AppEvent::Theme { dark } = event;
-        if let Some(s) = self.state.as_mut() {
-            s.egui_ctx.set_visuals(theme::visuals(dark));
-            s.window.request_redraw();
+        let Some(s) = self.state.as_mut() else { return };
+        match event {
+            AppEvent::Theme { dark } => {
+                s.egui_ctx.set_visuals(theme::visuals(dark));
+                s.window.request_redraw();
+            }
+            #[cfg(target_os = "linux")]
+            AppEvent::Picked(purpose, answer) => s.picked(purpose, answer),
         }
     }
 
@@ -1437,7 +1509,7 @@ impl ApplicationHandler<AppEvent> for App {
             let _ = proxy.send_event(AppEvent::Theme { dark });
         })
         .unwrap_or(window.theme() == Some(winit::window::Theme::Dark));
-        self.state = Some(State::new(window, &self.scene, self.path.clone(), dark));
+        self.state = Some(State::new(window, &self.scene, self.path.clone(), dark, self.proxy.clone()));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1466,7 +1538,11 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::RedrawRequested => {
                 s.render();
                 if s.quit {
+                    // the window and the GPU go now, while the event loop (and its Wayland connection) is still there: dropped
+                    // after it, the graphics driver's clean-up talks to a connection that is gone and crashes
+                    self.state = None;
                     event_loop.exit();
+                    return;
                 }
             }
             WindowEvent::ModifiersChanged(m) => s.modifiers = m.state(),

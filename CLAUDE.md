@@ -28,7 +28,8 @@ Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/c
 - `crates/daedalus-viewer`: wgpu 24 + winit 0.30 + egui 0.31 (pinned together on purpose; egui 0.32 needs wgpu 25).
   `tools.rs` is the GPU-free tool state machine (unit-tested); `render.rs` GPU; `ui.rs` egui chrome; `main.rs` events,
   snapping and the document (open, save, unsaved changes); `filedlg.rs` the built-in file browser (no GTK/Qt dialog);
-  `icons.rs` the toolbar's vector icons (thin line art in the theme's text colour, a few orange accents; no image files; our own drawings: IngeTrazo's look was the reference, from a screenshot only); `settings.rs` units and toolbar side;
+  `portal.rs` the desktop's own open/save dialog (XDG FileChooser portal: Minos on Yggdrasil; the built-in `filedlg.rs` when
+  there is no portal); `icons.rs` the toolbar's vector icons (thin line art in the theme's text colour, a few orange accents; no image files; our own drawings: IngeTrazo's look was the reference, from a screenshot only); `settings.rs` units and toolbar side;
   `text3d.rs` 3D Text outlines; `frame.rs` the window's own frame on Linux (resize edges; the menu bar is the title bar, see below); `theme.rs` light or
   dark chrome from the desktop (XDG portal over zbus on Linux, winit on Windows)
 
@@ -108,6 +109,9 @@ the current state is:
   to faces with holes and extruded in `core/src/profile.rs`; placed as a group), section fill (back faces through the cut,
   shader) and cut lines (`core/src/section.rs`). `.daedalus` version 3: `def`/`end`, `i`, `guide`, `dim`, `text`,
   `section`, `axes`. Shaders are validated in a test (naga). Not seen on screen yet.
+- Exit (2026-11-06): the window and GPU state are dropped before the event loop ends, and wgpu starts Vulkan only (OpenGL
+  just when Vulkan finds no adapter): NVIDIA's EGL clean-up after the Wayland connection closed crashed at every close
+  (SIGSEGV, Sarina reported it as a crash). SketchUp files (.skp) are listed in the dialog but cannot be read: closed format.
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

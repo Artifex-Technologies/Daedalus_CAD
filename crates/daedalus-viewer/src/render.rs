@@ -200,15 +200,20 @@ pub struct Renderer {
 impl Renderer {
     pub async fn new(window: Arc<Window>) -> Renderer {
         let size = window.inner_size();
-        let instance = wgpu::Instance::default();
-        let surface = instance.create_surface(window).expect("create surface");
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await
-            .expect("no suitable GPU adapter");
+        // Vulkan (Metal, DX12) first, and OpenGL only when none of them gives an adapter (or WGPU_BACKEND asks for it).
+        // Starting OpenGL alongside for nothing was not free: with NVIDIA's EGL its clean-up at exit ran after the window's
+        // Wayland connection was gone and crashed (SIGSEGV in libnvidia-egl-wayland2, 2026-11-06).
+        let mut found = None;
+        for backends in [wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY), wgpu::Backends::GL] {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends, ..Default::default() });
+            let Ok(surface) = instance.create_surface(window.clone()) else { continue };
+            let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }).await;
+            if let Some(adapter) = adapter {
+                found = Some((instance, surface, adapter));
+                break;
+            }
+        }
+        let (_instance, surface, adapter) = found.expect("no suitable GPU adapter (Vulkan or OpenGL)");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default(), None)
             .await
