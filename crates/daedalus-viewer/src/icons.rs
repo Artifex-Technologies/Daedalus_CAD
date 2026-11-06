@@ -32,7 +32,6 @@ pub enum Planned {
     Text,
     Axes,
     Text3D,
-    SectionPlane,
 }
 
 impl Planned {
@@ -43,7 +42,6 @@ impl Planned {
             Planned::Text => "Text",
             Planned::Axes => "Axes",
             Planned::Text3D => "3D Text",
-            Planned::SectionPlane => "Section Plane",
         }
     }
 }
@@ -249,6 +247,11 @@ impl Draw<'_> {
                 self.closed(&[(0.06, 0.4), (0.26, 0.4), (0.26, 0.6), (0.06, 0.6)]);
                 self.head(0.84, 0.48, 0.0, -1.0, 0.16, ink);
             }
+            Icon::Tool(Tool::SectionPlane) => {
+                self.closed(&[(0.2, 0.2), (0.7, 0.08), (0.7, 0.8), (0.2, 0.92)]);
+                self.line_with(&[(0.45, 0.5), (0.92, 0.5)], Stroke::new(self.w / 15.0, self.accent));
+                self.head(0.98, 0.5, 1.0, 0.0, 0.14, self.accent);
+            }
             Icon::Tool(Tool::Pie) => {
                 let mut v = vec![(0.14, 0.86)];
                 v.extend(self.arc(0.14, 0.86, 0.72, 0.0, 90.0));
@@ -422,11 +425,6 @@ impl Draw<'_> {
             Planned::Text3D => {
                 self.line_with(&[(0.16, 0.9), (0.5, 0.1), (0.84, 0.9)], Stroke::new(self.w / 9.0, self.accent));
                 self.line_with(&[(0.3, 0.6), (0.7, 0.6)], Stroke::new(self.w / 11.0, self.accent));
-            }
-            Planned::SectionPlane => {
-                self.closed(&[(0.2, 0.2), (0.7, 0.08), (0.7, 0.8), (0.2, 0.92)]);
-                self.line_with(&[(0.45, 0.5), (0.92, 0.5)], Stroke::new(self.w / 15.0, self.accent));
-                self.head(0.98, 0.5, 1.0, 0.0, 0.14, self.accent);
             }
         }
     }

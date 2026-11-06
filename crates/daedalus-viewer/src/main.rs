@@ -638,6 +638,8 @@ impl State {
                 settings::save("style", f.key());
             }
             UiAction::PaintColor(c) => self.tools.paint_color = c,
+            UiAction::SectionCuts => self.tools.section_cuts = !self.tools.section_cuts,
+            UiAction::DeleteSection => self.tools.section = None,
             UiAction::BackEdges => {
                 self.style.back_edges = !self.style.back_edges;
                 settings::save("back_edges", if self.style.back_edges { "on" } else { "off" });
@@ -783,9 +785,11 @@ impl State {
     }
 
     fn overlay(&self) -> Vec<LineVertex> {
+        let size = self.camera.distance * 0.6;
         self.tools
             .preview_lines()
             .into_iter()
+            .chain(self.tools.section_outline(size))
             .flat_map(|(a, b, color)| [LineVertex { position: a, color }, LineVertex { position: b, color }])
             .collect()
     }
@@ -836,6 +840,7 @@ impl State {
             marker,
             style: self.style,
             paint_color: self.tools.paint_color,
+            section: self.tools.section.map(|_| self.tools.section_cuts),
             can_go_back: !self.views.is_empty(),
             own_frame: frame::OWN_FRAME,
             maximized: self.maximized(),
@@ -904,7 +909,8 @@ impl State {
         let (axes, overlay) = (self.axes(), self.overlay());
         // edges about 1.5 points wide, like SketchUp's default
         let line_width = 1.4 * self.window.scale_factor() as f32;
-        self.gpu.render(self.camera.view_proj(w / h), self.style, line_width, &axes, &overlay, ui);
+        let section = self.tools.section.filter(|_| self.tools.section_cuts);
+        self.gpu.render(self.camera.view_proj(w / h), self.style, line_width, section, &axes, &overlay, ui);
 
         if out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay.is_zero()) {
             self.window.request_redraw();

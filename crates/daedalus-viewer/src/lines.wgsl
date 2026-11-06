@@ -3,7 +3,14 @@ struct Uniforms {
     light: vec4<f32>,
     // x: face style (0 shaded, 1 hidden line, 2 X-ray); y, z: viewport size in pixels; w: line width in pixels
     style: vec4<f32>,
+    // Section Plane: xyz the normal of the side cut away, w the offset; all zero when there is none
+    section: vec4<f32>,
 };
+
+// whether a world point lies on the side the section plane cuts away
+fn cut_away(p: vec3<f32>) -> bool {
+    return dot(u.section.xyz, u.section.xyz) > 0.5 && dot(p, u.section.xyz) > u.section.w;
+}
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -23,6 +30,7 @@ struct VertexOut {
     @location(0) color: vec4<f32>,
     // distance from the middle of the line, in pixels
     @location(1) across: f32,
+    @location(2) world: vec3<f32>,
 };
 
 @vertex
@@ -35,6 +43,7 @@ fn vs_main(in: SegmentIn) -> VertexOut {
         out.clip = vec4<f32>(2.0, 2.0, 2.0, 1.0);
         out.color = vec4<f32>(0.0);
         out.across = 0.0;
+        out.world = vec3<f32>(0.0);
         return out;
     }
     if (pa.z < 0.0) {
@@ -67,6 +76,7 @@ fn vs_main(in: SegmentIn) -> VertexOut {
     out.clip = p;
     out.color = mix(in.color_a, in.color_b, end);
     out.across = side * half;
+    out.world = mix(in.a, in.b, end);
     return out;
 }
 
@@ -77,6 +87,9 @@ fn coverage(across: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    if (cut_away(in.world)) {
+        discard;
+    }
     let a = coverage(in.across);
     if (a <= 0.0) {
         discard;
@@ -87,6 +100,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 // Back Edges: grey dashes (the dash follows the screen position)
 @fragment
 fn fs_dashed(in: VertexOut) -> @location(0) vec4<f32> {
+    if (cut_away(in.world)) {
+        discard;
+    }
     let k = floor((in.clip.x + in.clip.y) / 5.0);
     if (k - 2.0 * floor(k / 2.0) > 0.5) {
         discard;

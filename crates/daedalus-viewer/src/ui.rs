@@ -26,6 +26,9 @@ pub enum UiAction {
     ToggleOrtho,
     FaceStyle(FaceStyle),
     BackEdges,
+    /// View > Section Cuts on or off; Edit > Delete Section Plane.
+    SectionCuts,
+    DeleteSection,
     /// Paint Bucket's colour (None: the default material).
     PaintColor(Option<[u8; 3]>),
     SelectAll,
@@ -62,6 +65,8 @@ pub struct UiView<'a> {
     pub can_redo: bool,
     pub style: Style,
     pub paint_color: Option<[u8; 3]>,
+    /// A section plane is placed, and whether it cuts.
+    pub section: Option<bool>,
     /// Camera > Previous has a view to go back to.
     pub can_go_back: bool,
     pub status: &'a str,
@@ -125,6 +130,10 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     actions.push(UiAction::DeleteGuides);
                     ui.close_menu();
                 }
+                if ui.add_enabled(v.section.is_some(), egui::Button::new("Delete Section Plane")).clicked() {
+                    actions.push(UiAction::DeleteSection);
+                    ui.close_menu();
+                }
             });
             ui.menu_button("Camera", |ui| {
                 if ui.add_enabled(v.can_go_back, egui::Button::new("Previous")).clicked() {
@@ -174,6 +183,11 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     actions.push(UiAction::BackEdges);
                     ui.close_menu();
                 }
+                let mut cuts = v.section == Some(true);
+                if ui.add_enabled(v.section.is_some(), egui::Checkbox::new(&mut cuts, "Section Cuts")).clicked() {
+                    actions.push(UiAction::SectionCuts);
+                    ui.close_menu();
+                }
                 ui.separator();
                 ui.label(egui::RichText::new("Toolbar").weak());
                 if ui.radio(!v.toolbar_left, "Across the top").clicked() {
@@ -208,6 +222,8 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull, Tool::Offset, Tool::FollowMe], &mut actions);
                 ui.separator();
                 tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor], &mut actions);
+                ui.separator();
+                tool_items(ui, v, &[Tool::SectionPlane], &mut actions);
                 ui.separator();
                 if ui.add(egui::Button::new("Solid Inspector").shortcut_text("I")).clicked() {
                     actions.push(UiAction::Inspect);
@@ -498,7 +514,7 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
             t(Tool::PositionCamera),
             t(Tool::Walk),
             t(Tool::LookAround),
-            P(Planned::SectionPlane),
+            t(Tool::SectionPlane),
         ],
         vec![
             Act(Icon::Iso, UiAction::Iso),

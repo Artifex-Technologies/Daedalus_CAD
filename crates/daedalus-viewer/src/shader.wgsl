@@ -3,7 +3,14 @@ struct Uniforms {
     light: vec4<f32>,
     // x: face style (0 shaded, 1 hidden line, 2 X-ray)
     style: vec4<f32>,
+    // Section Plane: xyz the normal of the side cut away, w the offset; all zero when there is none
+    section: vec4<f32>,
 };
+
+// whether a world point lies on the side the section plane cuts away
+fn cut_away(p: vec3<f32>) -> bool {
+    return dot(u.section.xyz, u.section.xyz) > 0.5 && dot(p, u.section.xyz) > u.section.w;
+}
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -19,6 +26,7 @@ struct VertexOut {
     @location(0) normal: vec3<f32>,
     @location(1) highlight: f32,
     @location(2) color: vec3<f32>,
+    @location(3) world: vec3<f32>,
 };
 
 @vertex
@@ -28,11 +36,15 @@ fn vs_main(in: VertexIn) -> VertexOut {
     out.normal = in.normal;
     out.highlight = in.highlight;
     out.color = in.color;
+    out.world = in.position;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    if (cut_away(in.world)) {
+        discard;
+    }
     // Two-sided lighting: SketchUp-style models are often viewed from the back.
     let d = abs(dot(normalize(in.normal), normalize(u.light.xyz)));
     let shade = 0.30 + 0.70 * d;

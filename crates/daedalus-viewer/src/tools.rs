@@ -23,6 +23,7 @@ pub enum Tool {
     Offset,
     FollowMe,
     PaintBucket,
+    SectionPlane,
     Move,
     Rotate,
     Scale,
@@ -39,7 +40,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 28] = [
+    pub const ALL: [Tool; 29] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -55,6 +56,7 @@ impl Tool {
         Tool::Offset,
         Tool::FollowMe,
         Tool::PaintBucket,
+        Tool::SectionPlane,
         Tool::Move,
         Tool::Rotate,
         Tool::Scale,
@@ -86,6 +88,7 @@ impl Tool {
             Tool::Offset => "Offset",
             Tool::PaintBucket => "Paint Bucket",
             Tool::FollowMe => "Follow Me",
+            Tool::SectionPlane => "Section Plane",
             Tool::PushPull => "Push/Pull",
             Tool::Move => "Move",
             Tool::Rotate => "Rotate",
@@ -129,6 +132,7 @@ impl Tool {
             | Tool::ThreePointArc
             | Tool::Freehand
             | Tool::FollowMe
+            | Tool::SectionPlane
             | Tool::Protractor
             | Tool::ZoomWindow
             | Tool::PositionCamera
@@ -143,7 +147,7 @@ impl Tool {
 
     /// Tools that create or change geometry (disabled on read-only imports).
     pub fn edits(self) -> bool {
-        !self.navigates() && !matches!(self, Tool::Select | Tool::TapeMeasure | Tool::Protractor | Tool::PositionCamera)
+        !self.navigates() && !matches!(self, Tool::Select | Tool::TapeMeasure | Tool::Protractor | Tool::PositionCamera | Tool::SectionPlane)
     }
 
     /// Tools where a left-drag moves the camera instead of picking.
@@ -293,6 +297,9 @@ pub struct Tools {
     pub arc_segments: u32,
     /// Paint Bucket's colour (None: the default material, which takes paint off).
     pub paint_color: Option<[u8; 3]>,
+    /// The section plane: a point on it and the normal of the side it cuts away; and whether cuts are shown.
+    pub section: Option<([f32; 3], [f32; 3])>,
+    pub section_cuts: bool,
     /// Construction guides from Tape Measure and Protractor.
     pub guides: Vec<Guide>,
     hover_face: Option<usize>,
@@ -312,6 +319,8 @@ impl Default for Tools {
             selected: Vec::new(),
             arc_segments: DEFAULT_ARC_SEGMENTS,
             paint_color: Some([196, 92, 64]),
+            section: None,
+            section_cuts: true,
             guides: Vec::new(),
             hover_face: None,
             op: Op::Idle,
@@ -391,6 +400,19 @@ impl Tools {
         model.transform_vertices(verts, f).map_err(|e| e.to_string())?;
         self.op = Op::Idle;
         Ok(())
+    }
+
+    /// The section plane's outline, drawn while it is placed: a square in its plane around its point, `size` across.
+    pub fn section_outline(&self, size: f32) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
+        let Some((o, n)) = self.section else { return Vec::new() };
+        let Some(p) = Plane::from_point_normal(o, n) else { return Vec::new() };
+        let h = size / 2.0;
+        let corners = [p.to_world(-h, -h), p.to_world(h, -h), p.to_world(h, h), p.to_world(-h, h)];
+        let orange = [0.9, 0.5, 0.15, 1.0];
+        let mut out: Vec<_> = (0..4).map(|i| (corners[i], corners[(i + 1) % 4], orange)).collect();
+        // an arrow the way it looks (into what is kept)
+        out.push((o, sub(o, scale(n, h * 0.4)), orange));
+        out
     }
 
     /// Delete Guides (Edit menu).
@@ -569,6 +591,15 @@ impl Tools {
                 let (path, closed) = path_through(&mesh.lines, &mesh.positions, line, centre).ok_or("that line is not part of a path")?;
                 model.follow_me(face, &path, closed).map_err(|e| e.to_string())?;
                 self.model_changed();
+            }
+            (Tool::SectionPlane, _) => {
+                // on the face clicked, cutting away what is in front of it
+                let face = c.hit.and_then(|h| h.face).ok_or("click a face to place the section plane on it")?;
+                let n = model.mesh().face_normal(face);
+                if let (Some(h), true) = (c.hit, n != [0.0; 3]) {
+                    self.section = Some((h.point, n));
+                    self.section_cuts = true;
+                }
             }
             (Tool::PaintBucket, _) => {
                 // a selected face paints the whole selection, as in SketchUp
@@ -800,6 +831,11 @@ impl Tools {
             (Entry::Value(d), Op::Offset { ring, normal, d: shown }) => {
                 // typed: in or out as the mouse is
                 self.offset(model, &ring, normal, d.abs() * if shown < 0.0 { -1.0 } else { 1.0 })?
+            }
+            (Entry::Value(d), Op::Idle) if self.tool == Tool::SectionPlane && self.section.is_some() => {
+                // typed: the plane moves that far into the model
+                let (o, n) = self.section.expect("checked");
+                self.section = Some((sub(o, scale(n, d)), n));
             }
             (Entry::Value(l), Op::Arc2 { plane, a, b: None, cursor }) => {
                 let dir = cursor.and_then(|c| normalize(sub(c, a))).unwrap_or(plane.u);
@@ -1087,6 +1123,7 @@ impl Tools {
             (Tool::Offset, Op::Idle) => "Click a face to offset its edges.",
             (Tool::FollowMe, Op::Idle) => "Click the face to sweep (the profile). Draw the path as lines first.",
             (Tool::FollowMe, _) => "Click a line of the path. The profile follows the whole chain of lines.",
+            (Tool::SectionPlane, _) => "Click a face: what is in front of it is cut away. Type a distance to move the plane in.",
             (Tool::PaintBucket, _) => "Click a face to paint it (a selected face paints the selection). Alt+click picks up a face's colour.",
             (Tool::Offset, _) => "Move in to set the distance and click, or type it.",
             (Tool::Pie, Op::Pie { start: None, .. }) => "Select start of the arc, or type a radius.",
@@ -1927,5 +1964,20 @@ mod tests {
         t.click(&mut m, &c).unwrap();
         assert!(m.mesh().is_closed());
         assert!((m.mesh().signed_volume() - 5.0).abs() < 1e-3, "{}", m.mesh().signed_volume());
+    }
+
+    #[test]
+    fn a_section_plane_on_a_face_moves_in_by_a_typed_distance() {
+        let (mut m, top) = box_model();
+        let mut t = Tools::default();
+        t.set_tool(Tool::SectionPlane);
+        t.click(&mut m, &top).unwrap();
+        let (o, n) = t.section.unwrap();
+        assert_eq!(n, [0.0, 0.0, 1.0], "it cuts away what is above the top");
+        assert!((o[2] - 2.0).abs() < 1e-6);
+        t.type_entry(&mut m, "0.5").unwrap();
+        assert!((t.section.unwrap().0[2] - 1.5).abs() < 1e-6, "half a metre down into the box");
+        assert_eq!(t.section_outline(1.0).len(), 5);
+        assert_eq!(m.mesh().face_count(), 6, "the model is not changed");
     }
 }

@@ -41,6 +41,8 @@ struct Uniforms {
     light: [f32; 4],
     /// x: how faces are drawn (0 shaded, 1 hidden line, 2 X-ray); y, z, w unused.
     style: [f32; 4],
+    /// Section Plane: xyz the normal of the side cut away, w the plane's offset (cut where dot(p, n) > w); zero: no cut.
+    section: [f32; 4],
 }
 
 /// How faces are drawn, as SketchUp's Style toolbar offers.
@@ -429,7 +431,18 @@ impl Renderer {
     /// Draws one frame. `guides` (the axes) are hidden by geometry like edges;
     /// `overlay` lines (rubber bands) are drawn on top of everything.
     /// `line_width` is in pixels (scaled for HiDPI by the caller).
-    pub fn render(&mut self, view_proj: Mat4, style: Style, line_width: f32, guides: &[LineVertex], overlay: &[LineVertex], ui: UiFrame) {
+    /// `section`: a section plane as (point on it, normal of the side cut away), or None.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(
+        &mut self,
+        view_proj: Mat4,
+        style: Style,
+        line_width: f32,
+        section: Option<([f32; 3], [f32; 3])>,
+        guides: &[LineVertex],
+        overlay: &[LineVertex],
+        ui: UiFrame,
+    ) {
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
@@ -449,7 +462,12 @@ impl Renderer {
             FaceStyle::Monochrome => 3.0,
             _ => 0.0,
         };
-        let uniforms = Uniforms { view_proj: view_proj.to_cols_array_2d(), light: [0.4, -0.6, 0.9, 0.0], style: [mode, self.config.width as f32, self.config.height as f32, line_width] };
+        let uniforms = Uniforms {
+            view_proj: view_proj.to_cols_array_2d(),
+            light: [0.4, -0.6, 0.9, 0.0],
+            style: [mode, self.config.width as f32, self.config.height as f32, line_width],
+            section: section.map_or([0.0; 4], |(o, n)| [n[0], n[1], n[2], o[0] * n[0] + o[1] * n[1] + o[2] * n[2]]),
+        };
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
         let guide_buffer = self.buffer(bytemuck::cast_slice(guides));
         let overlay_buffer = self.buffer(bytemuck::cast_slice(overlay));
