@@ -640,6 +640,7 @@ impl State {
             UiAction::PaintColor(c) => self.tools.paint_color = c,
             UiAction::SectionCuts => self.tools.section_cuts = !self.tools.section_cuts,
             UiAction::DeleteSection => self.tools.section = None,
+            UiAction::DeleteDimensions => self.tools.delete_dims(),
             UiAction::BackEdges => {
                 self.style.back_edges = !self.style.back_edges;
                 settings::save("back_edges", if self.style.back_edges { "on" } else { "off" });
@@ -754,6 +755,11 @@ impl State {
                 out.push(LineVertex { position: end, color });
             }
         }
+        // dimensions, in dark grey
+        for (a, b, color) in self.tools.dim_lines([0.15, 0.15, 0.18, 1.0]) {
+            out.push(LineVertex { position: a, color });
+            out.push(LineVertex { position: b, color });
+        }
         // guides: lines reach as far as the axes; points are small crosses
         let guides = self.tools.guides.iter().copied().chain(self.tools.guide_preview());
         let cross = self.camera.distance * 0.008;
@@ -841,6 +847,12 @@ impl State {
             style: self.style,
             paint_color: self.tools.paint_color,
             section: self.tools.section.map(|_| self.tools.section_cuts),
+            labels: self
+                .tools
+                .dim_labels()
+                .into_iter()
+                .filter_map(|(p, t)| self.camera.project(Vec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), t)))
+                .collect(),
             can_go_back: !self.views.is_empty(),
             own_frame: frame::OWN_FRAME,
             maximized: self.maximized(),

@@ -24,6 +24,7 @@ pub enum Tool {
     FollowMe,
     PaintBucket,
     SectionPlane,
+    Dimensions,
     Move,
     Rotate,
     Scale,
@@ -40,7 +41,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 29] = [
+    pub const ALL: [Tool; 30] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -57,6 +58,7 @@ impl Tool {
         Tool::FollowMe,
         Tool::PaintBucket,
         Tool::SectionPlane,
+        Tool::Dimensions,
         Tool::Move,
         Tool::Rotate,
         Tool::Scale,
@@ -89,6 +91,7 @@ impl Tool {
             Tool::PaintBucket => "Paint Bucket",
             Tool::FollowMe => "Follow Me",
             Tool::SectionPlane => "Section Plane",
+            Tool::Dimensions => "Dimensions",
             Tool::PushPull => "Push/Pull",
             Tool::Move => "Move",
             Tool::Rotate => "Rotate",
@@ -133,6 +136,7 @@ impl Tool {
             | Tool::Freehand
             | Tool::FollowMe
             | Tool::SectionPlane
+            | Tool::Dimensions
             | Tool::Protractor
             | Tool::ZoomWindow
             | Tool::PositionCamera
@@ -147,7 +151,7 @@ impl Tool {
 
     /// Tools that create or change geometry (disabled on read-only imports).
     pub fn edits(self) -> bool {
-        !self.navigates() && !matches!(self, Tool::Select | Tool::TapeMeasure | Tool::Protractor | Tool::PositionCamera | Tool::SectionPlane)
+        !self.navigates() && !matches!(self, Tool::Select | Tool::TapeMeasure | Tool::Protractor | Tool::PositionCamera | Tool::SectionPlane | Tool::Dimensions)
     }
 
     /// Tools where a left-drag moves the camera instead of picking.
@@ -265,6 +269,8 @@ enum Op {
     Arc3 { plane: Plane, a: [f32; 3], m: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
     /// Offset: the face's outline (counter-clockwise about `normal`) and how far in to copy it.
     Offset { ring: Vec<[f32; 3]>, normal: [f32; 3], d: f32 },
+    /// Dimensions: the two points measured (the second once set), then where the dimension line sits.
+    Dim { a: [f32; 3], b: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
     /// Follow Me: the profile face chosen; next, a line of the path.
     Follow { face: usize },
     /// Freehand: the points of the stroke while the button is held.
@@ -300,6 +306,8 @@ pub struct Tools {
     /// The section plane: a point on it and the normal of the side it cuts away; and whether cuts are shown.
     pub section: Option<([f32; 3], [f32; 3])>,
     pub section_cuts: bool,
+    /// Dimensions placed: the two points and the offset of the dimension line from them.
+    pub dims: Vec<([f32; 3], [f32; 3], [f32; 3])>,
     /// Construction guides from Tape Measure and Protractor.
     pub guides: Vec<Guide>,
     hover_face: Option<usize>,
@@ -321,6 +329,7 @@ impl Default for Tools {
             paint_color: Some([196, 92, 64]),
             section: None,
             section_cuts: true,
+            dims: Vec::new(),
             guides: Vec::new(),
             hover_face: None,
             op: Op::Idle,
@@ -415,6 +424,21 @@ impl Tools {
         out
     }
 
+    /// The placed dimensions' lines (extension lines and the dimension line), in `color`.
+    pub fn dim_lines(&self, color: [f32; 4]) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
+        self.dims.iter().flat_map(|&(a, b, off)| dim_lines(a, b, off, color)).collect()
+    }
+
+    /// Each placed dimension's label: where it goes (the middle of its dimension line) and the length, in the units shown.
+    pub fn dim_labels(&self) -> Vec<([f32; 3], String)> {
+        self.dims.iter().map(|&(a, b, off)| (add(scale(add(a, b), 0.5), off), fmt(dist(a, b), self.units))).collect()
+    }
+
+    /// Edit > Delete Dimensions.
+    pub fn delete_dims(&mut self) {
+        self.dims.clear();
+    }
+
     /// Delete Guides (Edit menu).
     pub fn delete_guides(&mut self) {
         self.guides.clear();
@@ -486,7 +510,7 @@ impl Tools {
                 }
             }
             Op::Push { .. } | Op::Scale { .. } | Op::Offset { .. } => None,
-            Op::Follow { .. } => c.hit.map(|h| (h.point, h.snap)),
+            Op::Follow { .. } | Op::Dim { .. } => c.hit.map(|h| (h.point, h.snap)),
             Op::Idle => c.hit.map(|h| (h.point, h.snap)),
         }
     }
@@ -506,7 +530,7 @@ impl Tools {
             Op::Rect { cursor, .. } | Op::Round { cursor, .. } | Op::RotRect { cursor, .. } | Op::Pie { cursor, .. } => {
                 *cursor = marker.map(|m| m.0)
             }
-            Op::Tape { cursor, .. } | Op::Arc2 { cursor, .. } | Op::Arc3 { cursor, .. } => *cursor = marker.map(|m| m.0),
+            Op::Tape { cursor, .. } | Op::Arc2 { cursor, .. } | Op::Arc3 { cursor, .. } | Op::Dim { cursor, .. } => *cursor = marker.map(|m| m.0),
             Op::Free { points, .. } => {
                 // a new point once the mouse has moved a little way from the last
                 if let (Some((p, _)), Some(&last)) = (marker, points.last()) {
@@ -592,6 +616,18 @@ impl Tools {
                 model.follow_me(face, &path, closed).map_err(|e| e.to_string())?;
                 self.model_changed();
             }
+            (Tool::Dimensions, Op::Idle) => {
+                if let Some((p, _)) = marker {
+                    self.op = Op::Dim { a: p, b: None, cursor: None };
+                }
+            }
+            (Tool::Dimensions, Op::Dim { a, b, cursor }) => match (b, marker) {
+                (None, Some((p, _))) if dist(a, p) > 1e-6 => self.op = Op::Dim { a, b: Some(p), cursor: None },
+                (Some(b), Some((p, _))) => {
+                    self.dims.push((a, b, dim_offset(a, b, p)));
+                }
+                (b, _) => self.op = Op::Dim { a, b, cursor },
+            },
             (Tool::SectionPlane, _) => {
                 // on the face clicked, cutting away what is in front of it
                 let face = c.hit.and_then(|h| h.face).ok_or("click a face to place the section plane on it")?;
@@ -1050,6 +1086,10 @@ impl Tools {
                 },
             },
             Op::Free { points, .. } => chain_lines(points, &mut out),
+            Op::Dim { a, b, cursor: Some(c) } => match b {
+                None => out.push((*a, *c, PUSH_GUIDE)),
+                Some(b) => out.extend(dim_lines(*a, *b, dim_offset(*a, *b, *c), PUSH_GUIDE)),
+            },
             Op::Offset { ring, normal, d } => {
                 if let Some(r) = sketch::offset_ring(ring, *normal, *d) {
                     ring_lines(&r, &mut out);
@@ -1123,6 +1163,9 @@ impl Tools {
             (Tool::Offset, Op::Idle) => "Click a face to offset its edges.",
             (Tool::FollowMe, Op::Idle) => "Click the face to sweep (the profile). Draw the path as lines first.",
             (Tool::FollowMe, _) => "Click a line of the path. The profile follows the whole chain of lines.",
+            (Tool::Dimensions, Op::Idle) => "Click the first point to measure (an endpoint snaps).",
+            (Tool::Dimensions, Op::Dim { b: None, .. }) => "Click the second point.",
+            (Tool::Dimensions, _) => "Move out to place the dimension line and click.",
             (Tool::SectionPlane, _) => "Click a face: what is in front of it is cut away. Type a distance to move the plane in.",
             (Tool::PaintBucket, _) => "Click a face to paint it (a selected face paints the selection). Alt+click picks up a face's colour.",
             (Tool::Offset, _) => "Move in to set the distance and click, or type it.",
@@ -1183,6 +1226,7 @@ impl Tools {
             Op::Arc2 { a, b: None, cursor, .. } => ("Length", cursor.map(|c| fmt(dist(*a, c), self.units)).unwrap_or_default()),
             Op::Arc2 { plane, a, b: Some(b), cursor } => ("Bulge", cursor.map(|c| fmt(bulge_toward(plane, *a, *b, c).abs(), self.units)).unwrap_or_default()),
             Op::Arc3 { .. } | Op::Free { .. } | Op::Follow { .. } => ("Measurements", String::new()),
+            Op::Dim { a, b, cursor } => ("Length", b.or(*cursor).map(|b| fmt(dist(*a, b), self.units)).unwrap_or_default()),
             Op::Offset { d, .. } => ("Distance", fmt(d.abs(), self.units)),
             Op::Pie { center, start: None, cursor, .. } => ("Radius", cursor.map(|c| fmt(dist(*center, c), self.units)).unwrap_or_default()),
             Op::Pie { plane, center, start: Some(st), cursor } => (
@@ -1423,6 +1467,28 @@ fn path_through(lines: &[[u32; 2]], positions: &[[f32; 3]], line: usize, near: [
         pts.reverse();
     }
     Some((pts, false))
+}
+
+/// Where a dimension's line sits: the part of `p - a` square to the measured line `a`-`b`.
+fn dim_offset(a: [f32; 3], b: [f32; 3], p: [f32; 3]) -> [f32; 3] {
+    let v = sub(p, a);
+    match normalize(sub(b, a)) {
+        Some(d) => sub(v, scale(d, dot(v, d))),
+        None => v,
+    }
+}
+
+/// A dimension's lines: one out from each point, and the dimension line between them with small ticks at its ends.
+fn dim_lines(a: [f32; 3], b: [f32; 3], off: [f32; 3], color: [f32; 4]) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
+    let (a2, b2) = (add(a, off), add(b, off));
+    let mut out = vec![(a, a2, color), (b, b2, color), (a2, b2, color)];
+    if let (Some(d), Some(o)) = (normalize(sub(b, a)), normalize(off)) {
+        let tick = dist(a, b) * 0.03;
+        for p in [a2, b2] {
+            out.push((sub(p, scale(add(d, o), tick)), add(p, scale(add(d, o), tick)), color));
+        }
+    }
+    out
 }
 
 /// How far `p` lies inside the outline `ring` (in its plane): the distance to the nearest side, negative outside.
@@ -1979,5 +2045,21 @@ mod tests {
         assert!((t.section.unwrap().0[2] - 1.5).abs() < 1e-6, "half a metre down into the box");
         assert_eq!(t.section_outline(1.0).len(), 5);
         assert_eq!(m.mesh().face_count(), 6, "the model is not changed");
+    }
+
+    #[test]
+    fn a_dimension_between_two_points() {
+        let (mut t, mut m) = with(Tool::Dimensions);
+        t.click(&mut m, &ground_hit([0.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        t.click(&mut m, &ground_hit([3.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        // placed 1 m out to the side (the mouse a little along the line too: only the square part counts)
+        t.click(&mut m, &at(2.0, -1.0)).unwrap();
+        assert_eq!(t.dims.len(), 1);
+        assert_eq!(t.dims[0].2, [0.0, -1.0, 0.0]);
+        let labels = t.dim_labels();
+        assert_eq!(labels[0], ([1.5, -1.0, 0.0], "3 m".to_string()));
+        t.units = Units::Millimetres;
+        assert_eq!(t.dim_labels()[0].1, "3000 mm", "it reads in the units shown");
+        assert_eq!(m.mesh().face_count() + m.mesh().lines.len(), 0, "not geometry");
     }
 }

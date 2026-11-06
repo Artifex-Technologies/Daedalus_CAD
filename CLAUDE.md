@@ -52,7 +52,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 101 tests pass (2026-11-06). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 118 tests pass (2026-11-06). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -91,6 +91,13 @@ the current state is:
   Eraser takes a line under the mouse first. Line works in 3D: snap > red/green/blue axis through the last point (ray
   lock, so blue works) > face/ground. Snaps include the origin and points on the axes. `.daedalus` version 2 holds `l a b`
   (a file without lines is still written as version 1). Not yet: lines split faces (imprint), lines crossing (weld).
+- Phase 2 done, phase 3 started (2026-11-06, `core/src/imprint.rs`): a line joins corners and edges it lands on, breaks
+  at every edge it crosses, and a piece across a face splits it; loops close against face edges too; an outline wholly
+  inside a face becomes a face with a hole cut round it (faces have one outline, so the ring is two faces joined by two
+  hidden seams, `Mesh::seams`, saved as `s a b`). Shape tools draw through this (`Model::add_outline`). New tools: Arc,
+  2 Point Arc (A), 3 Point Arc, Freehand, Offset (F, inward only; Repair moved to the Tools menu), Follow Me (open and
+  closed paths, mitred), Paint Bucket (B; `Mesh::colors`, saved as `c face r g b`; Alt+click samples), Monochrome style,
+  Section Plane (shader clip, not saved), Dimensions (not saved).
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

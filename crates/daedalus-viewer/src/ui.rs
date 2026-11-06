@@ -29,6 +29,7 @@ pub enum UiAction {
     /// View > Section Cuts on or off; Edit > Delete Section Plane.
     SectionCuts,
     DeleteSection,
+    DeleteDimensions,
     /// Paint Bucket's colour (None: the default material).
     PaintColor(Option<[u8; 3]>),
     SelectAll,
@@ -65,6 +66,8 @@ pub struct UiView<'a> {
     pub can_redo: bool,
     pub style: Style,
     pub paint_color: Option<[u8; 3]>,
+    /// Dimension labels: where on screen (points) and the text.
+    pub labels: Vec<(Pos2, String)>,
     /// A section plane is placed, and whether it cuts.
     pub section: Option<bool>,
     /// Camera > Previous has a view to go back to.
@@ -128,6 +131,10 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 }
                 if ui.button("Delete Guides").clicked() {
                     actions.push(UiAction::DeleteGuides);
+                    ui.close_menu();
+                }
+                if ui.add_enabled(!v.labels.is_empty(), egui::Button::new("Delete Dimensions")).clicked() {
+                    actions.push(UiAction::DeleteDimensions);
                     ui.close_menu();
                 }
                 if ui.add_enabled(v.section.is_some(), egui::Button::new("Delete Section Plane")).clicked() {
@@ -221,7 +228,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 ui.separator();
                 tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull, Tool::Offset, Tool::FollowMe], &mut actions);
                 ui.separator();
-                tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor], &mut actions);
+                tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor, Tool::Dimensions], &mut actions);
                 ui.separator();
                 tool_items(ui, v, &[Tool::SectionPlane], &mut actions);
                 ui.separator();
@@ -346,6 +353,17 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     actions.push(UiAction::PaintColor(None));
                 }
             });
+    }
+
+    // dimension labels, on a small plate so they read over the model
+    if !v.labels.is_empty() {
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("dimension-labels")));
+        for (pos, text) in &v.labels {
+            let galley = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(13.0), Color32::from_gray(30));
+            let r = egui::Rect::from_center_size(*pos, galley.size() + egui::vec2(8.0, 4.0));
+            painter.rect_filled(r, 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 220));
+            painter.galley(r.min + egui::vec2(4.0, 2.0), galley, Color32::from_gray(30));
+        }
     }
 
     if let Some((pos, snap)) = v.marker {
@@ -500,7 +518,7 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
             t(Tool::Scale),
             t(Tool::Offset),
             t(Tool::TapeMeasure),
-            P(Planned::Dimensions),
+            t(Tool::Dimensions),
             t(Tool::Protractor),
             P(Planned::Text),
             P(Planned::Axes),

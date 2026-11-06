@@ -28,7 +28,6 @@ pub enum Icon {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Planned {
     MakeComponent,
-    Dimensions,
     Text,
     Axes,
     Text3D,
@@ -38,7 +37,6 @@ impl Planned {
     pub fn label(self) -> &'static str {
         match self {
             Planned::MakeComponent => "Make Component",
-            Planned::Dimensions => "Dimensions",
             Planned::Text => "Text",
             Planned::Axes => "Axes",
             Planned::Text3D => "3D Text",
@@ -252,6 +250,13 @@ impl Draw<'_> {
                 self.line_with(&[(0.45, 0.5), (0.92, 0.5)], Stroke::new(self.w / 15.0, self.accent));
                 self.head(0.98, 0.5, 1.0, 0.0, 0.14, self.accent);
             }
+            Icon::Tool(Tool::Dimensions) => {
+                self.line(&[(0.12, 0.3), (0.12, 0.78)]);
+                self.line(&[(0.88, 0.3), (0.88, 0.78)]);
+                self.line(&[(0.2, 0.54), (0.8, 0.54)]);
+                self.head(0.14, 0.54, -1.0, 0.0, 0.14, ink);
+                self.head(0.86, 0.54, 1.0, 0.0, 0.14, ink);
+            }
             Icon::Tool(Tool::Pie) => {
                 let mut v = vec![(0.14, 0.86)];
                 v.extend(self.arc(0.14, 0.86, 0.72, 0.0, 90.0));
@@ -394,7 +399,6 @@ impl Draw<'_> {
     }
 
     fn planned(&self, pl: Planned) {
-        let ink = self.ink;
         match pl {
             Planned::MakeComponent => {
                 self.cube(Hidden::None, None);
@@ -402,13 +406,6 @@ impl Draw<'_> {
                 self.dashed((0.96, 0.04), (0.96, 0.96));
                 self.dashed((0.96, 0.96), (0.04, 0.96));
                 self.dashed((0.04, 0.96), (0.04, 0.04));
-            }
-            Planned::Dimensions => {
-                self.line(&[(0.12, 0.3), (0.12, 0.78)]);
-                self.line(&[(0.88, 0.3), (0.88, 0.78)]);
-                self.line(&[(0.2, 0.54), (0.8, 0.54)]);
-                self.head(0.14, 0.54, -1.0, 0.0, 0.14, ink);
-                self.head(0.86, 0.54, 1.0, 0.0, 0.14, ink);
             }
             Planned::Text => {
                 self.closed(&[(0.3, 0.12), (0.92, 0.12), (0.92, 0.52), (0.3, 0.52)]);
