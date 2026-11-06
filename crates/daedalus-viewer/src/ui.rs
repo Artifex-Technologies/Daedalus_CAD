@@ -1,5 +1,10 @@
 //! The window chrome, laid out like SketchUp: menu bar and toolbar on top, a
 //! status bar with hints on the left and the Measurements box on the right.
+//!
+//! On Linux the window draws its own frame: many Wayland compositors (Hyprland among them) give a
+//! window no title bar, so there would be nothing to move or resize it by. The menu bar doubles as
+//! the title bar, as in VS Code: drag its empty part to move the window, double-click it to
+//! maximize, and the window buttons sit at its right end. The edges resize (main.rs, `frame`).
 
 use crate::icons::{self, Icon};
 use crate::tools::{Snap, Tool, AXIS_COLORS};
@@ -26,6 +31,11 @@ pub enum UiAction {
     SaveAs,
     Import,
     Export,
+    /// The window frame (Linux): start moving the window, maximize or restore, minimize, close.
+    MoveWindow,
+    ToggleMaximize,
+    Minimize,
+    Close,
 }
 
 /// Everything the chrome shows, gathered by the viewer each frame.
@@ -46,6 +56,11 @@ pub struct UiView<'a> {
     pub typing: bool,
     /// Inference marker in egui points, with what it snapped to.
     pub marker: Option<(Pos2, Snap)>,
+    /// The window draws its own title bar and buttons (Linux), and whether it is maximized.
+    pub own_frame: bool,
+    pub maximized: bool,
+    /// The window title, shown in the menu bar's empty part when the window draws its own frame.
+    pub title: &'a str,
 }
 
 pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
@@ -141,6 +156,9 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     ui.close_menu();
                 }
             });
+            if v.own_frame {
+                title_bar(ui, v, &mut actions);
+            }
         });
     });
 
@@ -207,6 +225,66 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
         }
     }
     actions
+}
+
+const BUTTON: f32 = 13.0; // diameter of a window button
+const BUTTON_GAP: f32 = 8.0;
+
+/// The rest of the menu bar: the window's title, a drag area (move; double-click maximizes) and
+/// the window buttons, drawn as on the rest of the Yggdrasil desktop: round, in the Windows order
+/// (minimize, maximize, close), the symbol showing while the pointer is over the group.
+fn title_bar(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
+    let controls = 3.0 * BUTTON + 2.0 * BUTTON_GAP + 14.0;
+    let height = ui.available_height().max(22.0);
+    let (drag, resp) = ui.allocate_exact_size(egui::vec2((ui.available_width() - controls).max(0.0), height), egui::Sense::click_and_drag());
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        actions.push(UiAction::MoveWindow);
+    }
+    if resp.double_clicked() {
+        actions.push(UiAction::ToggleMaximize);
+    }
+    let font = egui::FontId::proportional(13.0);
+    let ink = ui.visuals().weak_text_color();
+    let galley = ui.painter().layout_no_wrap(v.title.to_string(), font, ink);
+    if galley.size().x + 24.0 < drag.width() {
+        ui.painter().galley(egui::pos2(drag.center().x - galley.size().x / 2.0, drag.center().y - galley.size().y / 2.0), galley, ink);
+    }
+
+    let (area, _) = ui.allocate_exact_size(egui::vec2(controls, height), egui::Sense::hover());
+    let hover = ui.rect_contains_pointer(area);
+    let buttons = [
+        (Color32::from_rgb(0xfe, 0xbc, 0x2e), "Minimize", UiAction::Minimize),
+        (Color32::from_rgb(0x28, 0xc8, 0x40), if v.maximized { "Restore" } else { "Maximize" }, UiAction::ToggleMaximize),
+        (Color32::from_rgb(0xff, 0x5f, 0x57), "Close", UiAction::Close),
+    ];
+    for (i, (colour, tip, action)) in buttons.into_iter().enumerate() {
+        let c = egui::pos2(area.left() + 7.0 + BUTTON / 2.0 + i as f32 * (BUTTON + BUTTON_GAP), area.center().y);
+        let rect = egui::Rect::from_center_size(c, egui::vec2(BUTTON, BUTTON));
+        let r = ui.interact(rect.expand(3.0), ui.id().with(("window-button", i)), egui::Sense::click()).on_hover_text(tip);
+        let p = ui.painter();
+        p.circle_filled(c, BUTTON / 2.0, colour);
+        p.circle_stroke(c, BUTTON / 2.0, Stroke::new(0.5_f32, Color32::from_black_alpha(60)));
+        if hover {
+            let ink = Stroke::new(1.4_f32, Color32::from_black_alpha(150));
+            let d = BUTTON * 0.24;
+            match i {
+                0 => {
+                    p.line_segment([c - egui::vec2(d, 0.0), c + egui::vec2(d, 0.0)], ink);
+                }
+                1 => {
+                    p.line_segment([c - egui::vec2(d, 0.0), c + egui::vec2(d, 0.0)], ink);
+                    p.line_segment([c - egui::vec2(0.0, d), c + egui::vec2(0.0, d)], ink);
+                }
+                _ => {
+                    p.line_segment([c - egui::vec2(d, d), c + egui::vec2(d, d)], ink);
+                    p.line_segment([c + egui::vec2(-d, d), c + egui::vec2(d, -d)], ink);
+                }
+            }
+        }
+        if r.clicked() {
+            actions.push(action);
+        }
+    }
 }
 
 /// The size of a toolbar icon, in points.

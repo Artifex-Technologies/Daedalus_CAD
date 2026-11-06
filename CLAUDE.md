@@ -28,7 +28,8 @@ Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/c
 - `crates/daedalus-viewer`: wgpu 24 + winit 0.30 + egui 0.31 (pinned together on purpose; egui 0.32 needs wgpu 25).
   `tools.rs` is the GPU-free tool state machine (unit-tested); `render.rs` GPU; `ui.rs` egui chrome; `main.rs` events,
   snapping and the document (open, save, unsaved changes); `filedlg.rs` the built-in file browser (no GTK/Qt dialog);
-  `icons.rs` the toolbar's vector icons (SketchUp-style pictures, no image files); `settings.rs` units and toolbar side
+  `icons.rs` the toolbar's vector icons (SketchUp-style pictures, no image files); `settings.rs` units and toolbar side;
+  `frame.rs` the window's own frame on Linux (resize edges; the menu bar is the title bar, see below)
 
 ## Conventions
 - Every kernel or format feature gets a unit test. Solids are verified with **signed volume and Euler
@@ -50,7 +51,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 77 tests pass (2026-11-05). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 80 tests pass (2026-11-06). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -67,6 +68,12 @@ the current state is:
   Merge Coplanar Faces. A group whose outline would have a hole or a pinch is left alone.
 - Native format: `.daedalus` (text, versioned, `crates/daedalus-io/src/native.rs`); File menu with New/Open/Save/Save As/
   Import/Export, a dot in the title while unsaved, and a question before unsaved changes are thrown away (2026-11-05).
+- Window frame (2026-11-06): on Linux the window has no system frame (Hyprland draws none, so it could not be moved or
+  resized with the mouse). The menu bar is the title bar: the title in its empty part, drag to move, double-click to
+  maximize, round minimize/maximize/close buttons at its right end (as on the Yggdrasil desktop); the outer 6 px resize.
+  Hyprland reports a floating window as maximized, so "maximized" also needs the window to fill its screen
+  (`frame::fills`). Opens at 1280x800. Windows keeps its system frame. Driven by hand on Hyprland 0.57: move, resize,
+  maximize/restore, minimize, close.
 - Next milestones: imprint and weld, arcs, Move/Rotate/Offset, groups/components,
   constraints, sheet metal inside the model, STEP export for bent parts.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),

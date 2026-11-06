@@ -1,5 +1,6 @@
 mod camera;
 mod filedlg;
+mod frame;
 mod icons;
 mod settings;
 mod render;
@@ -51,6 +52,8 @@ struct State {
     typed: String,
     message: Option<String>,
     last_cursor: Option<Cursor>,
+    /// The pointer is over the window (for the resize edges, which also lie over the chrome).
+    pointer_in: bool,
     shown_highlight: Option<usize>,
     /// The document's file (None until it is saved), how many times the whole document was replaced (open, new, repair), and the
     /// (replacement, model state) it was saved or opened at: it is unchanged while those match.
@@ -124,6 +127,7 @@ impl State {
             typed: String::new(),
             message: None,
             last_cursor: None,
+            pointer_in: false,
             shown_highlight: None,
             // a .daedalus file opened at start is the document's file; an import is a new, unsaved document
             path: path.filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("daedalus"))),
@@ -485,6 +489,23 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Whether the window is maximized. The window's own state is not enough: Hyprland reports a
+    /// floating window as maximized (seen on 0.57, 2026-11-06), so it must also fill its screen.
+    fn maximized(&self) -> bool {
+        let size = self.window.outer_size();
+        let screen = self.window.current_monitor().map(|m| m.size());
+        self.window.is_maximized() && screen.is_none_or(|m| frame::fills(size.width, size.height, m.width, m.height))
+    }
+
+    /// The window edge under the pointer, when the window draws its own frame and is not maximized.
+    fn resize_edge(&self) -> Option<winit::window::ResizeDirection> {
+        if !frame::OWN_FRAME || self.maximized() || self.window.fullscreen().is_some() || !self.pointer_in {
+            return None;
+        }
+        let size = self.window.inner_size();
+        frame::edge(self.cursor, (size.width, size.height), self.window.scale_factor())
+    }
+
     fn apply(&mut self, action: UiAction) {
         match action {
             UiAction::Tool(t) => self.set_tool(t),
@@ -511,6 +532,12 @@ impl State {
             UiAction::Save => self.save(None),
             UiAction::SaveAs => self.save_as(None),
             UiAction::Import => self.begin(Pending::Import),
+            UiAction::MoveWindow => {
+                let _ = self.window.drag_window();
+            }
+            UiAction::ToggleMaximize => self.window.set_maximized(!self.maximized()),
+            UiAction::Minimize => self.window.set_minimized(true),
+            UiAction::Close => self.begin(Pending::Quit),
             UiAction::Export => {
                 let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|n| format!("{}.stl", n.to_string_lossy())).unwrap_or_default();
                 self.dialog = Some(FileDialog::new(Purpose::Export, self.path.as_deref(), &stem));
@@ -622,7 +649,12 @@ impl State {
             measure_value: if self.typed.is_empty() { &current } else { &self.typed },
             typing: !self.typed.is_empty(),
             marker,
+            own_frame: frame::OWN_FRAME,
+            maximized: self.maximized(),
+            title: &self.shown_title,
         };
+        // the resize handle under the pointer (own frame only, not while maximized)
+        let resize_at = self.resize_edge();
         let raw = self.egui_state.take_egui_input(&self.window);
         let mut actions = Vec::new();
         // the file dialog and the "save changes?" question are drawn over the chrome; taken out while drawn
@@ -633,6 +665,15 @@ impl State {
         let doc_name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
         let out = ctx.run(raw, |ctx| {
             actions = ui::draw(ctx, &view);
+            if let Some(d) = resize_at {
+                ctx.set_cursor_icon(frame::cursor(d));
+            }
+            if view.own_frame && !view.maximized {
+                // a hairline around the window, so its edge shows without a system frame
+                let rect = ctx.screen_rect().shrink(0.5);
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("window-outline")))
+                    .rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::from_gray(150)), egui::StrokeKind::Inside);
+            }
             if let Some(d) = dialog.as_mut() {
                 dialog_out = d.show(ctx).map(|o| (d.purpose, o));
             }
@@ -711,7 +752,11 @@ impl ApplicationHandler for App {
         if self.state.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title(self.title.clone());
+        // Room to work on a large screen; on Linux no system frame, Daedalus draws its own (frame.rs).
+        let attrs = Window::default_attributes()
+            .with_title(self.title.clone())
+            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0))
+            .with_decorations(!frame::OWN_FRAME);
         // App id / WM class matching packaging/daedalus.desktop, so the taskbar shows its icon.
         #[cfg(target_os = "linux")]
         let attrs = {
@@ -724,6 +769,13 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(s) = self.state.as_mut() else { return };
+        // a press on the window's edge resizes it, and goes no further (own frame, frame.rs)
+        if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
+            if let Some(d) = s.resize_edge() {
+                let _ = s.window.drag_resize_window(d);
+                return;
+            }
+        }
         let response = s.egui_state.on_window_event(&s.window, &event);
         if response.repaint {
             s.window.request_redraw();
@@ -777,6 +829,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (position.x as f32, position.y as f32);
+                s.pointer_in = true;
                 let (dx, dy) = (x - s.cursor.0, y - s.cursor.1);
                 s.cursor = (x, y);
                 s.over_ui = s.egui_ctx.is_pointer_over_area();
@@ -799,6 +852,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorLeft { .. } => {
                 s.last_cursor = None;
+                s.pointer_in = false;
                 s.window.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
