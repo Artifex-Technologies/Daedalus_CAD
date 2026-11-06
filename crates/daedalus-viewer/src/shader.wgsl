@@ -52,6 +52,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let base = select(in.color, vec3<f32>(0.78, 0.80, 0.84), u.style.x > 2.5);
     let selected = vec3<f32>(0.30, 0.55, 0.95);
     let flagged = vec3<f32>(0.90, 0.25, 0.22);
+    let paper = vec3<f32>(0.93, 0.94, 0.96);
+    // highlight 3: outside the group or component being edited, faded toward the background
+    if (in.highlight > 2.5) {
+        if (u.style.x > 0.5 && u.style.x < 1.5) {
+            return vec4<f32>(paper, 1.0);
+        }
+        return vec4<f32>(mix(base * shade, paper, 0.6), select(1.0, 0.45, u.style.x > 1.5 && u.style.x < 2.5));
+    }
     // highlight: 0 = normal, 1 = selected, 2 = flagged by the solid inspector
     let tint = select(selected, flagged, in.highlight > 1.5);
     let lit = mix(base, tint, min(in.highlight, 1.0)) * shade;
@@ -61,7 +69,6 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     }
     if (u.style.x > 0.5) {
         // hidden line: faces in the background colour, unlit (a selection still shows)
-        let paper = vec3<f32>(0.93, 0.94, 0.96);
         return vec4<f32>(mix(paper, tint, min(in.highlight, 1.0) * 0.5), 1.0);
     }
     return vec4<f32>(lit, 1.0);

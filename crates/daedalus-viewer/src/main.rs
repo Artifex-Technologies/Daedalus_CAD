@@ -10,6 +10,7 @@ mod ui;
 
 use camera::Camera;
 use daedalus_core::inspect::{self, DEFAULT_TOLERANCE};
+use daedalus_core::scene::{Scene, Section};
 use daedalus_core::{HalfEdgeMesh, Mesh, Model, Plane};
 use glam::Vec3;
 use render::{FaceStyle, LineVertex, Renderer, Style, UiFrame};
@@ -52,8 +53,17 @@ struct State {
     model: Model,
     /// Set when an import has non-manifold topology: shown, but not editable.
     readonly: Option<Mesh>,
-    /// What is on screen: the model, a push/pull preview, or the read-only import.
+    /// What is on screen: the geometry being edited (or a preview of it, or the read-only import), then the open
+    /// context's groups and components, then everything outside the open context (faded).
     display: Mesh,
+    /// Faces of `display` below this are the geometry being edited; up to `faded_from`, faces of instances (`owners`
+    /// names whose, one per face); from `faded_from` on, outside the open context.
+    active_faces: usize,
+    owners: Vec<usize>,
+    faded_from: usize,
+    faded_vertex: u32,
+    /// The instances and the outside, as of the model state they were built for (rebuilt when it changes).
+    parts: Option<((u64, u64, usize), Vec<(usize, Mesh)>, Mesh)>,
     tools: Tools,
     /// Sorted face indices flagged by the last inspection.
     flagged: Vec<usize>,
@@ -96,7 +106,7 @@ enum Pending {
 }
 
 impl State {
-    fn new(window: Arc<Window>, mesh: &Mesh, path: Option<PathBuf>, dark: bool) -> State {
+    fn new(window: Arc<Window>, scene: &Scene, path: Option<PathBuf>, dark: bool) -> State {
         let gpu = pollster::block_on(Renderer::new(window.clone()));
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(theme::visuals(dark));
@@ -108,14 +118,8 @@ impl State {
             None,
             Some(gpu.device.limits().max_texture_dimension_2d as usize),
         );
-        let (model, readonly) = match HalfEdgeMesh::from_mesh(mesh) {
-            Ok(h) => (Model::from_mesh(h), None),
-            Err(e) => {
-                eprintln!("note: model is read-only until repaired with Tools > Repair Solid ({e})");
-                (Model::new(), Some(mesh.clone()))
-            }
-        };
-        let camera = match mesh.bounds() {
+        let (model, readonly) = load(scene);
+        let camera = match scene.flatten().bounds() {
             Some((lo, hi)) => Camera::fit(Vec3::from(lo), Vec3::from(hi)),
             // An empty model: frame a room-sized area around the origin.
             None => Camera::fit(Vec3::new(-1.0, -1.0, 0.0), Vec3::new(6.0, 6.0, 2.0)),
@@ -138,6 +142,11 @@ impl State {
             model,
             readonly,
             display: Mesh::new(),
+            active_faces: 0,
+            owners: Vec::new(),
+            faded_from: 0,
+            faded_vertex: 0,
+            parts: None,
             tools,
             flagged: Vec::new(),
             typed: String::new(),
@@ -179,20 +188,19 @@ impl State {
     }
 
     /// What a save or export writes: the model, or a read-only import as it is.
-    fn document_mesh(&self) -> Mesh {
-        self.readonly.clone().unwrap_or_else(|| self.model.mesh().to_mesh())
+    fn document(&self) -> Scene {
+        match &self.readonly {
+            Some(m) => Scene::from_mesh(m.clone()),
+            None => self.model.document(),
+        }
     }
 
     /// Replaces the document (a new one, an opened file, or an import).
-    fn replace(&mut self, mesh: &Mesh, path: Option<PathBuf>) {
-        let (model, readonly) = match HalfEdgeMesh::from_mesh(mesh) {
-            Ok(h) => (Model::from_mesh(h), None),
-            Err(e) => {
-                eprintln!("note: model is read-only until repaired with Tools > Repair Solid ({e})");
-                (Model::new(), Some(mesh.clone()))
-            }
-        };
+    fn replace(&mut self, scene: &Scene, path: Option<PathBuf>) {
+        let (model, readonly) = load(scene);
+        let mesh = scene.flatten();
         self.model = model;
+        self.parts = None;
         self.readonly = readonly;
         self.doc += 1;
         self.path = path;
@@ -222,7 +230,7 @@ impl State {
     fn carry_out(&mut self, p: Pending) {
         match p {
             Pending::New => {
-                self.replace(&Mesh::new(), None);
+                self.replace(&Scene::default(), None);
                 self.message = Some("New model.".into());
             }
             Pending::Open => self.dialog = Some(FileDialog::new(Purpose::Open, self.path.as_deref(), "")),
@@ -252,7 +260,7 @@ impl State {
     }
 
     fn save_to(&mut self, path: &Path) -> bool {
-        match daedalus_io::export_mesh(&self.document_mesh(), path) {
+        match daedalus_io::save_scene(&self.document(), path) {
             Ok(()) => {
                 self.path = Some(path.to_path_buf());
                 self.saved = (self.doc, self.model.state());
@@ -267,7 +275,7 @@ impl State {
     }
 
     fn open_file(&mut self, path: &Path, import: bool) {
-        match daedalus_io::import_mesh(path) {
+        match daedalus_io::open_scene(path) {
             Ok(m) => {
                 self.replace(&m, if import { None } else { Some(path.to_path_buf()) });
                 self.message = Some(format!("{} {}.", if import { "Imported" } else { "Opened" }, short(path)));
@@ -288,7 +296,7 @@ impl State {
                     }
                 }
             }
-            Purpose::Export => match daedalus_io::export_mesh(&self.document_mesh(), &path) {
+            Purpose::Export => match daedalus_io::save_scene(&self.document(), &path) {
                 Ok(()) => self.message = Some(format!("Exported {}.", short(&path))),
                 Err(e) => self.message = Some(format!("Not exported: {e}.")),
             },
@@ -307,10 +315,60 @@ impl State {
             (None, Some(p)) => p.to_mesh(),
             (None, None) => self.model.mesh().to_mesh(),
         };
-        let highlight = if preview.is_some() { Vec::new() } else { self.tools.highlight() };
-        self.gpu.set_scene(&self.display, &highlight, &self.flagged);
+        self.active_faces = self.display.faces.len();
+        self.owners.clear();
+        let mut highlight = if preview.is_some() { Vec::new() } else { self.tools.highlight() };
+        if self.readonly.is_none() {
+            // the groups and components, rebuilt only when the model changed
+            let key = (self.doc, self.model.state(), self.model.open_depth());
+            if self.parts.as_ref().is_none_or(|p| p.0 != key) {
+                let (inside, outside) = self.model.parts();
+                self.parts = Some((key, inside, outside));
+            }
+            let lit = self.tools.highlight_instances();
+            let moving = self.tools.preview_instances();
+            let (_, inside, outside) = self.parts.as_ref().expect("built above");
+            for (i, m) in inside {
+                let mut place = |m: &Mesh, owners: &mut Vec<usize>, display: &mut Mesh, lit_now: bool| {
+                    let from = display.faces.len();
+                    display.append(m);
+                    owners.extend(std::iter::repeat_n(*i, m.faces.len()));
+                    if lit_now {
+                        highlight.extend(from..display.faces.len());
+                    }
+                };
+                match &moving {
+                    Some((ids, xf, copy)) if ids.contains(i) => {
+                        if *copy {
+                            place(m, &mut self.owners, &mut self.display, false);
+                        }
+                        place(&m.transformed(xf), &mut self.owners, &mut self.display, true);
+                    }
+                    _ => place(m, &mut self.owners, &mut self.display, lit.contains(i)),
+                }
+            }
+            self.faded_from = self.display.faces.len();
+            self.faded_vertex = self.display.positions.len() as u32;
+            self.display.append(outside);
+        } else {
+            self.faded_from = self.display.faces.len();
+            self.faded_vertex = self.display.positions.len() as u32;
+        }
+        highlight.sort_unstable();
+        self.gpu.set_scene(&self.display, &highlight, &self.flagged, (self.faded_from, self.faded_vertex));
         self.shown_highlight = highlight;
         self.window.request_redraw();
+    }
+
+    /// What a face of the display is: the geometry being edited (its face number), an instance, or outside.
+    fn owner(&self, f: usize) -> (Option<usize>, Option<usize>) {
+        if f < self.active_faces {
+            (Some(f), None)
+        } else if f < self.faded_from {
+            (None, self.owners.get(f - self.active_faces).copied())
+        } else {
+            (None, None)
+        }
     }
 
     /// The mouse ray, snapped to nearby endpoints and midpoints, else the face
@@ -339,7 +397,7 @@ impl State {
             }
         }
         // guide points, and the point of each guide line nearest the mouse
-        for g in &self.tools.guides {
+        for g in &self.model.notes().guides {
             match *g {
                 Guide::Point(p) => candidates.push((Vec3::from(p), Snap::OnGuide)),
                 Guide::Line(p, d) => {
@@ -390,18 +448,21 @@ impl State {
                     None if p.z.abs() < 1e-5 => (None, Plane::ground()),
                     None => (None, Plane { origin: p.into(), ..Plane::ground() }),
                 };
-                Some(Hit { point: p.into(), plane, face, line: None, snap })
+                let (face, instance) = face.map_or((None, None), |f| self.owner(f));
+                Some(Hit { point: p.into(), plane, face, line: None, instance, snap })
             }
             (None, Some((f, t))) => {
                 let p = origin + dir * t;
-                face_plane(f, p).map(|plane| Hit { point: p.into(), plane, face: Some(f), line: None, snap: Snap::OnFace })
+                let (face, instance) = self.owner(f);
+                face_plane(f, p).map(|plane| Hit { point: p.into(), plane, face, line: None, instance, snap: Snap::OnFace })
             }
             (None, None) => Plane::ground()
                 .intersect_ray(origin.into(), dir.into())
-                .map(|p| Hit { point: p, plane: Plane::ground(), face: None, line: None, snap: Snap::Ground }),
+                .map(|p| Hit { point: p, plane: Plane::ground(), face: None, line: None, instance: None, snap: Snap::Ground }),
         };
         // the loose line nearest the mouse on screen, for the Eraser
-        let line = self.display.lines.iter().enumerate().filter_map(|(i, &[a, b])| {
+        let active_lines = if self.readonly.is_some() { 0 } else { self.model.mesh().lines.len() };
+        let line = self.display.lines.iter().take(active_lines).enumerate().filter_map(|(i, &[a, b])| {
             let pa = self.camera.project(Vec3::from(self.display.positions[a as usize]), w, h)?;
             let pb = self.camera.project(Vec3::from(self.display.positions[b as usize]), w, h)?;
             let d = segment_distance(self.cursor, pa, pb);
@@ -420,7 +481,7 @@ impl State {
         let c = self.resolve_cursor();
         self.last_cursor = Some(c);
         self.tools.hover(&c);
-        if self.tools.preview_mesh(&self.model).is_some() || self.tools.highlight() != self.shown_highlight {
+        if self.tools.preview_mesh(&self.model).is_some() || self.tools.preview_instances().is_some() || self.highlight_changed() {
             self.refresh();
         }
         self.window.request_redraw();
@@ -454,12 +515,27 @@ impl State {
             }
             return;
         }
+        // Select in an open group: a click outside it, or a double-click on nothing, closes it (as in SketchUp)
+        if self.tools.tool == Tool::Select && self.model.open_depth() > 0 {
+            let outside = c.hit.is_some_and(|h| h.face.is_none() && h.instance.is_none() && h.snap == Snap::OnFace);
+            if outside || (count == 2 && c.hit.is_none_or(|h| h.face.is_none() && h.instance.is_none())) {
+                self.close_group();
+                return;
+            }
+        }
+        // Select: a double-click on a group or component opens it for editing
+        if self.tools.tool == Tool::Select && count == 2 && self.readonly.is_none() {
+            if let Some(i) = c.hit.and_then(|h| h.instance) {
+                self.open_group(i);
+                return;
+            }
+        }
         let result = match (&self.readonly, self.tools.tool) {
             // Select: Ctrl adds, Shift toggles, a triple-click takes everything joined (works on a read-only import too)
             (_, Tool::Select) => {
-                let face = c.hit.and_then(|h| h.face);
+                let (face, instance) = (c.hit.and_then(|h| h.face), c.hit.and_then(|h| h.instance));
                 let (add, toggle) = (self.modifiers.control_key(), self.modifiers.shift_key());
-                self.tools.select(&self.model, face, add, toggle, count >= 3);
+                self.tools.select(&self.model, face, instance, add, toggle, count >= 3);
                 Ok(())
             }
             (Some(_), _) => Ok(()),
@@ -505,19 +581,103 @@ impl State {
     }
 
     fn erase_selected(&mut self) {
-        if self.readonly.is_some() || self.tools.selected.is_empty() {
+        if self.readonly.is_some() || !self.tools.has_selection() {
             return;
         }
-        if let Err(e) = self.model.erase_faces(&self.tools.selected) {
+        if let Err(e) = self.model.erase_all(&self.tools.selected, &self.tools.instances) {
             self.message = Some(e.to_string());
         }
         self.tools.model_changed();
         self.after_edit();
     }
 
+    fn highlight_changed(&self) -> bool {
+        // cheap test: the faces the tools would light, against what was lit last (instances are rebuilt in refresh)
+        let faces = self.tools.highlight();
+        let shown: Vec<usize> = self.shown_highlight.iter().copied().filter(|&f| f < self.active_faces).collect();
+        let inst = self.tools.highlight_instances();
+        let shown_inst: Vec<usize> = {
+            let mut v: Vec<usize> = self.shown_highlight.iter().filter_map(|&f| self.owner(f).1).collect();
+            v.dedup();
+            v
+        };
+        let mut want_inst = inst;
+        want_inst.sort_unstable();
+        want_inst.dedup();
+        let mut shown_inst = shown_inst;
+        shown_inst.sort_unstable();
+        shown_inst.dedup();
+        faces != shown || want_inst != shown_inst
+    }
+
+    /// Make Group / Make Component from the selection.
+    fn make_group(&mut self, component: bool) {
+        if self.readonly.is_some() || !self.tools.has_selection() {
+            self.message = Some("Select the faces (a triple-click takes a whole object) or groups to put in it.".into());
+            return;
+        }
+        match self.model.make_group(&self.tools.selected, &self.tools.instances, component) {
+            Ok(i) => {
+                self.tools.model_changed();
+                self.tools.instances = vec![i];
+                let name = self.model.instances().get(i).and_then(|inst| self.model.definition(inst.def)).map(|d| d.name.clone()).unwrap_or_default();
+                self.message = Some(format!("Made {name}. Double-click it to edit inside."));
+            }
+            Err(e) => self.message = Some(format!("Not grouped: {e}.")),
+        }
+        self.after_edit();
+    }
+
+    /// The one selected group or component, if exactly one is selected.
+    fn one_instance(&self) -> Option<usize> {
+        match self.tools.instances[..] {
+            [i] if self.tools.selected.is_empty() => Some(i),
+            _ => None,
+        }
+    }
+
+    fn open_group(&mut self, i: usize) {
+        match self.model.open(i) {
+            Ok(()) => {
+                self.tools.model_changed();
+                self.message = None;
+            }
+            Err(e) => self.message = Some(format!("Cannot open it: {e}.")),
+        }
+        self.after_edit();
+    }
+
+    fn close_group(&mut self) {
+        if self.model.close() {
+            self.tools.model_changed();
+            self.message = None;
+            self.after_edit();
+        }
+    }
+
+    fn explode(&mut self) {
+        let Some(i) = self.one_instance() else { return };
+        match self.model.explode(i) {
+            Ok(()) => self.message = Some("Exploded: its geometry is loose again.".into()),
+            Err(e) => self.message = Some(format!("Not exploded: {e}.")),
+        }
+        self.tools.model_changed();
+        self.after_edit();
+    }
+
+    fn make_unique(&mut self) {
+        let Some(i) = self.one_instance() else { return };
+        match self.model.make_unique(i) {
+            Ok(()) => self.message = Some("This copy now has a definition of its own.".into()),
+            Err(e) => self.message = Some(e.to_string()),
+        }
+        self.refresh();
+    }
+
     /// Reports solid problems on stdout and marks the offending faces red.
     fn inspect(&mut self) {
-        let report = inspect::inspect(&self.display, DEFAULT_TOLERANCE);
+        // the geometry being edited (faces of groups have numbers of their own)
+        let report = inspect::inspect(&self.display_active(), DEFAULT_TOLERANCE);
         println!("--- solid inspector ---\n{}", report.summary());
         self.message = Some(if report.is_solid() {
             "Solid Inspector: this is a valid solid.".into()
@@ -530,7 +690,7 @@ impl State {
 
     /// Repairs the model. A repaired import that is manifold becomes editable.
     fn repair(&mut self) {
-        let (fixed, summary) = inspect::repair(&self.display, DEFAULT_TOLERANCE);
+        let (fixed, summary) = inspect::repair(&self.display_active(), DEFAULT_TOLERANCE);
         // and coplanar faces merged: an import's triangle pairs become the faces they were drawn as
         let (fixed, _) = daedalus_core::merge::merge_coplanar(&fixed, daedalus_core::model::MERGE_TOLERANCE);
         if !summary.changed_anything() {
@@ -539,6 +699,10 @@ impl State {
         }
         println!("repair: {summary:?}");
         match HalfEdgeMesh::from_mesh(&fixed) {
+            Ok(h) if self.readonly.is_none() => {
+                self.model.set_mesh(h);
+                self.message = Some("Repair: done (Undo takes it back).".into());
+            }
             Ok(h) => {
                 self.model = Model::from_mesh(h);
                 self.readonly = None;
@@ -554,6 +718,14 @@ impl State {
         self.tools.model_changed();
         self.flagged.clear();
         self.refresh();
+    }
+
+    /// The geometry being edited, without the groups and what lies outside.
+    fn display_active(&self) -> Mesh {
+        match &self.readonly {
+            Some(m) => m.clone(),
+            None => self.model.mesh().to_mesh(),
+        }
     }
 
     fn merge_coplanar(&mut self) {
@@ -638,9 +810,23 @@ impl State {
                 settings::save("style", f.key());
             }
             UiAction::PaintColor(c) => self.tools.paint_color = c,
-            UiAction::SectionCuts => self.tools.section_cuts = !self.tools.section_cuts,
-            UiAction::DeleteSection => self.tools.section = None,
-            UiAction::DeleteDimensions => self.tools.delete_dims(),
+            UiAction::SectionCuts => self.model.edit_notes(|n| {
+                if let Some(s) = n.section.as_mut() {
+                    s.active = !s.active;
+                }
+            }),
+            UiAction::DeleteSection => self.model.edit_notes(|n| n.section = None),
+            UiAction::DeleteDimensions => self.model.edit_notes(|n| n.dims.clear()),
+            UiAction::MakeGroup => self.make_group(false),
+            UiAction::MakeComponent => self.make_group(true),
+            UiAction::EditGroup => {
+                if let Some(i) = self.one_instance() {
+                    self.open_group(i);
+                }
+            }
+            UiAction::CloseGroup => self.close_group(),
+            UiAction::Explode => self.explode(),
+            UiAction::MakeUnique => self.make_unique(),
             UiAction::BackEdges => {
                 self.style.back_edges = !self.style.back_edges;
                 settings::save("back_edges", if self.style.back_edges { "on" } else { "off" });
@@ -649,7 +835,7 @@ impl State {
                 self.tools.select_all(&self.model);
                 self.refresh();
             }
-            UiAction::DeleteGuides => self.tools.delete_guides(),
+            UiAction::DeleteGuides => self.model.edit_notes(|n| n.guides.clear()),
             UiAction::ToggleOrtho => self.camera.ortho = !self.camera.ortho,
             UiAction::Undo => self.history(true),
             UiAction::Redo => self.history(false),
@@ -688,11 +874,14 @@ impl State {
         let ctrl = self.modifiers.control_key();
         match key {
             Key::Named(NamedKey::Escape) => {
-                if self.typed.is_empty() {
+                if !self.typed.is_empty() {
+                    self.typed.clear();
+                } else if self.tools.tool == Tool::Select && !self.tools.has_selection() && self.model.open_depth() > 0 {
+                    // nothing left to cancel: Esc closes the open group
+                    self.close_group();
+                } else {
                     self.tools.cancel();
                     self.message = None;
-                } else {
-                    self.typed.clear();
                 }
                 self.refresh();
             }
@@ -718,6 +907,11 @@ impl State {
             Key::Named(NamedKey::ArrowRight) if self.tools.tool == Tool::Walk => self.camera.look_around(-40.0, 0.0),
             Key::Character(_) if ctrl => {}
             Key::Character(c) if self.modifiers.shift_key() && c.eq_ignore_ascii_case("z") => self.zoom_extents(),
+            // an array right after a Move copy: x5, 5x, *5 or /5
+            Key::Character(c) if (self.tools.can_array() || !self.typed.is_empty()) && (c == "*" || c == "/" || c.eq_ignore_ascii_case("x")) => {
+                self.typed.push_str(c)
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("g") && self.typed.is_empty() => self.make_group(true),
             // Digits go to the Measurements box without clicking it, as in SketchUp.
             Key::Character(c) if c.chars().all(|ch| ch.is_ascii_digit() || ".,;-".contains(ch)) => {
                 self.typed.push_str(c);
@@ -756,12 +950,12 @@ impl State {
             }
         }
         // dimensions, in dark grey
-        for (a, b, color) in self.tools.dim_lines([0.15, 0.15, 0.18, 1.0]) {
+        for (a, b, color) in self.tools.dim_lines(&self.model, [0.15, 0.15, 0.18, 1.0]) {
             out.push(LineVertex { position: a, color });
             out.push(LineVertex { position: b, color });
         }
         // guides: lines reach as far as the axes; points are small crosses
-        let guides = self.tools.guides.iter().copied().chain(self.tools.guide_preview());
+        let guides = self.model.notes().guides.iter().copied().chain(self.tools.guide_preview());
         let cross = self.camera.distance * 0.008;
         for g in guides {
             let mut seg = |a: Vec3, b: Vec3| {
@@ -795,7 +989,7 @@ impl State {
         self.tools
             .preview_lines()
             .into_iter()
-            .chain(self.tools.section_outline(size))
+            .chain(self.tools.section_outline(&self.model, size))
             .flat_map(|(a, b, color)| [LineVertex { position: a, color }, LineVertex { position: b, color }])
             .collect()
     }
@@ -846,10 +1040,13 @@ impl State {
             marker,
             style: self.style,
             paint_color: self.tools.paint_color,
-            section: self.tools.section.map(|_| self.tools.section_cuts),
+            section: self.model.notes().section.map(|s| s.active),
+            has_selection: self.tools.has_selection(),
+            one_instance: self.one_instance().and_then(|i| self.model.instances().get(i)).and_then(|inst| self.model.definition(inst.def)).map(|d| d.component),
+            editing: (self.model.open_depth() > 0).then(|| self.model.open_names().join(" › ")),
             labels: self
                 .tools
-                .dim_labels()
+                .dim_labels(&self.model)
                 .into_iter()
                 .filter_map(|(p, t)| self.camera.project(Vec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), t)))
                 .collect(),
@@ -921,7 +1118,7 @@ impl State {
         let (axes, overlay) = (self.axes(), self.overlay());
         // edges about 1.5 points wide, like SketchUp's default
         let line_width = 1.4 * self.window.scale_factor() as f32;
-        let section = self.tools.section.filter(|_| self.tools.section_cuts);
+        let section = self.model.notes().section.filter(|s| s.active).map(|s: Section| (s.point, s.normal));
         self.gpu.render(self.camera.view_proj(w / h), self.style, line_width, section, &axes, &overlay, ui);
 
         if out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay.is_zero()) {
@@ -955,6 +1152,17 @@ impl State {
     }
 }
 
+/// A model to edit, or (when its top level is not a valid surface) its geometry shown read-only.
+fn load(scene: &Scene) -> (Model, Option<Mesh>) {
+    match Model::from_scene(scene.clone()) {
+        Ok(m) => (m, None),
+        Err(e) => {
+            eprintln!("note: model is read-only until repaired with Tools > Repair Solid ({e})");
+            (Model::new(), Some(scene.flatten()))
+        }
+    }
+}
+
 /// A file's name for a message (the whole path would run into the Measurements box).
 fn short(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string())
@@ -968,7 +1176,7 @@ enum AppEvent {
 
 struct App {
     proxy: EventLoopProxy<AppEvent>,
-    mesh: Mesh,
+    scene: Scene,
     path: Option<PathBuf>,
     title: String,
     state: Option<State>,
@@ -1005,7 +1213,7 @@ impl ApplicationHandler<AppEvent> for App {
             let _ = proxy.send_event(AppEvent::Theme { dark });
         })
         .unwrap_or(window.theme() == Some(winit::window::Theme::Dark));
-        self.state = Some(State::new(window, &self.mesh, self.path.clone(), dark));
+        self.state = Some(State::new(window, &self.scene, self.path.clone(), dark));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1088,6 +1296,12 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                // Move: a tap on Ctrl switches between moving and copying, as in SketchUp
+                if event.logical_key == Key::Named(NamedKey::Control) && !event.repeat && s.tools.tool == Tool::Move {
+                    s.tools.copy = !s.tools.copy;
+                    s.refresh();
+                    return;
+                }
                 if !s.egui_ctx.wants_keyboard_input() {
                     s.key(&event.logical_key);
                 }
@@ -1154,10 +1368,10 @@ impl ApplicationHandler<AppEvent> for App {
 }
 
 fn main() {
-    let (mesh, title, path) = match std::env::args().nth(1) {
+    let (scene, title, path) = match std::env::args().nth(1) {
         Some(arg) => {
             let path = PathBuf::from(&arg);
-            match daedalus_io::import_mesh(&path) {
+            match daedalus_io::open_scene(&path) {
                 Ok(m) => (m, format!("Daedalus - {arg}"), Some(path)),
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -1165,10 +1379,10 @@ fn main() {
                 }
             }
         }
-        None => (Mesh::new(), "Daedalus".to_string(), None),
+        None => (Scene::default(), "Daedalus".to_string(), None),
     };
     let event_loop = EventLoop::<AppEvent>::with_user_event().build().expect("event loop");
-    let mut app = App { proxy: event_loop.create_proxy(), mesh, path, title, state: None };
+    let mut app = App { proxy: event_loop.create_proxy(), scene, path, title, state: None };
     event_loop.run_app(&mut app).expect("run app");
 }
 

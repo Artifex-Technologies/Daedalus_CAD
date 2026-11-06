@@ -19,3 +19,7 @@ egui-wgpu = "0.31.1"
 # Light or dark from the desktop (the XDG desktop portal's color-scheme), followed live. Windows reports it through winit.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
+# The shaders are compiled and validated in a test, without a GPU (the same naga wgpu 24 uses).
+[dev-dependencies]
+naga = { version = "24", features = ["wgsl-in"] }

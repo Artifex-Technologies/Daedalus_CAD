@@ -68,6 +68,23 @@ pub fn import_mesh(path: &Path) -> Result<Mesh, IoError> {
     importer.import(&std::fs::read(path)?)
 }
 
+/// Opens a model: a `.daedalus` file whole (groups, components, notes), any other format as its geometry.
+pub fn open_scene(path: &Path) -> Result<daedalus_core::scene::Scene, IoError> {
+    if extension(path).as_deref() == Some("daedalus") {
+        return native::read_scene(&std::fs::read(path)?);
+    }
+    Ok(daedalus_core::scene::Scene::from_mesh(import_mesh(path)?))
+}
+
+/// Saves a model: whole to a `.daedalus` file; to any other format, its geometry with every instance put in place.
+pub fn save_scene(scene: &daedalus_core::scene::Scene, path: &Path) -> Result<(), IoError> {
+    if extension(path).as_deref() == Some("daedalus") {
+        std::fs::write(path, native::write_scene(scene))?;
+        return Ok(());
+    }
+    export_mesh(&scene.flatten(), path)
+}
+
 /// Exports a mesh, choosing the exporter from the file extension.
 pub fn export_mesh(mesh: &Mesh, path: &Path) -> Result<(), IoError> {
     let ext = extension(path).ok_or_else(|| IoError::Unsupported("no file extension".into()))?;

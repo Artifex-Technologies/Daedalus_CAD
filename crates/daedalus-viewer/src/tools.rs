@@ -4,7 +4,10 @@
 
 use daedalus_core::units::{self, Units};
 use daedalus_core::sketch::{self, Plane, DEFAULT_ARC_SEGMENTS, DEFAULT_CIRCLE_SEGMENTS};
+use daedalus_core::scene::{Dimension, Section, Xform};
 use daedalus_core::{HalfEdgeMesh, Model};
+
+pub use daedalus_core::scene::Guide;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -181,14 +184,6 @@ pub enum Snap {
     Origin,
 }
 
-/// A construction guide: drawn dashed, snapped to, never part of the model (SketchUp's guide lines and points).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Guide {
-    Point([f32; 3]),
-    /// Through a point, along a unit direction, endless.
-    Line([f32; 3], [f32; 3]),
-}
-
 impl Snap {
     pub fn label(self) -> &'static str {
         match self {
@@ -222,7 +217,17 @@ pub struct Hit {
     pub face: Option<usize>,
     /// A loose line close to the mouse (for the Eraser).
     pub line: Option<usize>,
+    /// The group or component under the mouse (an instance of the open context); `face` is None then.
+    pub instance: Option<usize>,
     pub snap: Snap,
+}
+
+/// What Move, Rotate and Scale work on: faces (and their vertices) and instances of the open context.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Target {
+    pub faces: Vec<usize>,
+    pub verts: Vec<u32>,
+    pub inst: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -280,11 +285,11 @@ enum Op {
     /// Pie: the centre, the start of the arc (once set, it gives the radius), then the angle.
     Pie { plane: Plane, center: [f32; 3], start: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
     /// Move: these vertices go from `base` to the cursor.
-    Move { verts: Vec<u32>, base: [f32; 3], cursor: Option<[f32; 3]>, axis: Option<u8> },
+    Move { t: Target, base: [f32; 3], cursor: Option<[f32; 3]>, axis: Option<u8> },
     /// Rotate: about the plane's normal through `center`, from the `start` direction (once set) by `angle` radians.
-    Rotate { verts: Vec<u32>, plane: Plane, center: [f32; 3], start: Option<[f32; 3]>, angle: f32 },
+    Rotate { t: Target, plane: Plane, center: [f32; 3], start: Option<[f32; 3]>, angle: f32 },
     /// Scale: uniformly about `anchor` (the corner of the bounding box opposite the grip), `start` being the grip.
-    Scale { verts: Vec<u32>, anchor: [f32; 3], start: [f32; 3], factor: f32 },
+    Scale { t: Target, anchor: [f32; 3], start: [f32; 3], factor: f32 },
     /// Tape Measure: from `start` to the cursor.
     Tape { start: [f32; 3], cursor: Option<[f32; 3]> },
     /// Protractor: a guide through `center` turned `angle` radians from the `start` direction (once set).
@@ -301,16 +306,16 @@ pub struct Tools {
     pub selected: Vec<usize>,
     /// Segments in a pie's arc.
     pub arc_segments: u32,
+    /// Selected groups and components (instances of the open context), sorted.
+    pub instances: Vec<usize>,
     /// Paint Bucket's colour (None: the default material, which takes paint off).
     pub paint_color: Option<[u8; 3]>,
-    /// The section plane: a point on it and the normal of the side it cuts away; and whether cuts are shown.
-    pub section: Option<([f32; 3], [f32; 3])>,
-    pub section_cuts: bool,
-    /// Dimensions placed: the two points and the offset of the dimension line from them.
-    pub dims: Vec<([f32; 3], [f32; 3], [f32; 3])>,
-    /// Construction guides from Tape Measure and Protractor.
-    pub guides: Vec<Guide>,
+    /// Move makes a copy (Ctrl toggles it while moving, as in SketchUp).
+    pub copy: bool,
+    /// The last copy made by Move (what was copied and how far), so `x5` or `/5` typed right after makes an array.
+    last_copy: Option<(Target, [f32; 3])>,
     hover_face: Option<usize>,
+    hover_instance: Option<usize>,
     op: Op,
     /// Last push/pull (original face, distance), so a value typed right after
     /// it re-does it at that distance, as in SketchUp.
@@ -326,12 +331,12 @@ impl Default for Tools {
             units: Units::Metres,
             selected: Vec::new(),
             arc_segments: DEFAULT_ARC_SEGMENTS,
+            instances: Vec::new(),
             paint_color: Some([196, 92, 64]),
-            section: None,
-            section_cuts: true,
-            dims: Vec::new(),
-            guides: Vec::new(),
+            copy: false,
+            last_copy: None,
             hover_face: None,
+            hover_instance: None,
             op: Op::Idle,
             last_push: None,
         }
@@ -343,15 +348,20 @@ impl Tools {
         self.tool = tool;
         self.op = Op::Idle;
         self.hover_face = None;
+        self.hover_instance = None;
         self.last_push = None;
+        self.copy = false;
+        self.last_copy = None;
     }
 
     /// Esc: abandons the current operation (or clears the selection).
     pub fn cancel(&mut self) {
         if matches!(self.op, Op::Idle) {
             self.selected.clear();
+            self.instances.clear();
         }
         self.op = Op::Idle;
+        self.copy = false;
     }
 
     /// Call after anything outside the tools changed the mesh (undo, repair):
@@ -359,16 +369,40 @@ impl Tools {
     pub fn model_changed(&mut self) {
         self.op = Op::Idle;
         self.selected.clear();
+        self.instances.clear();
         self.hover_face = None;
+        self.hover_instance = None;
         self.last_push = None;
+        self.last_copy = None;
+    }
+
+    /// Whether anything is selected (faces or groups).
+    pub fn has_selection(&self) -> bool {
+        !self.selected.is_empty() || !self.instances.is_empty()
     }
 
     /// Select tool click: `face` replaces the selection; with `add` (Ctrl) it is added, with `toggle` (Shift) it goes in
     /// or out; `connected` (a triple-click) takes every face joined to it. Clicking empty space clears the selection.
-    pub fn select(&mut self, model: &Model, face: Option<usize>, add: bool, toggle: bool, connected: bool) {
+    pub fn select(&mut self, model: &Model, face: Option<usize>, instance: Option<usize>, add: bool, toggle: bool, connected: bool) {
+        if let (None, Some(i)) = (face, instance) {
+            // a group or component is picked whole
+            if !add && !toggle {
+                self.selected.clear();
+                self.instances.clear();
+            }
+            match self.instances.binary_search(&i) {
+                Ok(k) if toggle => {
+                    self.instances.remove(k);
+                }
+                Ok(_) => {}
+                Err(k) => self.instances.insert(k, i),
+            }
+            return;
+        }
         let Some(face) = face else {
             if !add && !toggle {
                 self.selected.clear();
+                self.instances.clear();
             }
             return;
         };
@@ -384,6 +418,7 @@ impl Tools {
         }
         if !add && !toggle {
             self.selected.clear();
+            self.instances.clear();
         }
         self.selected.extend(faces);
         self.selected.sort_unstable();
@@ -393,27 +428,101 @@ impl Tools {
     /// Ctrl+A.
     pub fn select_all(&mut self, model: &Model) {
         self.selected = (0..model.mesh().face_count()).collect();
+        self.instances = (0..model.instances().len()).collect();
     }
 
-    /// The vertices Move, Rotate and Scale work on: the selection's, else the face under the mouse.
-    fn target_verts(&self, model: &Model, c: &Cursor) -> Option<Vec<u32>> {
-        let faces: Vec<usize> = if self.selected.is_empty() { c.hit.and_then(|h| h.face).into_iter().collect() } else { self.selected.clone() };
-        let mut v: Vec<u32> = faces.iter().filter(|&&f| f < model.mesh().face_count()).flat_map(|&f| model.mesh().face_vertices(f)).collect();
-        v.sort_unstable();
-        v.dedup();
-        (!v.is_empty()).then_some(v)
+    /// What Move, Rotate and Scale work on: the selection, else the face or group under the mouse.
+    fn target(&self, model: &Model, c: &Cursor) -> Option<Target> {
+        let (faces, inst): (Vec<usize>, Vec<usize>) = if self.has_selection() {
+            (self.selected.clone(), self.instances.clone())
+        } else {
+            (c.hit.and_then(|h| h.face).into_iter().collect(), c.hit.and_then(|h| h.instance).into_iter().collect())
+        };
+        let faces: Vec<usize> = faces.into_iter().filter(|&f| f < model.mesh().face_count()).collect();
+        let inst: Vec<usize> = inst.into_iter().filter(|&i| i < model.instances().len()).collect();
+        let mut verts: Vec<u32> = faces.iter().flat_map(|&f| model.mesh().face_vertices(f)).collect();
+        verts.sort_unstable();
+        verts.dedup();
+        (!verts.is_empty() || !inst.is_empty()).then_some(Target { faces, verts, inst })
     }
 
-    /// Ends a Move, Rotate or Scale: the faces keep their numbers, so the selection stays.
-    fn transform(&mut self, model: &mut Model, verts: &[u32], f: impl Fn([f32; 3]) -> [f32; 3]) -> Result<(), String> {
-        model.transform_vertices(verts, f).map_err(|e| e.to_string())?;
+    /// Ends a Move, Rotate or Scale: the faces keep their numbers, so the selection stays. With `copy` (Move with Ctrl),
+    /// a copy is moved instead and becomes the selection.
+    fn transform(&mut self, model: &mut Model, t: &Target, f: impl Fn([f32; 3]) -> [f32; 3]) -> Result<(), String> {
+        let xf = Xform::from_fn(f);
+        if self.copy && self.tool == Tool::Move {
+            let (faces, inst) = model.copy_all(&t.faces, &t.inst, &[xf]).map_err(|e| e.to_string())?;
+            self.selected = faces;
+            self.instances = inst;
+            self.last_copy = Some((t.clone(), xf.origin()));
+            self.copy = false;
+        } else {
+            model.transform_all(&t.verts, &t.inst, &xf).map_err(|e| e.to_string())?;
+        }
         self.op = Op::Idle;
         Ok(())
     }
 
+    /// Whether `x5` or `/5` typed now would make an array of the last copy.
+    pub fn can_array(&self) -> bool {
+        self.last_copy.is_some() && matches!(self.op, Op::Idle)
+    }
+
+    /// `x5` (or `5x`, `*5`): four more copies at the same spacing, five in all; `/5`: copies spaced evenly between the
+    /// original and the copy, five spaces in all.
+    fn array(&mut self, model: &mut Model, text: &str) -> Option<Result<(), String>> {
+        let (src, d) = self.last_copy.clone()?;
+        let t = text.trim();
+        let (n, divide) = if let Some(n) = t.strip_prefix('/') {
+            (n.trim().parse::<u32>().ok()?, true)
+        } else {
+            let n = t.strip_prefix(['x', 'X', '*']).or_else(|| t.strip_suffix(['x', 'X'])).map(str::trim)?;
+            (n.parse::<u32>().ok()?, false)
+        };
+        if !(2..=1000).contains(&n) {
+            return Some(Err("an array needs 2 to 1000 copies".into()));
+        }
+        let steps: Vec<Xform> = if divide {
+            (1..n).map(|k| Xform::translation(scale(d, k as f32 / n as f32))).collect()
+        } else {
+            (2..=n).map(|k| Xform::translation(scale(d, k as f32))).collect()
+        };
+        Some(match model.copy_all(&src.faces, &src.inst, &steps) {
+            Ok((faces, inst)) => {
+                self.selected = faces;
+                self.instances = inst;
+                self.last_copy = None;
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        })
+    }
+
+    /// Move, Rotate or Scale live on groups: which instances, the transform so far, and whether they are copies.
+    pub fn preview_instances(&self) -> Option<(Vec<usize>, Xform, bool)> {
+        let (t, xf) = self.live_transform()?;
+        (!t.inst.is_empty()).then(|| (t.inst.clone(), xf, self.copy && self.tool == Tool::Move))
+    }
+
+    /// The Move, Rotate or Scale under way, and the transform it would make now.
+    fn live_transform(&self) -> Option<(&Target, Xform)> {
+        match &self.op {
+            Op::Move { t, base, cursor: Some(c), .. } => Some((t, Xform::translation(sub(*c, *base)))),
+            Op::Rotate { t, plane, center, start: Some(_), angle } => {
+                let (center, n, a) = (*center, plane.normal, *angle);
+                Some((t, Xform::from_fn(|q| rotate_about(q, center, n, a))))
+            }
+            Op::Scale { t, anchor, factor, .. } => {
+                let (anchor, f) = (*anchor, *factor);
+                Some((t, Xform::from_fn(|q| scale_about(q, anchor, f))))
+            }
+            _ => None,
+        }
+    }
+
     /// The section plane's outline, drawn while it is placed: a square in its plane around its point, `size` across.
-    pub fn section_outline(&self, size: f32) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
-        let Some((o, n)) = self.section else { return Vec::new() };
+    pub fn section_outline(&self, model: &Model, size: f32) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
+        let Some(Section { point: o, normal: n, .. }) = model.notes().section else { return Vec::new() };
         let Some(p) = Plane::from_point_normal(o, n) else { return Vec::new() };
         let h = size / 2.0;
         let corners = [p.to_world(-h, -h), p.to_world(h, -h), p.to_world(h, h), p.to_world(-h, h)];
@@ -425,23 +534,13 @@ impl Tools {
     }
 
     /// The placed dimensions' lines (extension lines and the dimension line), in `color`.
-    pub fn dim_lines(&self, color: [f32; 4]) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
-        self.dims.iter().flat_map(|&(a, b, off)| dim_lines(a, b, off, color)).collect()
+    pub fn dim_lines(&self, model: &Model, color: [f32; 4]) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
+        model.notes().dims.iter().flat_map(|d| dim_lines(d.a, d.b, d.offset, color)).collect()
     }
 
     /// Each placed dimension's label: where it goes (the middle of its dimension line) and the length, in the units shown.
-    pub fn dim_labels(&self) -> Vec<([f32; 3], String)> {
-        self.dims.iter().map(|&(a, b, off)| (add(scale(add(a, b), 0.5), off), fmt(dist(a, b), self.units))).collect()
-    }
-
-    /// Edit > Delete Dimensions.
-    pub fn delete_dims(&mut self) {
-        self.dims.clear();
-    }
-
-    /// Delete Guides (Edit menu).
-    pub fn delete_guides(&mut self) {
-        self.guides.clear();
+    pub fn dim_labels(&self, model: &Model) -> Vec<([f32; 3], String)> {
+        model.notes().dims.iter().map(|d| (add(scale(add(d.a, d.b), 0.5), d.offset), fmt(dist(d.a, d.b), self.units))).collect()
     }
 
     #[cfg(test)]
@@ -466,6 +565,15 @@ impl Tools {
     }
 
     /// Faces to draw highlighted: the selection, or the face a click would act on.
+    pub fn highlight_instances(&self) -> Vec<usize> {
+        match (self.tool, &self.op) {
+            (Tool::Eraser, Op::Idle) => self.hover_instance.into_iter().collect(),
+            (t, Op::Idle) if t.transforms() && !self.has_selection() => self.hover_instance.into_iter().collect(),
+            (t, _) if t.transforms() && !self.has_selection() => self.live_transform().map(|(t, _)| t.inst.clone()).unwrap_or_default(),
+            _ => self.instances.clone(),
+        }
+    }
+
     pub fn highlight(&self) -> Vec<usize> {
         match (self.tool, &self.op) {
             (Tool::PushPull | Tool::Eraser, Op::Idle) => self.hover_face.into_iter().collect(),
@@ -519,6 +627,7 @@ impl Tools {
     pub fn hover(&mut self, c: &Cursor) {
         let marker = self.marker(c);
         self.hover_face = c.hit.and_then(|h| h.face);
+        self.hover_instance = c.hit.and_then(|h| h.instance);
         match &mut self.op {
             Op::Line { cursor, axis, .. } => {
                 *cursor = marker.map(|m| m.0);
@@ -583,7 +692,7 @@ impl Tools {
         self.hover(c);
         let marker = self.marker(c);
         match (self.tool, std::mem::replace(&mut self.op, Op::Idle)) {
-            (Tool::Select, _) => self.select(model, c.hit.and_then(|h| h.face), false, false, false),
+            (Tool::Select, _) => self.select(model, c.hit.and_then(|h| h.face), c.hit.and_then(|h| h.instance), false, false, false),
             (Tool::RotatedRectangle, Op::Idle) => {
                 if let Some(h) = c.hit {
                     self.op = Op::RotRect { plane: h.plane, a: h.point, b: None, cursor: None };
@@ -624,7 +733,8 @@ impl Tools {
             (Tool::Dimensions, Op::Dim { a, b, cursor }) => match (b, marker) {
                 (None, Some((p, _))) if dist(a, p) > 1e-6 => self.op = Op::Dim { a, b: Some(p), cursor: None },
                 (Some(b), Some((p, _))) => {
-                    self.dims.push((a, b, dim_offset(a, b, p)));
+                    let offset = dim_offset(a, b, p);
+                    model.edit_notes(|n| n.dims.push(Dimension { a, b, offset }));
                 }
                 (b, _) => self.op = Op::Dim { a, b, cursor },
             },
@@ -633,8 +743,7 @@ impl Tools {
                 let face = c.hit.and_then(|h| h.face).ok_or("click a face to place the section plane on it")?;
                 let n = model.mesh().face_normal(face);
                 if let (Some(h), true) = (c.hit, n != [0.0; 3]) {
-                    self.section = Some((h.point, n));
-                    self.section_cuts = true;
+                    model.edit_notes(|notes| notes.section = Some(Section { point: h.point, normal: n, active: true }));
                 }
             }
             (Tool::PaintBucket, _) => {
@@ -704,50 +813,50 @@ impl Tools {
                 (start, _) => self.op = Op::Pie { plane, center, start, cursor: None },
             },
             (Tool::Move, Op::Idle) => {
-                let verts = self.target_verts(model, c).ok_or("select something to move, or point at a face")?;
+                let t = self.target(model, c).ok_or("select something to move, or point at a face or group")?;
                 if let Some(h) = c.hit {
-                    self.op = Op::Move { verts, base: h.point, cursor: None, axis: None };
+                    self.op = Op::Move { t, base: h.point, cursor: None, axis: None };
                 }
             }
-            (Tool::Move, Op::Move { verts, base, cursor, axis }) => match marker {
+            (Tool::Move, Op::Move { t, base, cursor, axis }) => match marker {
                 Some((p, _)) => {
                     let d = sub(p, base);
-                    self.transform(model, &verts, |q| add(q, d))?;
+                    self.transform(model, &t, |q| add(q, d))?;
                 }
-                None => self.op = Op::Move { verts, base, cursor, axis },
+                None => self.op = Op::Move { t, base, cursor, axis },
             },
             (Tool::Rotate, Op::Idle) => {
-                let verts = self.target_verts(model, c).ok_or("select something to rotate, or point at a face")?;
+                let t = self.target(model, c).ok_or("select something to rotate, or point at a face or group")?;
                 if let Some(h) = c.hit {
-                    self.op = Op::Rotate { verts, plane: Plane { origin: h.point, ..h.plane }, center: h.point, start: None, angle: 0.0 };
+                    self.op = Op::Rotate { t, plane: Plane { origin: h.point, ..h.plane }, center: h.point, start: None, angle: 0.0 };
                 }
             }
-            (Tool::Rotate, Op::Rotate { verts, plane, center, start, angle }) => match (start, marker) {
-                (None, Some((p, _))) if dist(center, p) > 1e-6 => self.op = Op::Rotate { verts, plane, center, start: Some(p), angle: 0.0 },
+            (Tool::Rotate, Op::Rotate { t, plane, center, start, angle }) => match (start, marker) {
+                (None, Some((p, _))) if dist(center, p) > 1e-6 => self.op = Op::Rotate { t, plane, center, start: Some(p), angle: 0.0 },
                 (Some(_), _) => {
                     let n = plane.normal;
-                    self.transform(model, &verts, |q| rotate_about(q, center, n, angle))?;
+                    self.transform(model, &t, |q| rotate_about(q, center, n, angle))?;
                 }
-                (start, _) => self.op = Op::Rotate { verts, plane, center, start, angle },
+                (start, _) => self.op = Op::Rotate { t, plane, center, start, angle },
             },
             (Tool::Scale, Op::Idle) => {
-                let verts = self.target_verts(model, c).ok_or("select something to scale, or point at a face")?;
+                let t = self.target(model, c).ok_or("select something to scale, or point at a face or group")?;
                 if let Some(h) = c.hit {
-                    let anchor = opposite_corner(model, &verts, h.point);
+                    let anchor = opposite_corner(&target_points(model, &t), h.point);
                     if dist(anchor, h.point) < 1e-6 {
                         return Err("pick a point away from the middle of what is scaled".into());
                     }
-                    self.op = Op::Scale { verts, anchor, start: h.point, factor: 1.0 };
+                    self.op = Op::Scale { t, anchor, start: h.point, factor: 1.0 };
                 }
             }
-            (Tool::Scale, Op::Scale { verts, anchor, factor, .. }) => self.transform(model, &verts, |q| scale_about(q, anchor, factor))?,
+            (Tool::Scale, Op::Scale { t, anchor, factor, .. }) => self.transform(model, &t, |q| scale_about(q, anchor, factor))?,
             (Tool::TapeMeasure, Op::Idle) => {
                 if let Some(h) = c.hit {
                     self.op = Op::Tape { start: h.point, cursor: None };
                 }
             }
             (Tool::TapeMeasure, Op::Tape { start, cursor }) => match marker {
-                Some((p, _)) => self.add_tape_guides(start, p),
+                Some((p, _)) => self.add_tape_guides(model, start, p),
                 None => self.op = Op::Tape { start, cursor },
             },
             (Tool::Protractor, Op::Idle) => {
@@ -757,12 +866,16 @@ impl Tools {
             }
             (Tool::Protractor, Op::Protract { plane, center, start, angle }) => match (start, marker) {
                 (None, Some((p, _))) if dist(center, p) > 1e-6 => self.op = Op::Protract { plane, center, start: Some(p), angle: 0.0 },
-                (Some(st), _) => self.add_protractor_guide(&plane, center, st, angle),
+                (Some(st), _) => self.add_protractor_guide(model, &plane, center, st, angle),
                 (start, _) => self.op = Op::Protract { plane, center, start, angle },
             },
             // the Eraser takes a line under the mouse before the face behind it
             (Tool::Eraser, _) if c.hit.and_then(|h| h.line).is_some() => {
                 model.erase_line(c.hit.and_then(|h| h.line).expect("checked")).map_err(|e| e.to_string())?;
+            }
+            (Tool::Eraser, _) if c.hit.and_then(|h| h.instance).is_some() => {
+                model.erase_instances(&[c.hit.and_then(|h| h.instance).expect("checked")]).map_err(|e| e.to_string())?;
+                self.model_changed();
             }
             (Tool::Eraser, _) => {
                 if let Some(face) = c.hit.and_then(|h| h.face) {
@@ -817,6 +930,9 @@ impl Tools {
         if let Some(r) = self.type_number(model, text) {
             return r;
         }
+        if let Some(r) = self.array(model, text) {
+            return r;
+        }
         let entry = parse_entry(text, self.units).ok_or_else(|| format!("cannot read \"{text}\""))?;
         match (entry, std::mem::replace(&mut self.op, Op::Idle)) {
             (Entry::Sides(n), op) if matches!(self.tool, Tool::Circle | Tool::Polygon) => {
@@ -868,10 +984,13 @@ impl Tools {
                 // typed: in or out as the mouse is
                 self.offset(model, &ring, normal, d.abs() * if shown < 0.0 { -1.0 } else { 1.0 })?
             }
-            (Entry::Value(d), Op::Idle) if self.tool == Tool::SectionPlane && self.section.is_some() => {
+            (Entry::Value(d), Op::Idle) if self.tool == Tool::SectionPlane && model.notes().section.is_some() => {
                 // typed: the plane moves that far into the model
-                let (o, n) = self.section.expect("checked");
-                self.section = Some((sub(o, scale(n, d)), n));
+                model.edit_notes(|n| {
+                    if let Some(s) = n.section.as_mut() {
+                        s.point = sub(s.point, scale(s.normal, d));
+                    }
+                });
             }
             (Entry::Value(l), Op::Arc2 { plane, a, b: None, cursor }) => {
                 let dir = cursor.and_then(|c| normalize(sub(c, a))).unwrap_or(plane.u);
@@ -901,14 +1020,14 @@ impl Tools {
                 }
                 self.commit(model, sketch::rotated_rectangle(&plane, a, b, add(a, scale(side, h.abs()))))?;
             }
-            (Entry::Value(d), Op::Move { verts, base, cursor, .. }) => {
+            (Entry::Value(d), Op::Move { t, base, cursor, .. }) => {
                 let dir = cursor.and_then(|c| normalize(sub(c, base))).ok_or("move the mouse to show the direction first")?;
                 let v = scale(dir, d);
-                self.transform(model, &verts, |q| add(q, v))?;
+                self.transform(model, &t, |q| add(q, v))?;
             }
             (Entry::Value(d), Op::Tape { start, cursor }) => {
                 let dir = cursor.and_then(|c| normalize(sub(c, start))).ok_or("move the mouse to show the direction first")?;
-                self.add_tape_guides(start, add(start, scale(dir, d)));
+                self.add_tape_guides(model, start, add(start, scale(dir, d)));
             }
             (Entry::Value(d), Op::Idle) if self.tool == Tool::PushPull && self.last_push.is_some() => {
                 let (face, _) = self.last_push.expect("checked");
@@ -930,16 +1049,16 @@ impl Tools {
         let n: f32 = t.parse().ok().filter(|n: &f32| n.is_finite())?;
         let rad = n.to_radians();
         Some(match std::mem::replace(&mut self.op, Op::Idle) {
-            Op::Rotate { verts, plane, center, start: Some(_), .. } => self.transform(model, &verts, |q| rotate_about(q, center, plane.normal, rad)),
+            Op::Rotate { t, plane, center, start: Some(_), .. } => self.transform(model, &t, |q| rotate_about(q, center, plane.normal, rad)),
             Op::Protract { plane, center, start: Some(st), .. } => {
-                self.add_protractor_guide(&plane, center, st, rad);
+                self.add_protractor_guide(model, &plane, center, st, rad);
                 Ok(())
             }
             Op::Pie { plane, center, start: Some(st), .. } if self.tool == Tool::Arc => {
                 self.draw_arc(model, sketch::arc_from_center(&plane, center, st, rad, self.arc_segments))
             }
             Op::Pie { plane, center, start: Some(st), .. } => self.commit(model, sketch::pie(&plane, center, st, rad, self.arc_segments)),
-            Op::Scale { verts, anchor, .. } if n != 0.0 => self.transform(model, &verts, |q| scale_about(q, anchor, n)),
+            Op::Scale { t, anchor, .. } if n != 0.0 => self.transform(model, &t, |q| scale_about(q, anchor, n)),
             Op::Scale { .. } => Err("a scale of 0 would flatten it to a point".into()),
             op => {
                 self.op = op;
@@ -986,17 +1105,17 @@ impl Tools {
         Ok(())
     }
 
-    fn add_tape_guides(&mut self, start: [f32; 3], end: [f32; 3]) {
+    fn add_tape_guides(&mut self, model: &mut Model, start: [f32; 3], end: [f32; 3]) {
         if let Some(dir) = normalize(sub(end, start)) {
-            self.guides.push(Guide::Line(start, dir));
-            self.guides.push(Guide::Point(end));
+            model.edit_notes(|n| n.guides.extend([Guide::Line(start, dir), Guide::Point(end)]));
         }
         self.op = Op::Idle;
     }
 
-    fn add_protractor_guide(&mut self, plane: &Plane, center: [f32; 3], start: [f32; 3], angle: f32) {
+    fn add_protractor_guide(&mut self, model: &mut Model, plane: &Plane, center: [f32; 3], start: [f32; 3], angle: f32) {
         if let Some(dir) = normalize(sub(start, center)) {
-            self.guides.push(Guide::Line(center, rotate_about(dir, [0.0; 3], plane.normal, angle)));
+            let g = Guide::Line(center, rotate_about(dir, [0.0; 3], plane.normal, angle));
+            model.edit_notes(|n| n.guides.push(g));
         }
         self.op = Op::Idle;
     }
@@ -1018,14 +1137,22 @@ impl Tools {
                 m.push_pull(*face, *distance).ok()?;
                 Some(m)
             }
-            Op::Move { verts, base, cursor: Some(c), .. } => {
+            // Move with Ctrl: the faces stay, and a copy follows the mouse
+            Op::Move { t, base, cursor: Some(c), .. } if self.copy && !t.faces.is_empty() => {
+                let mesh = model.mesh().to_mesh();
+                let (_, part) = mesh.extract(&t.faces);
+                let mut both = mesh.clone();
+                both.append(&part.transformed(&Xform::translation(sub(*c, *base))));
+                HalfEdgeMesh::from_mesh(&both).ok()
+            }
+            Op::Move { t, base, cursor: Some(c), .. } if !t.verts.is_empty() && !self.copy => {
                 let d = sub(*c, *base);
-                moved(verts, &|q| add(q, d))
+                moved(&t.verts, &|q| add(q, d))
             }
-            Op::Rotate { verts, plane, center, start: Some(_), angle } if *angle != 0.0 => {
-                moved(verts, &|q| rotate_about(q, *center, plane.normal, *angle))
+            Op::Rotate { t, plane, center, start: Some(_), angle } if *angle != 0.0 && !t.verts.is_empty() => {
+                moved(&t.verts, &|q| rotate_about(q, *center, plane.normal, *angle))
             }
-            Op::Scale { verts, anchor, factor, .. } if *factor != 1.0 => moved(verts, &|q| scale_about(q, *anchor, *factor)),
+            Op::Scale { t, anchor, factor, .. } if *factor != 1.0 && !t.verts.is_empty() => moved(&t.verts, &|q| scale_about(q, *anchor, *factor)),
             _ => None,
         }
     }
@@ -1146,7 +1273,7 @@ impl Tools {
     /// SketchUp-style hint for the status bar.
     pub fn status(&self) -> &'static str {
         match (self.tool, &self.op) {
-            (Tool::Select, _) => "Click a face to select it. Ctrl adds, Shift toggles, a triple-click takes everything joined to it.",
+            (Tool::Select, _) => "Click to select. Ctrl adds, Shift toggles, a triple-click takes everything joined. Double-click a group to edit it.",
             (Tool::RotatedRectangle, Op::Idle) => "Select first corner.",
             (Tool::RotatedRectangle, Op::RotRect { b: None, .. }) => "Select second corner, or type a length. The first side may point any way.",
             (Tool::RotatedRectangle, _) => "Select the height, or type it.",
@@ -1172,7 +1299,8 @@ impl Tools {
             (Tool::Pie, Op::Pie { start: None, .. }) => "Select start of the arc, or type a radius.",
             (Tool::Pie, _) => "Select end of the arc, or type an angle in degrees.",
             (Tool::Move, Op::Idle) => "Pick a point to move from. Moves the selection, or the face under the mouse.",
-            (Tool::Move, _) => "Pick the point to move to, or type a distance. Close to an axis it locks onto it.",
+            (Tool::Move, _) if self.copy => "Copy: pick where the copy goes, or type a distance. Then type x5 for an array, /5 to divide.",
+            (Tool::Move, _) => "Pick the point to move to, or type a distance. Close to an axis it locks onto it. Ctrl copies.",
             (Tool::Rotate, Op::Idle) => "Pick the center of rotation. Turns the selection, or the face under the mouse.",
             (Tool::Rotate, Op::Rotate { start: None, .. }) => "Pick a point to turn from.",
             (Tool::Rotate, _) => "Turn to the angle and click, or type degrees. It snaps every 15 degrees.",
@@ -1196,7 +1324,7 @@ impl Tools {
             (Tool::Circle | Tool::Polygon, _) => "Select radius point, or type a radius.",
             (Tool::PushPull, Op::Idle) => "Pick a face to push or pull.",
             (Tool::PushPull, _) => "Move to set the distance; click or type a value.",
-            (Tool::Eraser, _) => "Click a face to erase it.",
+            (Tool::Eraser, _) => "Click a face, line or group to erase it.",
             (Tool::Orbit, _) => "Drag to orbit.",
             (Tool::Pan, _) => "Drag to pan.",
             (Tool::Zoom, _) => "Drag up or down to zoom.",
@@ -1347,8 +1475,7 @@ fn scale_about(p: [f32; 3], anchor: [f32; 3], factor: f32) -> [f32; 3] {
 
 /// The corner of the vertices' bounding box opposite `grip`: on each axis, the far side from it (or the grip's own
 /// coordinate when the box has no size that way, so a flat shape scales in its plane).
-fn opposite_corner(model: &Model, verts: &[u32], grip: [f32; 3]) -> [f32; 3] {
-    let pts: Vec<[f32; 3]> = verts.iter().filter_map(|&v| model.mesh().positions.get(v as usize).copied()).collect();
+fn opposite_corner(pts: &[[f32; 3]], grip: [f32; 3]) -> [f32; 3] {
     let mut out = grip;
     for i in 0..3 {
         let lo = pts.iter().map(|p| p[i]).fold(f32::INFINITY, f32::min);
@@ -1358,6 +1485,18 @@ fn opposite_corner(model: &Model, verts: &[u32], grip: [f32; 3]) -> [f32; 3] {
         }
     }
     out
+}
+
+/// The points of what is transformed: its vertices, and the corners of its groups as they stand in the model.
+fn target_points(model: &Model, t: &Target) -> Vec<[f32; 3]> {
+    let mut pts: Vec<[f32; 3]> = t.verts.iter().filter_map(|&v| model.mesh().positions.get(v as usize).copied()).collect();
+    let (inside, _) = if t.inst.is_empty() { (Vec::new(), daedalus_core::Mesh::new()) } else { model.parts() };
+    for (i, m) in inside {
+        if t.inst.contains(&i) {
+            pts.extend(m.positions);
+        }
+    }
+    pts
 }
 
 /// Every face joined to `face` through shared vertices.
@@ -1597,7 +1736,7 @@ mod tests {
         Cursor {
             origin: [point[0], point[1], 10.0],
             dir: [0.0, 0.0, -1.0],
-            hit: Some(Hit { point, plane: Plane::ground(), face: None, line: None, snap }),
+            hit: Some(Hit { point, plane: Plane::ground(), face: None, line: None, instance: None, snap }),
         }
     }
 
@@ -1647,7 +1786,7 @@ mod tests {
         let c = Cursor {
             origin: [1.0, 1.0, 10.0],
             dir: [0.0, 0.0, -1.0],
-            hit: Some(Hit { point: [1.0, 1.0, 2.0], plane: Plane::from_point_normal([1.0, 1.0, 2.0], [0.0, 0.0, 1.0]).unwrap(), face: Some(top), line: None, snap: Snap::OnFace }),
+            hit: Some(Hit { point: [1.0, 1.0, 2.0], plane: Plane::from_point_normal([1.0, 1.0, 2.0], [0.0, 0.0, 1.0]).unwrap(), face: Some(top), line: None, instance: None, snap: Snap::OnFace }),
         };
         (m, c)
     }
@@ -1661,7 +1800,7 @@ mod tests {
     fn triple_click_selects_the_whole_box_and_move_carries_it() {
         let (mut m, top) = box_model();
         let mut t = Tools::default();
-        t.select(&m, top.hit.unwrap().face, false, false, true);
+        t.select(&m, top.hit.unwrap().face, None, false, false, true);
         assert_eq!(t.selected.len(), 6, "every face of the box");
         t.set_tool(Tool::Move);
         t.click(&mut m, &top).unwrap();
@@ -1701,7 +1840,7 @@ mod tests {
     fn rotate_by_typed_degrees() {
         let (mut m, top) = box_model();
         let mut t = Tools::default();
-        t.select(&m, top.hit.unwrap().face, false, false, true);
+        t.select(&m, top.hit.unwrap().face, None, false, false, true);
         t.set_tool(Tool::Rotate);
         // centre at the origin corner on the ground, start along +X
         t.click(&mut m, &ground_hit([0.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
@@ -1725,7 +1864,7 @@ mod tests {
         t.select_all(&m);
         t.set_tool(Tool::Scale);
         // grip the top corner at (2,2,2): the anchor is the corner at the origin
-        let grip = Cursor { origin: [2.0, 2.0, 10.0], dir: [0.0, 0.0, -1.0], hit: Some(Hit { point: [2.0, 2.0, 2.0], plane: Plane::ground(), face: None, line: None, snap: Snap::Endpoint }) };
+        let grip = Cursor { origin: [2.0, 2.0, 10.0], dir: [0.0, 0.0, -1.0], hit: Some(Hit { point: [2.0, 2.0, 2.0], plane: Plane::ground(), face: None, line: None, instance: None, snap: Snap::Endpoint }) };
         t.click(&mut m, &grip).unwrap();
         t.type_entry(&mut m, "1.5").unwrap();
         assert_eq!(bounds(&m), ([0.0; 3], [3.0, 3.0, 3.0]));
@@ -1739,14 +1878,14 @@ mod tests {
         t.hover(&at(3.0, 4.0));
         assert_eq!(t.measurement(), ("Length", "5 m".into()));
         t.type_entry(&mut m, "10").unwrap();
-        assert_eq!(t.guides.len(), 2);
-        match t.guides[1] {
+        assert_eq!(m.notes().guides.len(), 2);
+        match m.notes().guides[1] {
             Guide::Point(p) => assert!((p[0] - 6.0).abs() < 1e-5 && (p[1] - 8.0).abs() < 1e-5),
             g => panic!("{g:?}"),
         }
         assert_eq!(m.mesh().face_count(), 0, "guides are not geometry");
-        t.delete_guides();
-        assert!(t.guides.is_empty());
+        m.edit_notes(|n| n.guides.clear());
+        assert!(m.notes().guides.is_empty());
     }
 
     #[test]
@@ -1755,7 +1894,7 @@ mod tests {
         t.click(&mut m, &at(0.0, 0.0)).unwrap();
         t.click(&mut m, &at(1.0, 0.0)).unwrap();
         t.type_entry(&mut m, "30").unwrap();
-        match t.guides[0] {
+        match m.notes().guides[0] {
             Guide::Line(p, d) => {
                 assert_eq!(p, [0.0; 3]);
                 assert!((d[0] - 30f32.to_radians().cos()).abs() < 1e-5 && (d[1] - 0.5).abs() < 1e-5);
@@ -1826,7 +1965,7 @@ mod tests {
         // Pull it into an L-shaped solid of area 3 x height 2.
         let (mut p, _) = with(Tool::PushPull);
         let down = Cursor { origin: [0.5, 0.5, 10.0], dir: [0.0, 0.0, -1.0], hit: Some(Hit {
-            point: [0.5, 0.5, 0.0], plane: Plane::ground(), face: Some(0), line: None, snap: Snap::OnFace,
+            point: [0.5, 0.5, 0.0], plane: Plane::ground(), face: Some(0), line: None, instance: None, snap: Snap::OnFace,
         }) };
         p.click(&mut m, &down).unwrap();
         p.type_entry(&mut m, "2").unwrap();
@@ -1903,7 +2042,7 @@ mod tests {
         m.add_rectangle([0.0; 3], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
         let (mut t, _) = with(Tool::PushPull);
         let face_hit = Cursor { origin: [1.0, -10.0, 0.0], dir: [0.0, 1.0, 0.0], hit: Some(Hit {
-            point: [1.0, 1.0, 0.0], plane: Plane::ground(), face: Some(0), line: None, snap: Snap::OnFace,
+            point: [1.0, 1.0, 0.0], plane: Plane::ground(), face: Some(0), line: None, instance: None, snap: Snap::OnFace,
         }) };
         t.click(&mut m, &face_hit).unwrap();
         // A horizontal ray at height 3 seen from the side sets distance 3.
@@ -2038,12 +2177,12 @@ mod tests {
         let mut t = Tools::default();
         t.set_tool(Tool::SectionPlane);
         t.click(&mut m, &top).unwrap();
-        let (o, n) = t.section.unwrap();
+        let (o, n) = { let s = m.notes().section.unwrap(); (s.point, s.normal) };
         assert_eq!(n, [0.0, 0.0, 1.0], "it cuts away what is above the top");
         assert!((o[2] - 2.0).abs() < 1e-6);
         t.type_entry(&mut m, "0.5").unwrap();
-        assert!((t.section.unwrap().0[2] - 1.5).abs() < 1e-6, "half a metre down into the box");
-        assert_eq!(t.section_outline(1.0).len(), 5);
+        assert!((m.notes().section.unwrap().point[2] - 1.5).abs() < 1e-6, "half a metre down into the box");
+        assert_eq!(t.section_outline(&m, 1.0).len(), 5);
         assert_eq!(m.mesh().face_count(), 6, "the model is not changed");
     }
 
@@ -2054,12 +2193,96 @@ mod tests {
         t.click(&mut m, &ground_hit([3.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
         // placed 1 m out to the side (the mouse a little along the line too: only the square part counts)
         t.click(&mut m, &at(2.0, -1.0)).unwrap();
-        assert_eq!(t.dims.len(), 1);
-        assert_eq!(t.dims[0].2, [0.0, -1.0, 0.0]);
-        let labels = t.dim_labels();
+        assert_eq!(m.notes().dims.len(), 1);
+        assert_eq!(m.notes().dims[0].offset, [0.0, -1.0, 0.0]);
+        let labels = t.dim_labels(&m);
         assert_eq!(labels[0], ([1.5, -1.0, 0.0], "3 m".to_string()));
         t.units = Units::Millimetres;
-        assert_eq!(t.dim_labels()[0].1, "3000 mm", "it reads in the units shown");
+        assert_eq!(t.dim_labels(&m)[0].1, "3000 mm", "it reads in the units shown");
         assert_eq!(m.mesh().face_count() + m.mesh().lines.len(), 0, "not geometry");
+    }
+
+    /// The 2 m box of `box_model`, made into a component and selected.
+    fn grouped_box() -> (Tools, Model) {
+        let (mut m, top) = box_model();
+        let mut t = Tools::default();
+        t.select(&m, top.hit.unwrap().face, None, false, false, true);
+        let g = m.make_group(&t.selected.clone(), &[], true).unwrap();
+        t.model_changed();
+        t.instances = vec![g];
+        (t, m)
+    }
+
+    #[test]
+    fn move_carries_a_group_whole() {
+        let (mut t, mut m) = grouped_box();
+        t.set_tool(Tool::Move);
+        t.click(&mut m, &ground_hit([0.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        t.hover(&ground_hit([0.0, 5.0, 0.0], Snap::Endpoint));
+        let (ids, xf, copy) = t.preview_instances().unwrap();
+        assert_eq!((ids, xf.origin(), copy), (vec![0], [0.0, 5.0, 0.0], false));
+        t.click(&mut m, &ground_hit([0.0, 5.0, 0.0], Snap::Endpoint)).unwrap();
+        let (lo, hi) = m.flatten().bounds().unwrap();
+        assert_eq!((lo[1], hi[1]), (5.0, 7.0));
+        assert_eq!(t.instances, vec![0], "it stays selected");
+    }
+
+    #[test]
+    fn ctrl_move_copies_then_x4_makes_an_array() {
+        let (mut t, mut m) = grouped_box();
+        t.set_tool(Tool::Move);
+        t.click(&mut m, &ground_hit([0.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        t.copy = true;
+        t.click(&mut m, &ground_hit([3.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        assert_eq!(m.instances().len(), 2);
+        assert_eq!(t.instances, vec![1], "the copy is selected");
+        assert!(t.can_array());
+        t.type_entry(&mut m, "x4").unwrap();
+        assert_eq!(m.instances().len(), 5, "the original and four copies, as SketchUp counts x4");
+        let (_, hi) = m.flatten().bounds().unwrap();
+        assert!((hi[0] - 14.0).abs() < 1e-4, "{hi:?}");
+        m.undo();
+        assert_eq!(m.instances().len(), 2, "the array is one undo step");
+    }
+
+    #[test]
+    fn divide_puts_copies_between() {
+        let (mut t, mut m) = grouped_box();
+        t.set_tool(Tool::Move);
+        t.click(&mut m, &ground_hit([0.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        t.copy = true;
+        t.click(&mut m, &ground_hit([9.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        t.type_entry(&mut m, "/3").unwrap();
+        let mut xs: Vec<f32> = m.instances().iter().map(|i| i.xf.origin()[0]).collect();
+        xs.sort_by(f32::total_cmp);
+        assert_eq!(xs, vec![0.0, 3.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn copying_loose_faces_with_ctrl() {
+        let mut m = Model::new();
+        let f = m.add_rectangle([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+        let mut t = Tools::default();
+        t.selected = vec![f];
+        t.set_tool(Tool::Move);
+        t.click(&mut m, &ground_hit([0.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        t.copy = true;
+        t.hover(&ground_hit([2.0, 0.0, 0.0], Snap::Endpoint));
+        assert_eq!(t.preview_mesh(&m).unwrap().face_count(), 2, "the copy is shown beside the original");
+        t.click(&mut m, &ground_hit([2.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        assert_eq!(m.mesh().face_count(), 2);
+        assert_eq!(t.selected, vec![1]);
+    }
+
+    #[test]
+    fn a_group_is_picked_whole_and_erased() {
+        let (mut t, mut m) = grouped_box();
+        t.model_changed();
+        let on_group = Cursor { hit: Some(Hit { point: [1.0, 1.0, 2.0], plane: Plane::ground(), face: None, line: None, instance: Some(0), snap: Snap::OnFace }), ..ground_hit([1.0, 1.0, 2.0], Snap::OnFace) };
+        t.click(&mut m, &on_group).unwrap();
+        assert_eq!((t.selected.len(), t.instances.clone()), (0, vec![0]));
+        t.set_tool(Tool::Eraser);
+        t.click(&mut m, &on_group).unwrap();
+        assert!(m.instances().is_empty());
     }
 }

@@ -452,6 +452,7 @@ pub fn name(icon: Icon) -> String {
         Icon::Parallel => "Parallel projection".into(),
         Icon::Style(s) => s.label().into(),
         Icon::BackEdges => "Back Edges".into(),
+        Icon::Planned(Planned::MakeComponent) => "Make Component (G)".into(),
         Icon::Planned(pl) => format!("{} (not built yet)", pl.label()),
     }
 }

@@ -96,11 +96,13 @@ pub struct Style {
 }
 
 /// Flat-shaded triangle list: every face gets its own vertices and normal.
-fn face_vertices(mesh: &Mesh, selected: &[usize], flagged: &[usize]) -> Vec<Vertex> {
+fn face_vertices(mesh: &Mesh, selected: &[usize], flagged: &[usize], faded_from: usize) -> Vec<Vertex> {
     let mut out = Vec::new();
     for (fi, face) in mesh.faces.iter().enumerate() {
         let normal = newell(mesh, face);
-        let highlight = if selected.binary_search(&fi).is_ok() {
+        let highlight = if fi >= faded_from {
+            3.0
+        } else if selected.binary_search(&fi).is_ok() {
             1.0
         } else if flagged.binary_search(&fi).is_ok() {
             2.0
@@ -117,11 +119,17 @@ fn face_vertices(mesh: &Mesh, selected: &[usize], flagged: &[usize]) -> Vec<Vert
     out
 }
 
-fn edge_vertices(mesh: &Mesh) -> Vec<LineVertex> {
+/// Edges of what lies outside an open group or component: drawn faint.
+const FADED_EDGE: [f32; 4] = [0.62, 0.63, 0.66, 1.0];
+
+fn edge_vertices(mesh: &Mesh, faded_vertex: u32) -> Vec<LineVertex> {
     mesh.visible_edges()
         .into_iter()
-        .flat_map(|(a, b)| [a, b])
-        .map(|v| LineVertex { position: mesh.positions[v as usize], color: EDGE_COLOR })
+        .flat_map(|(a, b)| {
+            let color = if a.min(b) >= faded_vertex { FADED_EDGE } else { EDGE_COLOR };
+            [(a, color), (b, color)]
+        })
+        .map(|(v, color)| LineVertex { position: mesh.positions[v as usize], color })
         .collect()
 }
 
@@ -413,9 +421,11 @@ impl Renderer {
     }
 
     /// Uploads the model after an edit, a selection change or a preview step.
-    pub fn set_scene(&mut self, mesh: &Mesh, selected: &[usize], flagged: &[usize]) {
-        let faces = face_vertices(mesh, selected, flagged);
-        let edges = edge_vertices(mesh);
+    /// `faded`: faces from this number on, and edges between vertices from that number on, lie outside the open group
+    /// or component and are drawn faded.
+    pub fn set_scene(&mut self, mesh: &Mesh, selected: &[usize], flagged: &[usize], faded: (usize, u32)) {
+        let faces = face_vertices(mesh, selected, flagged, faded.0);
+        let edges = edge_vertices(mesh, faded.1);
         self.faces = (self.buffer(bytemuck::cast_slice(&faces)), faces.len() as u32);
         self.edges = (self.buffer(bytemuck::cast_slice(&edges)), edges.len() as u32);
     }
@@ -548,5 +558,19 @@ impl Renderer {
         }
         self.queue.submit(extra.into_iter().chain(Some(encoder.finish())));
         frame.present();
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    /// Every shader parses and validates as wgpu would at start (a broken one would only show as a crash at launch).
+    #[test]
+    fn the_shaders_compile() {
+        for (name, src) in [("shader.wgsl", include_str!("shader.wgsl")), ("lines.wgsl", include_str!("lines.wgsl"))] {
+            let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        }
     }
 }

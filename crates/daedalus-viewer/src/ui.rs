@@ -34,6 +34,14 @@ pub enum UiAction {
     PaintColor(Option<[u8; 3]>),
     SelectAll,
     DeleteGuides,
+    /// Groups and components (Edit menu): make one from the selection, open the selected one, close the open one,
+    /// explode it back into loose geometry, give a component copy its own definition.
+    MakeGroup,
+    MakeComponent,
+    EditGroup,
+    CloseGroup,
+    Explode,
+    MakeUnique,
     Undo,
     Redo,
     Inspect,
@@ -72,6 +80,12 @@ pub struct UiView<'a> {
     pub section: Option<bool>,
     /// Camera > Previous has a view to go back to.
     pub can_go_back: bool,
+    /// Something is selected (faces or groups).
+    pub has_selection: bool,
+    /// Exactly one group or component is selected: whether it is a component.
+    pub one_instance: Option<bool>,
+    /// The groups and components open for editing, from the top ("Group#1 › Component#2"), if any.
+    pub editing: Option<String>,
     pub status: &'a str,
     /// Last error or note, shown instead of the hint until the next action.
     pub message: Option<&'a str>,
@@ -129,6 +143,33 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     actions.push(UiAction::SelectAll);
                     ui.close_menu();
                 }
+                ui.separator();
+                if ui.add_enabled(v.editable && v.has_selection, egui::Button::new("Make Group")).clicked() {
+                    actions.push(UiAction::MakeGroup);
+                    ui.close_menu();
+                }
+                if ui.add_enabled(v.editable && v.has_selection, egui::Button::new("Make Component").shortcut_text("G")).clicked() {
+                    actions.push(UiAction::MakeComponent);
+                    ui.close_menu();
+                }
+                let kind = if v.one_instance == Some(true) { "Component" } else { "Group" };
+                if ui.add_enabled(v.one_instance.is_some(), egui::Button::new(format!("Edit {kind}"))).clicked() {
+                    actions.push(UiAction::EditGroup);
+                    ui.close_menu();
+                }
+                if ui.add_enabled(v.one_instance.is_some(), egui::Button::new("Explode")).clicked() {
+                    actions.push(UiAction::Explode);
+                    ui.close_menu();
+                }
+                if ui.add_enabled(v.one_instance == Some(true), egui::Button::new("Make Unique")).clicked() {
+                    actions.push(UiAction::MakeUnique);
+                    ui.close_menu();
+                }
+                if ui.add_enabled(v.editing.is_some(), egui::Button::new("Close Group/Component")).clicked() {
+                    actions.push(UiAction::CloseGroup);
+                    ui.close_menu();
+                }
+                ui.separator();
                 if ui.button("Delete Guides").clicked() {
                     actions.push(UiAction::DeleteGuides);
                     ui.close_menu();
@@ -295,6 +336,10 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
 
     egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
         ui.horizontal(|ui| {
+            if let Some(path) = &v.editing {
+                ui.label(RichText::new(format!("Editing {path}")).strong());
+                ui.separator();
+            }
             match v.message {
                 Some(m) => ui.label(RichText::new(m).color(Color32::from_rgb(180, 40, 30))),
                 None => ui.label(v.status),
@@ -498,7 +543,7 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
     [
         vec![
             t(Tool::Select),
-            P(Planned::MakeComponent),
+            Act(Icon::Planned(Planned::MakeComponent), UiAction::MakeComponent),
             t(Tool::PaintBucket),
             t(Tool::Eraser),
             t(Tool::Line),
@@ -569,7 +614,11 @@ fn toolbar_slot(ui: &mut egui::Ui, v: &UiView, slot: Slot, actions: &mut Vec<UiA
                 UiAction::BackEdges => v.style.back_edges,
                 _ => false,
             };
-            let enabled = action != UiAction::Previous || v.can_go_back;
+            let enabled = match action {
+                UiAction::Previous => v.can_go_back,
+                UiAction::MakeComponent => v.editable && v.has_selection,
+                _ => true,
+            };
             if icon_button(ui, icon, selected, enabled) {
                 actions.push(action);
             }

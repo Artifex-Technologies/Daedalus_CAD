@@ -5,6 +5,7 @@ pub mod imprint;
 pub mod inspect;
 pub mod merge;
 pub mod mesh;
+pub mod scene;
 pub mod model;
 pub mod sheetmetal;
 pub mod sketch;

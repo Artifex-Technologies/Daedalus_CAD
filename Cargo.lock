@@ -569,6 +569,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "glam",
+ "naga",
  "pollster",
  "wgpu",
  "winit",

@@ -117,6 +117,113 @@ impl Mesh {
     pub fn triangles(&self) -> Vec<[u32; 3]> {
         self.faces.iter().flat_map(|f| triangulate(&self.positions, f)).collect()
     }
+
+    /// This mesh with every point sent through `xf`. A mirroring transform (negative determinant) turns the faces round, so
+    /// they still face outward.
+    pub fn transformed(&self, xf: &crate::scene::Xform) -> Mesh {
+        let mut m = self.clone();
+        for p in &mut m.positions {
+            *p = xf.apply(*p);
+        }
+        if xf.det() < 0.0 {
+            for f in &mut m.faces {
+                f.reverse();
+            }
+        }
+        m
+    }
+
+    /// Adds `other`'s vertices, faces, lines, seams and colours after this mesh's own (nothing is joined).
+    pub fn append(&mut self, other: &Mesh) {
+        let base = self.positions.len() as u32;
+        let faces_before = self.faces.len();
+        self.positions.extend_from_slice(&other.positions);
+        self.faces.extend(other.faces.iter().map(|f| f.iter().map(|v| v + base).collect()));
+        self.lines.extend(other.lines.iter().map(|l| l.map(|v| v + base)));
+        self.seams.extend(other.seams.iter().map(|l| l.map(|v| v + base)));
+        for (i, c) in other.colors.iter().enumerate() {
+            if c.is_some() {
+                self.set_color(faces_before + i, *c);
+            }
+        }
+    }
+
+    /// Like [`Mesh::append`], but a vertex of `other` within `tol` of one already here becomes that vertex, so the two
+    /// share their touching corners and edges.
+    pub fn append_welded(&mut self, other: &Mesh, tol: f32) {
+        let key = |p: [f32; 3]| p.map(|c| (c / tol).round() as i64);
+        let mut at: std::collections::HashMap<[i64; 3], u32> = std::collections::HashMap::new();
+        for (i, &p) in self.positions.iter().enumerate() {
+            at.entry(key(p)).or_insert(i as u32);
+        }
+        let map: Vec<u32> = other
+            .positions
+            .iter()
+            .map(|&p| match at.get(&key(p)) {
+                Some(&v) => v,
+                None => {
+                    let v = self.add_vertex(p);
+                    at.insert(key(p), v);
+                    v
+                }
+            })
+            .collect();
+        let faces_before = self.faces.len();
+        self.faces.extend(other.faces.iter().map(|f| f.iter().map(|&v| map[v as usize]).collect()));
+        self.lines.extend(other.lines.iter().map(|l| l.map(|v| map[v as usize])));
+        self.seams.extend(other.seams.iter().map(|l| l.map(|v| map[v as usize])));
+        for (i, c) in other.colors.iter().enumerate() {
+            if c.is_some() {
+                self.set_color(faces_before + i, *c);
+            }
+        }
+    }
+
+    /// Splits off `faces` (Make Group): returns (what is left, the faces taken). The faces taken keep their colours and
+    /// seams; an edge they share with a face left behind stays with that face too, so each side keeps a whole outline.
+    /// Both come back without unused vertices.
+    pub fn extract(&self, faces: &[usize]) -> (Mesh, Mesh) {
+        let take: std::collections::HashSet<usize> = faces.iter().copied().collect();
+        let mut rest = Mesh { positions: self.positions.clone(), lines: self.lines.clone(), seams: self.seams.clone(), ..Default::default() };
+        let mut part = Mesh { positions: self.positions.clone(), seams: self.seams.clone(), ..Default::default() };
+        for (i, f) in self.faces.iter().enumerate() {
+            let side = if take.contains(&i) { &mut part } else { &mut rest };
+            side.faces.push(f.clone());
+            let n = side.faces.len() - 1;
+            side.set_color(n, self.color_of(i));
+        }
+        for m in [&mut rest, &mut part] {
+            let edges: std::collections::HashSet<(u32, u32)> = m.edges().into_iter().collect();
+            m.seams.retain(|&[a, b]| edges.contains(&(a.min(b), a.max(b))));
+            m.compact();
+        }
+        (rest, part)
+    }
+
+    /// Drops vertices no face, line or seam uses, renumbering the rest in order.
+    pub fn compact(&mut self) {
+        let mut used = vec![false; self.positions.len()];
+        for v in self.faces.iter().flatten().chain(self.lines.iter().flatten()).chain(self.seams.iter().flatten()) {
+            used[*v as usize] = true;
+        }
+        let mut map = vec![u32::MAX; self.positions.len()];
+        let mut kept = Vec::new();
+        for (i, p) in self.positions.iter().enumerate() {
+            if used[i] {
+                map[i] = kept.len() as u32;
+                kept.push(*p);
+            }
+        }
+        self.positions = kept;
+        for f in &mut self.faces {
+            for v in f.iter_mut() {
+                *v = map[*v as usize];
+            }
+        }
+        for l in self.lines.iter_mut().chain(self.seams.iter_mut()) {
+            *l = l.map(|v| map[v as usize]);
+        }
+    }
 }
 
 #[cfg(test)]
