@@ -5,6 +5,8 @@ struct Uniforms {
     style: vec4<f32>,
     // Section Plane: xyz the normal of the side cut away, w the offset; all zero when there is none
     section: vec4<f32>,
+    // the eye (w = 1), or the direction toward it in parallel projection (w = 0)
+    eye: vec4<f32>,
 };
 
 // whether a world point lies on the side the section plane cuts away
@@ -44,6 +46,13 @@ fn vs_main(in: VertexIn) -> VertexOut {
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if (cut_away(in.world)) {
         discard;
+    }
+    // section fill: with a cut, the inside of a solid shows through it; its faces are seen from behind and drawn in a flat
+    // dark grey, so the cut reads as solid (not in X-ray)
+    let to_eye = select(u.eye.xyz, u.eye.xyz - in.world, u.eye.w > 0.5);
+    let sectioned = dot(u.section.xyz, u.section.xyz) > 0.5;
+    if (sectioned && dot(in.normal, to_eye) < 0.0 && (u.style.x < 1.5 || u.style.x > 2.5)) {
+        return vec4<f32>(0.24, 0.24, 0.27, 1.0);
     }
     // Two-sided lighting: SketchUp-style models are often viewed from the back.
     let d = abs(dot(normalize(in.normal), normalize(u.light.xyz)));

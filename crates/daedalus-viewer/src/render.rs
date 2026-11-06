@@ -43,6 +43,8 @@ struct Uniforms {
     style: [f32; 4],
     /// Section Plane: xyz the normal of the side cut away, w the plane's offset (cut where dot(p, n) > w); zero: no cut.
     section: [f32; 4],
+    /// The eye (w = 1), or in parallel projection the direction toward it (w = 0): which side of a face is seen.
+    eye: [f32; 4],
 }
 
 /// How faces are drawn, as SketchUp's Style toolbar offers.
@@ -446,6 +448,7 @@ impl Renderer {
     pub fn render(
         &mut self,
         view_proj: Mat4,
+        eye: [f32; 4],
         style: Style,
         line_width: f32,
         section: Option<([f32; 3], [f32; 3])>,
@@ -477,6 +480,7 @@ impl Renderer {
             light: [0.4, -0.6, 0.9, 0.0],
             style: [mode, self.config.width as f32, self.config.height as f32, line_width],
             section: section.map_or([0.0; 4], |(o, n)| [n[0], n[1], n[2], o[0] * n[0] + o[1] * n[1] + o[2] * n[2]]),
+            eye,
         };
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
         let guide_buffer = self.buffer(bytemuck::cast_slice(guides));

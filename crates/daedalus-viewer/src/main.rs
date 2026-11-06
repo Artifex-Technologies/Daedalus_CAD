@@ -98,6 +98,8 @@ struct State {
     label_edit: Option<(usize, String)>,
     /// The text box opens this frame (its words get selected).
     label_fresh: bool,
+    /// Where the section plane cuts the model (black lines), rebuilt with the display.
+    cut_lines: Vec<LineVertex>,
 }
 
 /// Something that replaces the document or ends the program, held while the person is asked about unsaved changes.
@@ -178,6 +180,7 @@ impl State {
             toolbar_left: settings::load("toolbar").as_deref() != Some("top"),
             label_edit: None,
             label_fresh: false,
+            cut_lines: Vec::new(),
         };
         s.refresh();
         s
@@ -361,6 +364,18 @@ impl State {
             self.faded_from = self.display.faces.len();
             self.faded_vertex = self.display.positions.len() as u32;
         }
+        // the section cut: black lines round it, a hair on the kept side so the cut does not hide them
+        self.cut_lines = match self.model.notes().section.filter(|s| s.active) {
+            Some(s) => {
+                let back = Vec3::from(s.normal) * -1e-4;
+                daedalus_core::section::cut_lines(&self.display, s.point, s.normal)
+                    .into_iter()
+                    .flat_map(|(a, b)| [Vec3::from(a) + back, Vec3::from(b) + back])
+                    .map(|p| LineVertex { position: p.into(), color: [0.0, 0.0, 0.0, 1.0] })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
         highlight.sort_unstable();
         self.gpu.set_scene(&self.display, &highlight, &self.flagged, (self.faded_from, self.faded_vertex));
         self.shown_highlight = highlight;
@@ -889,12 +904,18 @@ impl State {
                 settings::save("style", f.key());
             }
             UiAction::PaintColor(c) => self.tools.paint_color = c,
-            UiAction::SectionCuts => self.model.edit_notes(|n| {
-                if let Some(s) = n.section.as_mut() {
-                    s.active = !s.active;
-                }
-            }),
-            UiAction::DeleteSection => self.model.edit_notes(|n| n.section = None),
+            UiAction::SectionCuts => {
+                self.model.edit_notes(|n| {
+                    if let Some(s) = n.section.as_mut() {
+                        s.active = !s.active;
+                    }
+                });
+                self.refresh();
+            }
+            UiAction::DeleteSection => {
+                self.model.edit_notes(|n| n.section = None);
+                self.refresh();
+            }
             UiAction::DeleteDimensions => self.model.edit_notes(|n| n.dims.clear()),
             UiAction::MakeGroup => self.make_group(false),
             UiAction::MakeComponent => self.make_group(true),
@@ -1032,6 +1053,7 @@ impl State {
                 out.push(LineVertex { position: end, color });
             }
         }
+        out.extend_from_slice(&self.cut_lines);
         // text leaders, from the point to the text
         for l in &self.model.notes().labels {
             if l.point != l.at {
@@ -1252,7 +1274,14 @@ impl State {
         // edges about 1.5 points wide, like SketchUp's default
         let line_width = 1.4 * self.window.scale_factor() as f32;
         let section = self.model.notes().section.filter(|s| s.active).map(|s: Section| (s.point, s.normal));
-        self.gpu.render(self.camera.view_proj(w / h), self.style, line_width, section, &axes, &overlay, ui);
+        let eye = if self.camera.ortho {
+            let d = (self.camera.eye() - self.camera.target).normalize_or_zero();
+            [d.x, d.y, d.z, 0.0]
+        } else {
+            let e = self.camera.eye();
+            [e.x, e.y, e.z, 1.0]
+        };
+        self.gpu.render(self.camera.view_proj(w / h), eye, self.style, line_width, section, &axes, &overlay, ui);
 
         if out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay.is_zero()) {
             self.window.request_redraw();
