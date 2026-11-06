@@ -273,7 +273,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 ui.separator();
                 tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull, Tool::Offset, Tool::FollowMe], &mut actions);
                 ui.separator();
-                tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor, Tool::Dimensions, Tool::Text, Tool::Axes], &mut actions);
+                tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor, Tool::Dimensions, Tool::Text, Tool::Axes, Tool::Text3D], &mut actions);
                 if ui.button("Reset Axes").clicked() {
                     actions.push(UiAction::ResetAxes);
                     ui.close_menu();
@@ -551,14 +551,13 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, enabled: bool) -> 
 enum Slot {
     Tool(Tool),
     Act(Icon, UiAction),
-    Planned(Planned),
     Empty,
 }
 
 /// The toolbar, in groups. The first group is SketchUp's Large Tool Set in its order (pairs of two, left then right
 /// column), with tools still to come greyed out in their place; then the camera views and the face styles.
 fn toolbar_groups() -> [Vec<Slot>; 3] {
-    use Slot::{Act, Empty, Planned as P};
+    use Slot::{Act, Empty};
     let t = Slot::Tool;
     [
         vec![
@@ -587,7 +586,7 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
             t(Tool::Protractor),
             t(Tool::Text),
             t(Tool::Axes),
-            P(Planned::Text3D),
+            t(Tool::Text3D),
             t(Tool::Orbit),
             t(Tool::Pan),
             t(Tool::Zoom),
@@ -642,9 +641,6 @@ fn toolbar_slot(ui: &mut egui::Ui, v: &UiView, slot: Slot, actions: &mut Vec<UiA
             if icon_button(ui, icon, selected, enabled) {
                 actions.push(action);
             }
-        }
-        Slot::Planned(p) => {
-            icon_button(ui, Icon::Planned(p), false, false);
         }
         Slot::Empty => {
             ui.allocate_exact_size(egui::vec2(ICON, ICON), egui::Sense::hover());

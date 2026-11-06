@@ -35,6 +35,13 @@ Laid out like SketchUp: menus and toolbar on top, hints and the Measurements box
   Shapes are drawn on the face under the first click, or on the ground.
 - Camera menu: Top, Iso, Parallel Projection. Ctrl+Z / Ctrl+Y undo and redo.
 - `I` inspects the solid, Tools > Repair Solid repairs it (`F` is Offset, as in SketchUp). Imports with non-manifold topology open read-only until repaired.
+- Groups and components: select faces (a triple-click takes a whole object) and use Edit > Make Group, or Make Component
+  (`G`). Double-click one to edit inside it (the rest fades); click outside it or press Esc to close it. Copies of a
+  component change together; Edit > Make Unique separates one. Edit > Explode turns it back into loose geometry.
+- Move copies when Ctrl is tapped during the move; type `x5` right after for five copies in a row, or `/5` to divide the
+  distance.
+- Text: click what it points at, then where it goes, and type. 3D Text: type the words, height and depth, then click a face
+  or the ground. Axes: pick a new origin, red and green direction; Tools > Reset Axes.
 
 ## Solid inspector
 Checks whether a model is a valid solid (open borders, non-manifold edges, flipped or inverted
@@ -120,15 +127,20 @@ The choice is remembered (`~/.config/daedalus/settings.conf`). The model itself 
 
 ## Saving
 File > Save writes Daedalus's own `.daedalus` file: plain text (`v x y z` per vertex, `f` and vertex numbers per face) with
-a version on the first line, so it is readable, diffable and kept bit-exact. Open, Save As, Import (STL, OBJ, DXF, DAE) and
+a version on the first line, so it is readable, diffable and kept bit-exact. It also holds lines, colours, groups and
+components, guides, dimensions, text, the section plane and the drawing axes. Exporting to another format puts every group
+in place as plain geometry. Open, Save As, Import (STL, OBJ, DXF, DAE) and
 Export use a file browser built into the window. The title shows a dot while there are unsaved changes, and New, Open,
 Import or closing the window asks before throwing them away.
 
 ## Next
-Imprinting (a shape drawn on a face splits it instead of overlapping it), vertex welding so shapes that touch share edges,
-arcs, and Move/Rotate/Offset.
+Solid Tools (union, subtract, intersect on groups), then the Sandbox (terrain) tools.
 
 ## License
 
 MPL-2.0 (see `LICENSE`), like Labyrinth OS's other from-scratch projects. Daedalus is written independently; no source from other
 modelers is used.
+
+3D Text draws its letters from Ubuntu Light, the font the egui toolkit already carries (via `epaint_default_fonts`), under
+the Ubuntu Font Licence 1.0, which allows it to be embedded and shipped with a program; its outlines are read with
+`ttf-parser` (MIT/Apache-2.0).

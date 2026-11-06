@@ -43,10 +43,11 @@ pub enum Tool {
     Walk,
     Text,
     Axes,
+    Text3D,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 32] = [
+    pub const ALL: [Tool; 33] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -79,6 +80,7 @@ impl Tool {
         Tool::Walk,
         Tool::Text,
         Tool::Axes,
+        Tool::Text3D,
     ];
 
     pub fn label(self) -> &'static str {
@@ -115,6 +117,7 @@ impl Tool {
             Tool::Walk => "Walk",
             Tool::Text => "Text",
             Tool::Axes => "Axes",
+            Tool::Text3D => "3D Text",
         }
     }
 
@@ -152,7 +155,8 @@ impl Tool {
             | Tool::LookAround
             | Tool::Walk
             | Tool::Text
-            | Tool::Axes => None,
+            | Tool::Axes
+            | Tool::Text3D => None,
         }
     }
 
@@ -307,6 +311,9 @@ enum Op {
     Text { point: [f32; 3], text: String, cursor: Option<[f32; 3]> },
     /// Axes: the new origin, then the red direction (once set), then the green.
     Axes { origin: [f32; 3], red: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
+    /// 3D Text being placed: the words, how tall, how deep (None: flat), their outlines (for the preview), and where they
+    /// would go now (on the plane under the mouse).
+    Place3D { text: String, height: f32, depth: Option<f32>, letters: Vec<Vec<Vec<[f32; 2]>>>, at: Option<Plane> },
 }
 
 pub struct Tools {
@@ -482,6 +489,25 @@ impl Tools {
         Ok(())
     }
 
+    /// 3D Text: the words chosen in its window; the mouse now places them.
+    pub fn begin_text3d(&mut self, text: &str, height: f32, depth: Option<f32>) -> Result<(), String> {
+        if !(height > 0.0) {
+            return Err("the letters need a height".into());
+        }
+        let letters = crate::text3d::outlines(text, height).ok_or("the built-in font could not be read")?;
+        if letters.is_empty() {
+            return Err("there are no letters to make".into());
+        }
+        self.set_tool(Tool::Text3D);
+        self.op = Op::Place3D { text: text.to_string(), height, depth, letters, at: None };
+        Ok(())
+    }
+
+    /// Whether 3D Text is waiting for its words (the viewer shows its window).
+    pub fn wants_text3d(&self) -> bool {
+        self.tool == Tool::Text3D && matches!(self.op, Op::Idle)
+    }
+
     /// Whether `x5` or `/5` typed now would make an array of the last copy.
     pub fn can_array(&self) -> bool {
         self.last_copy.is_some() && matches!(self.op, Op::Idle)
@@ -641,7 +667,7 @@ impl Tools {
                 c.hit.map(|h| (h.point, h.snap)).or_else(|| on_plane(&Plane::from_point_normal(*point, scale(c.dir, -1.0))?, c))
             }
             Op::Push { .. } | Op::Scale { .. } | Op::Offset { .. } => None,
-            Op::Follow { .. } | Op::Dim { .. } => c.hit.map(|h| (h.point, h.snap)),
+            Op::Follow { .. } | Op::Dim { .. } | Op::Place3D { .. } => c.hit.map(|h| (h.point, h.snap)),
             Op::Idle => c.hit.map(|h| (h.point, h.snap)),
         }
     }
@@ -664,6 +690,7 @@ impl Tools {
             }
             Op::Tape { cursor, .. } | Op::Arc2 { cursor, .. } | Op::Arc3 { cursor, .. } | Op::Dim { cursor, .. } => *cursor = marker.map(|m| m.0),
             Op::Text { cursor, .. } | Op::Axes { cursor, .. } => *cursor = marker.map(|m| m.0),
+            Op::Place3D { at, .. } => *at = c.hit.map(|h| Plane { origin: marker.map_or(h.point, |m| m.0), ..h.plane }),
             Op::Free { points, .. } => {
                 // a new point once the mouse has moved a little way from the last
                 if let (Some((p, _)), Some(&last)) = (marker, points.last()) {
@@ -893,6 +920,17 @@ impl Tools {
                 (Some(st), _) => self.add_protractor_guide(model, &plane, center, st, angle),
                 (start, _) => self.op = Op::Protract { plane, center, start, angle },
             },
+            (Tool::Text3D, Op::Place3D { text, height, depth, letters, at }) => {
+                let Some(plane) = at else {
+                    self.op = Op::Place3D { text, height, depth, letters, at };
+                    return Err("click a face or the ground to place the text".into());
+                };
+                let mesh = crate::text3d::geometry(&text, height, depth, &plane)?;
+                let i = model.place_group(&mesh, false).map_err(|e| e.to_string())?;
+                self.set_tool(Tool::Select);
+                self.model_changed();
+                self.instances = vec![i];
+            }
             (Tool::Text, Op::Idle) => {
                 let h = c.hit.ok_or("click a point, edge or face for the text to point at")?;
                 self.op = Op::Text { point: h.point, text: self.default_text(model, &h), cursor: None };
@@ -1230,6 +1268,12 @@ impl Tools {
         let mut out = Vec::new();
         match &self.op {
             Op::Text { point, cursor: Some(c), .. } => out.push((*point, *c, RUBBER_BAND)),
+            Op::Place3D { letters, at: Some(plane), .. } => {
+                for ring in letters.iter().flatten() {
+                    let r: Vec<[f32; 3]> = ring.iter().map(|p| plane.to_world(p[0], p[1])).collect();
+                    ring_lines(&r, &mut out);
+                }
+            }
             Op::Axes { origin, red, cursor } => {
                 let reach = cursor.map_or(1.0, |c| dist(*origin, c)).max(0.2);
                 match (red, cursor) {
@@ -1393,6 +1437,8 @@ impl Tools {
             (Tool::Axes, Op::Idle) => "Pick the new origin of the drawing axes. Tools > Reset Axes puts them back.",
             (Tool::Axes, Op::Axes { red: None, .. }) => "Pick the direction of the red axis.",
             (Tool::Axes, _) => "Pick the direction of the green axis (blue follows).",
+            (Tool::Text3D, Op::Idle) => "Type the words in the 3D Text window, then Place.",
+            (Tool::Text3D, _) => "Click a face or the ground to place the text. It lies on the face and becomes a group.",
             (Tool::PositionCamera, _) => "Click where to stand. The eye goes 1.68 m above it.",
             (Tool::LookAround, _) => "Drag to look around. The eye stays where it is.",
             (Tool::Walk, _) => "Drag up or down to walk, left or right to turn. Arrow keys work too.",
@@ -1434,7 +1480,7 @@ impl Tools {
             ),
             Op::Arc2 { a, b: None, cursor, .. } => ("Length", cursor.map(|c| fmt(dist(*a, c), self.units)).unwrap_or_default()),
             Op::Arc2 { plane, a, b: Some(b), cursor } => ("Bulge", cursor.map(|c| fmt(bulge_toward(plane, *a, *b, c).abs(), self.units)).unwrap_or_default()),
-            Op::Arc3 { .. } | Op::Free { .. } | Op::Follow { .. } | Op::Text { .. } | Op::Axes { .. } => ("Measurements", String::new()),
+            Op::Arc3 { .. } | Op::Free { .. } | Op::Follow { .. } | Op::Text { .. } | Op::Axes { .. } | Op::Place3D { .. } => ("Measurements", String::new()),
             Op::Dim { a, b, cursor } => ("Length", b.or(*cursor).map(|b| fmt(dist(*a, b), self.units)).unwrap_or_default()),
             Op::Offset { d, .. } => ("Distance", fmt(d.abs(), self.units)),
             Op::Pie { center, start: None, cursor, .. } => ("Radius", cursor.map(|c| fmt(dist(*center, c), self.units)).unwrap_or_default()),
@@ -2407,6 +2453,24 @@ mod tests {
         t.click(&mut m, &ground_hit([2.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
         t.click(&mut m, &ground_hit([3.0, 0.0, 0.0], Snap::Ground)).unwrap();
         assert_eq!(m.notes().labels[1].text, "(2 m, 0 m, 0 m)");
+    }
+
+    #[test]
+    fn three_d_text_is_placed_as_a_solid_group() {
+        let mut m = Model::new();
+        let mut t = Tools::default();
+        t.begin_text3d("Hi", 0.3, Some(0.05)).unwrap();
+        t.hover(&ground_hit([1.0, 1.0, 0.0], Snap::Ground));
+        assert!(!t.preview_lines().is_empty(), "the outlines follow the mouse");
+        t.click(&mut m, &ground_hit([1.0, 1.0, 0.0], Snap::Ground)).unwrap();
+        assert_eq!(m.instances().len(), 1);
+        assert_eq!(t.instances, vec![0]);
+        let flat = m.flatten();
+        let (lo, hi) = flat.bounds().unwrap();
+        assert!((lo[2] - 0.0).abs() < 1e-5 && (hi[2] - 0.05).abs() < 1e-5, "{lo:?} {hi:?}");
+        assert!(lo[0] >= 0.99 && lo[1] >= 0.99, "it starts at the point clicked");
+        assert!(daedalus_core::HalfEdgeMesh::from_mesh(&flat).unwrap().is_closed());
+        assert!(t.begin_text3d("   ", 0.3, None).is_err());
     }
 
     #[test]

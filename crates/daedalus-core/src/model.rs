@@ -223,6 +223,28 @@ impl Model {
         })
     }
 
+    /// Adds `mesh` (in model coordinates) as a new group or component in the open context, its origin at the lowest
+    /// corner (3D Text). One undo step; returns the new instance's index.
+    pub fn place_group(&mut self, mesh: &Mesh, component: bool) -> Result<usize, TopologyError> {
+        if mesh.faces.is_empty() {
+            return Err(nothing());
+        }
+        HalfEdgeMesh::from_mesh(mesh)?;
+        self.edit_scene(|_, s, open| {
+            let w = s.world(open);
+            let back = w.inverse().ok_or(TopologyError::DegenerateNormal)?;
+            let (lo, _) = mesh.bounds().ok_or_else(nothing)?;
+            let xf = Xform::translation(back.apply(lo));
+            let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
+            let name = s.new_name(component);
+            s.defs.push(Definition { name, component, ctx: Context { mesh: mesh.transformed(&to_def), instances: Vec::new() } });
+            let def = s.defs.len() - 1;
+            let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
+            ctx.instances.push(Instance { def, xf });
+            Ok(ctx.instances.len() - 1)
+        })
+    }
+
     /// Explode: instance `i`'s geometry joins the open context's (welded where it touches, when that stays a valid
     /// surface), and its own instances become the context's.
     pub fn explode(&mut self, i: usize) -> Result<(), TopologyError> {

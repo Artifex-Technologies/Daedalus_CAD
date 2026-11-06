@@ -29,7 +29,7 @@ Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/c
   `tools.rs` is the GPU-free tool state machine (unit-tested); `render.rs` GPU; `ui.rs` egui chrome; `main.rs` events,
   snapping and the document (open, save, unsaved changes); `filedlg.rs` the built-in file browser (no GTK/Qt dialog);
   `icons.rs` the toolbar's vector icons (thin line art in the theme's text colour, a few orange accents; no image files; our own drawings: IngeTrazo's look was the reference, from a screenshot only); `settings.rs` units and toolbar side;
-  `frame.rs` the window's own frame on Linux (resize edges; the menu bar is the title bar, see below); `theme.rs` light or
+  `text3d.rs` 3D Text outlines; `frame.rs` the window's own frame on Linux (resize edges; the menu bar is the title bar, see below); `theme.rs` light or
   dark chrome from the desktop (XDG portal over zbus on Linux, winit on Windows)
 
 ## Conventions
@@ -52,7 +52,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 118 tests pass (2026-11-06). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 144 tests pass (2026-11-06). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -98,11 +98,20 @@ the current state is:
   2 Point Arc (A), 3 Point Arc, Freehand, Offset (F, inward only; Repair moved to the Tools menu), Follow Me (open and
   closed paths, mitred), Paint Bucket (B; `Mesh::colors`, saved as `c face r g b`; Alt+click samples), Monochrome style,
   Section Plane (shader clip, not saved), Dimensions (not saved).
+- Phase 3 done (2026-11-06, `core/src/scene.rs`): groups and components. A `Scene` is the top `Context` (mesh plus
+  instances), `Definition`s (each a context) and `Notes` (guides, dimensions, text, section, axes). `Model` holds the scene and
+  the geometry being edited (`mesh()`, in model coordinates even inside a group: `open`/`close` swap it in and out), with
+  whole-scene undo snapshots. Make Group / Make Component (G), double-click to edit (rest faded), Explode, Make Unique,
+  nesting; Move/Rotate/Scale take instances (`Model::transform_all`), Ctrl during Move copies, `x5` / `/5` arrays
+  (`copy_all`). Text tool (leader, default area/position/name, retype by double-click), Axes tool (ground and axis locks
+  follow them; Reset Axes), 3D Text (`viewer/src/text3d.rs`: Ubuntu Light from `epaint_default_fonts`, ttf-parser; letters
+  to faces with holes and extruded in `core/src/profile.rs`; placed as a group), section fill (back faces through the cut,
+  shader) and cut lines (`core/src/section.rs`). `.daedalus` version 3: `def`/`end`, `i`, `guide`, `dim`, `text`,
+  `section`, `axes`. Shaders are validated in a test (naga). Not seen on screen yet.
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").
-- Next milestones: imprint and weld, arcs, Move/Rotate/Offset, groups/components,
-  constraints, sheet metal inside the model, STEP export for bent parts.
+- Next milestones: Solid Tools (phase 4), Sandbox (phase 5), constraints, sheet metal inside the model, STEP export.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
   constraint solver, reuse CADCraft crates or reimplement.
 

@@ -4,6 +4,7 @@ mod frame;
 mod theme;
 mod icons;
 mod settings;
+mod text3d;
 mod render;
 mod tools;
 mod ui;
@@ -100,6 +101,17 @@ struct State {
     label_fresh: bool,
     /// Where the section plane cuts the model (black lines), rebuilt with the display.
     cut_lines: Vec<LineVertex>,
+    /// The 3D Text window's fields (kept for next time).
+    text3d: Text3dForm,
+}
+
+/// What the 3D Text window asks: the words, the letters' height, and whether they are extruded and how far.
+#[derive(Debug, Clone)]
+struct Text3dForm {
+    text: String,
+    height: String,
+    extruded: bool,
+    depth: String,
 }
 
 /// Something that replaces the document or ends the program, held while the person is asked about unsaved changes.
@@ -181,6 +193,12 @@ impl State {
             label_edit: None,
             label_fresh: false,
             cut_lines: Vec::new(),
+            text3d: Text3dForm {
+                text: "Enter text".into(),
+                height: daedalus_core::units::format(0.3, settings::load_units()),
+                extruded: true,
+                depth: daedalus_core::units::format(0.05, settings::load_units()),
+            },
         };
         s.refresh();
         s
@@ -1194,6 +1212,9 @@ impl State {
             .and_then(|l| self.camera.project(Vec3::from(l.at), w, h))
             .map(|(x, y)| egui::pos2(x / ppp, y / ppp));
         let mut label_done = false;
+        // 3D Text: its window while it waits for the words
+        let mut form = self.tools.wants_text3d().then(|| self.text3d.clone());
+        let mut form_answer: Option<bool> = None;
         let label_fresh = std::mem::take(&mut self.label_fresh);
         let mut dialog_out = None;
         let ask = self.ask;
@@ -1221,6 +1242,28 @@ impl State {
             }
             if let Some(d) = dialog.as_mut() {
                 dialog_out = d.show(ctx).map(|o| (d.purpose, o));
+            }
+            if let Some(f) = form.as_mut() {
+                egui::Window::new("3D Text").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                    ui.add(egui::TextEdit::multiline(&mut f.text).desired_rows(3).desired_width(260.0));
+                    egui::Grid::new("text3d-grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Height");
+                        ui.add(egui::TextEdit::singleline(&mut f.height).desired_width(120.0));
+                        ui.end_row();
+                        ui.checkbox(&mut f.extruded, "Extruded");
+                        ui.add_enabled(f.extruded, egui::TextEdit::singleline(&mut f.depth).desired_width(120.0));
+                        ui.end_row();
+                    });
+                    ui.label(egui::RichText::new("Ubuntu Light. Lengths in any unit (300mm, 1').").small());
+                    ui.horizontal(|ui| {
+                        if ui.button("Place").clicked() {
+                            form_answer = Some(true);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            form_answer = Some(false);
+                        }
+                    });
+                });
             }
             // typing into text: a box where the text stands; Enter or a click elsewhere finishes
             if let (Some((_, text)), Some(pos)) = (label_edit.as_mut(), label_pos) {
@@ -1263,6 +1306,25 @@ impl State {
         self.label_edit = label_edit;
         if label_done {
             self.finish_label();
+        }
+        if let Some(f) = form {
+            self.text3d = f;
+            match form_answer {
+                Some(true) => {
+                    let units = self.tools.units;
+                    let f = &self.text3d;
+                    let height = daedalus_core::units::parse(&f.height, units);
+                    let depth = if f.extruded { daedalus_core::units::parse(&f.depth, units).map(Some) } else { Some(None) };
+                    let r = match (height, depth) {
+                        (Some(h), Some(d)) => self.tools.begin_text3d(&f.text.clone(), h, d),
+                        _ => Err("cannot read the height or the depth".into()),
+                    };
+                    self.message = r.err();
+                }
+                Some(false) => self.set_tool(Tool::Select),
+                None => {}
+            }
+            self.window.request_redraw();
         }
         self.egui_state.handle_platform_output(&self.window, out.platform_output);
         let ui = UiFrame {

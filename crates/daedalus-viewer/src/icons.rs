@@ -49,7 +49,6 @@ const ACCENT: Color32 = Color32::from_rgb(232, 120, 40);
 
 /// Draws `icon` into `rect` (a square) in `ink`. `dim` greys it out (a tool that cannot be used now, or not built yet).
 pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool, ink: Color32) {
-    let dim = dim || matches!(icon, Icon::Planned(Planned::Text3D));
     let fade = |c: Color32| if dim { c.gamma_multiply(0.35) } else { c };
     let d = Draw { p, rect, w: rect.width(), ink: fade(ink), accent: fade(ACCENT), dim };
     d.icon(icon);
@@ -361,6 +360,7 @@ impl Draw<'_> {
             }
             Icon::Tool(Tool::Text) => self.planned(Planned::Text),
             Icon::Tool(Tool::Axes) => self.planned(Planned::Axes),
+            Icon::Tool(Tool::Text3D) => self.planned(Planned::Text3D),
             Icon::Tool(Tool::Walk) => {
                 // two footprints: a sole and a heel each
                 for (x, y) in [(0.3, 0.42), (0.68, 0.22)] {
