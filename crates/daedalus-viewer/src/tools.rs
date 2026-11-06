@@ -4,7 +4,7 @@
 
 use daedalus_core::units::{self, Units};
 use daedalus_core::sketch::{self, Plane, DEFAULT_ARC_SEGMENTS, DEFAULT_CIRCLE_SEGMENTS};
-use daedalus_core::scene::{Dimension, Section, Xform};
+use daedalus_core::scene::{Axes, Dimension, Label, Section, Xform};
 use daedalus_core::{HalfEdgeMesh, Model};
 
 pub use daedalus_core::scene::Guide;
@@ -41,10 +41,12 @@ pub enum Tool {
     PositionCamera,
     LookAround,
     Walk,
+    Text,
+    Axes,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 30] = [
+    pub const ALL: [Tool; 32] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -75,6 +77,8 @@ impl Tool {
         Tool::PositionCamera,
         Tool::LookAround,
         Tool::Walk,
+        Tool::Text,
+        Tool::Axes,
     ];
 
     pub fn label(self) -> &'static str {
@@ -109,6 +113,8 @@ impl Tool {
             Tool::PositionCamera => "Position Camera",
             Tool::LookAround => "Look Around",
             Tool::Walk => "Walk",
+            Tool::Text => "Text",
+            Tool::Axes => "Axes",
         }
     }
 
@@ -144,7 +150,9 @@ impl Tool {
             | Tool::ZoomWindow
             | Tool::PositionCamera
             | Tool::LookAround
-            | Tool::Walk => None,
+            | Tool::Walk
+            | Tool::Text
+            | Tool::Axes => None,
         }
     }
 
@@ -154,7 +162,8 @@ impl Tool {
 
     /// Tools that create or change geometry (disabled on read-only imports).
     pub fn edits(self) -> bool {
-        !self.navigates() && !matches!(self, Tool::Select | Tool::TapeMeasure | Tool::Protractor | Tool::PositionCamera | Tool::SectionPlane | Tool::Dimensions)
+        !self.navigates()
+            && !matches!(self, Tool::Select | Tool::TapeMeasure | Tool::Protractor | Tool::PositionCamera | Tool::SectionPlane | Tool::Dimensions | Tool::Text | Tool::Axes)
     }
 
     /// Tools where a left-drag moves the camera instead of picking.
@@ -294,6 +303,10 @@ enum Op {
     Tape { start: [f32; 3], cursor: Option<[f32; 3]> },
     /// Protractor: a guide through `center` turned `angle` radians from the `start` direction (once set).
     Protract { plane: Plane, center: [f32; 3], start: Option<[f32; 3]>, angle: f32 },
+    /// Text: the point it is about and the words it starts with; next, where it is shown.
+    Text { point: [f32; 3], text: String, cursor: Option<[f32; 3]> },
+    /// Axes: the new origin, then the red direction (once set), then the green.
+    Axes { origin: [f32; 3], red: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
 }
 
 pub struct Tools {
@@ -316,6 +329,10 @@ pub struct Tools {
     last_copy: Option<(Target, [f32; 3])>,
     hover_face: Option<usize>,
     hover_instance: Option<usize>,
+    /// The drawing axes (a copy of the model's, kept up to date by the viewer): axis locks follow them.
+    pub axes: Axes,
+    /// Text just placed (its number in the notes): the viewer opens it for typing.
+    pub edit_label: Option<usize>,
     op: Op,
     /// Last push/pull (original face, distance), so a value typed right after
     /// it re-does it at that distance, as in SketchUp.
@@ -337,6 +354,8 @@ impl Default for Tools {
             last_copy: None,
             hover_face: None,
             hover_instance: None,
+            axes: Axes::default(),
+            edit_label: None,
             op: Op::Idle,
             last_push: None,
         }
@@ -593,7 +612,7 @@ impl Tools {
                 if let Some(h) = c.hit.filter(|h| matches!(h.snap, Snap::Endpoint | Snap::Midpoint | Snap::OnGuide | Snap::Origin)) {
                     return Some((h.point, h.snap));
                 }
-                if let Some((p, a)) = ray_axis_lock(*last, c) {
+                if let Some((p, a)) = ray_axis_lock(*last, c, &self.axes.dirs) {
                     return Some((p, Snap::OnAxis(a)));
                 }
                 let (p, snap) = match c.hit {
@@ -602,7 +621,7 @@ impl Tools {
                 };
                 let level = Plane { origin: *last, ..Plane::from_point_normal(*last, plane.normal).unwrap_or(*plane) };
                 if dot(sub(p, *last), level.normal).abs() <= 1e-4 * (1.0 + len(p)) {
-                    let (q, axis) = axis_lock(&level, *last, p);
+                    let (q, axis) = axis_lock(&level, *last, p, &self.axes.dirs);
                     return Some((q, axis.map_or(snap, Snap::OnAxis)));
                 }
                 Some((p, snap))
@@ -610,12 +629,16 @@ impl Tools {
             Op::Rect { plane, .. } | Op::Round { plane, .. } | Op::RotRect { plane, .. } | Op::Pie { plane, .. } => on_plane(plane, c),
             Op::Arc2 { plane, .. } | Op::Arc3 { plane, .. } | Op::Free { plane, .. } => on_plane(plane, c),
             Op::Rotate { plane, .. } | Op::Protract { plane, .. } => on_plane(plane, c),
-            Op::Move { base, .. } | Op::Tape { start: base, .. } => {
+            Op::Move { base, .. } | Op::Tape { start: base, .. } | Op::Axes { origin: base, .. } => {
                 // a snap wins; else the mouse locks onto an axis through the start point when it is close to one
                 match c.hit {
                     Some(h) if matches!(h.snap, Snap::Endpoint | Snap::Midpoint | Snap::OnGuide) => Some((h.point, h.snap)),
-                    _ => ray_axis_lock(*base, c).map(|(p, a)| (p, Snap::OnAxis(a))).or(c.hit.map(|h| (h.point, h.snap))),
+                    _ => ray_axis_lock(*base, c, &self.axes.dirs).map(|(p, a)| (p, Snap::OnAxis(a))).or(c.hit.map(|h| (h.point, h.snap))),
                 }
+            }
+            Op::Text { point, .. } => {
+                // on what is under the mouse, else on a plane through the point facing the eye
+                c.hit.map(|h| (h.point, h.snap)).or_else(|| on_plane(&Plane::from_point_normal(*point, scale(c.dir, -1.0))?, c))
             }
             Op::Push { .. } | Op::Scale { .. } | Op::Offset { .. } => None,
             Op::Follow { .. } | Op::Dim { .. } => c.hit.map(|h| (h.point, h.snap)),
@@ -640,6 +663,7 @@ impl Tools {
                 *cursor = marker.map(|m| m.0)
             }
             Op::Tape { cursor, .. } | Op::Arc2 { cursor, .. } | Op::Arc3 { cursor, .. } | Op::Dim { cursor, .. } => *cursor = marker.map(|m| m.0),
+            Op::Text { cursor, .. } | Op::Axes { cursor, .. } => *cursor = marker.map(|m| m.0),
             Op::Free { points, .. } => {
                 // a new point once the mouse has moved a little way from the last
                 if let (Some((p, _)), Some(&last)) = (marker, points.last()) {
@@ -869,6 +893,40 @@ impl Tools {
                 (Some(st), _) => self.add_protractor_guide(model, &plane, center, st, angle),
                 (start, _) => self.op = Op::Protract { plane, center, start, angle },
             },
+            (Tool::Text, Op::Idle) => {
+                let h = c.hit.ok_or("click a point, edge or face for the text to point at")?;
+                self.op = Op::Text { point: h.point, text: self.default_text(model, &h), cursor: None };
+            }
+            (Tool::Text, Op::Text { point, text, cursor }) => {
+                let at = marker.map(|m| m.0).or(cursor).unwrap_or(point);
+                model.edit_notes(|n| n.labels.push(Label { point, at, text }));
+                self.edit_label = Some(model.notes().labels.len() - 1);
+            }
+            (Tool::Axes, Op::Idle) => {
+                if let Some((p, _)) = marker {
+                    self.op = Op::Axes { origin: p, red: None, cursor: None };
+                }
+            }
+            (Tool::Axes, Op::Axes { origin, red: None, cursor }) => match marker.and_then(|(p, _)| normalize(sub(p, origin))) {
+                Some(d) => self.op = Op::Axes { origin, red: Some(d), cursor: None },
+                None => self.op = Op::Axes { origin, red: None, cursor },
+            },
+            (Tool::Axes, Op::Axes { origin, red: Some(red), cursor }) => {
+                // green: the way to the click, square to red; blue makes a right-handed set
+                let to = marker.map(|m| sub(m.0, origin)).unwrap_or([0.0; 3]);
+                match normalize(sub(to, scale(red, dot(to, red)))) {
+                    Some(green) => {
+                        let blue = cross(red, green);
+                        model.edit_notes(|n| n.axes = Axes { origin, dirs: [red, green, blue] });
+                        self.axes = model.notes().axes;
+                        self.set_tool(Tool::Select);
+                    }
+                    None => {
+                        self.op = Op::Axes { origin, red: Some(red), cursor };
+                        return Err("pick the green direction away from the red axis".into());
+                    }
+                }
+            }
             // the Eraser takes a line under the mouse before the face behind it
             (Tool::Eraser, _) if c.hit.and_then(|h| h.line).is_some() => {
                 model.erase_line(c.hit.and_then(|h| h.line).expect("checked")).map_err(|e| e.to_string())?;
@@ -1171,6 +1229,24 @@ impl Tools {
     pub fn preview_lines(&self) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
         let mut out = Vec::new();
         match &self.op {
+            Op::Text { point, cursor: Some(c), .. } => out.push((*point, *c, RUBBER_BAND)),
+            Op::Axes { origin, red, cursor } => {
+                let reach = cursor.map_or(1.0, |c| dist(*origin, c)).max(0.2);
+                match (red, cursor) {
+                    (None, Some(c)) => out.push((*origin, *c, AXIS_COLORS[0])),
+                    (Some(r), c) => {
+                        out.push((*origin, add(*origin, scale(*r, reach)), AXIS_COLORS[0]));
+                        if let Some(c) = c {
+                            let to = sub(*c, *origin);
+                            if let Some(g) = normalize(sub(to, scale(*r, dot(to, *r)))) {
+                                out.push((*origin, add(*origin, scale(g, reach)), AXIS_COLORS[1]));
+                                out.push((*origin, add(*origin, scale(cross(*r, g), reach)), AXIS_COLORS[2]));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Op::Line { last, cursor: Some(c), axis, .. } => {
                 out.push((*last, *c, axis.map_or(RUBBER_BAND, |a| AXIS_COLORS[a as usize])));
             }
@@ -1312,6 +1388,11 @@ impl Tools {
             (Tool::Protractor, Op::Protract { start: None, .. }) => "Pick a point to measure the angle from.",
             (Tool::Protractor, _) => "Turn to the angle and click, or type degrees. Leaves a guide line.",
             (Tool::ZoomWindow, _) => "Drag a rectangle around what to zoom in on.",
+            (Tool::Text, Op::Idle) => "Click what the text points at (a face shows its area, a corner its position), or empty space.",
+            (Tool::Text, _) => "Click where the text goes. Then type the words and press Enter.",
+            (Tool::Axes, Op::Idle) => "Pick the new origin of the drawing axes. Tools > Reset Axes puts them back.",
+            (Tool::Axes, Op::Axes { red: None, .. }) => "Pick the direction of the red axis.",
+            (Tool::Axes, _) => "Pick the direction of the green axis (blue follows).",
             (Tool::PositionCamera, _) => "Click where to stand. The eye goes 1.68 m above it.",
             (Tool::LookAround, _) => "Drag to look around. The eye stays where it is.",
             (Tool::Walk, _) => "Drag up or down to walk, left or right to turn. Arrow keys work too.",
@@ -1353,7 +1434,7 @@ impl Tools {
             ),
             Op::Arc2 { a, b: None, cursor, .. } => ("Length", cursor.map(|c| fmt(dist(*a, c), self.units)).unwrap_or_default()),
             Op::Arc2 { plane, a, b: Some(b), cursor } => ("Bulge", cursor.map(|c| fmt(bulge_toward(plane, *a, *b, c).abs(), self.units)).unwrap_or_default()),
-            Op::Arc3 { .. } | Op::Free { .. } | Op::Follow { .. } => ("Measurements", String::new()),
+            Op::Arc3 { .. } | Op::Free { .. } | Op::Follow { .. } | Op::Text { .. } | Op::Axes { .. } => ("Measurements", String::new()),
             Op::Dim { a, b, cursor } => ("Length", b.or(*cursor).map(|b| fmt(dist(*a, b), self.units)).unwrap_or_default()),
             Op::Offset { d, .. } => ("Distance", fmt(d.abs(), self.units)),
             Op::Pie { center, start: None, cursor, .. } => ("Radius", cursor.map(|c| fmt(dist(*center, c), self.units)).unwrap_or_default()),
@@ -1376,6 +1457,23 @@ impl Tools {
                 _ => ("Measurements", String::new()),
             },
         }
+    }
+
+    /// What new text says before it is typed over, as in SketchUp: a group's name, a corner's position, a face's area.
+    fn default_text(&self, model: &Model, h: &Hit) -> String {
+        if let Some(def) = h.instance.and_then(|i| model.instances().get(i)).and_then(|i| model.definition(i.def)) {
+            return def.name.clone();
+        }
+        if matches!(h.snap, Snap::Endpoint | Snap::Origin | Snap::Midpoint) {
+            let p = h.point;
+            return format!("({}, {}, {})", fmt(p[0], self.units), fmt(p[1], self.units), fmt(p[2], self.units));
+        }
+        if let Some(f) = h.face.filter(|&f| f < model.mesh().face_count()) {
+            let mesh = model.mesh();
+            let ring: Vec<[f32; 3]> = mesh.face_vertices(f).iter().map(|&v| mesh.positions[v as usize]).collect();
+            return units::format_area(polygon_area(&ring), self.units);
+        }
+        "Enter text".into()
     }
 
     fn sides(&self) -> u32 {
@@ -1435,14 +1533,14 @@ fn on_plane(plane: &Plane, c: &Cursor) -> Option<([f32; 3], Snap)> {
 }
 
 /// Locks `p` onto the plane axis through `from` when within about 3 degrees of it.
-fn axis_lock(plane: &Plane, from: [f32; 3], p: [f32; 3]) -> ([f32; 3], Option<u8>) {
+fn axis_lock(plane: &Plane, from: [f32; 3], p: [f32; 3], axes: &[[f32; 3]; 3]) -> ([f32; 3], Option<u8>) {
     let tol = 3f32.to_radians().tan();
     let d = sub(p, from);
     for axis in [plane.u, plane.v] {
         let along = dot(d, axis);
         let across = len(sub(d, scale(axis, along)));
         if along.abs() > 1e-9 && across <= tol * along.abs() {
-            let world = (0..3).find(|&i| axis[i].abs() > 0.999).map_or(3, |i| i as u8);
+            let world = (0..3).find(|&i| dot(axis, axes[i]).abs() > 0.999).map_or(3, |i| i as u8);
             return (add(from, scale(axis, along)), Some(world));
         }
     }
@@ -1530,10 +1628,10 @@ fn connected_faces(mesh: &HalfEdgeMesh, face: usize) -> Vec<usize> {
 
 /// Locks the mouse onto the red, green or blue axis through `from` when the ray passes close to it (within about 1.5
 /// degrees as seen from the eye): the point on the axis, and which axis.
-fn ray_axis_lock(from: [f32; 3], c: &Cursor) -> Option<([f32; 3], u8)> {
+fn ray_axis_lock(from: [f32; 3], c: &Cursor, axes: &[[f32; 3]; 3]) -> Option<([f32; 3], u8)> {
     let tol = 1.5f32.to_radians().tan();
     let mut best: Option<([f32; 3], u8, f32)> = None;
-    for (i, axis) in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].into_iter().enumerate() {
+    for (i, &axis) in axes.iter().enumerate() {
         let Some(t) = closest_on_line(from, axis, c.origin, c.dir) else { continue };
         let p = add(from, scale(axis, t));
         let along = dot(sub(p, c.origin), c.dir);
@@ -1653,6 +1751,15 @@ fn inside_distance(ring: &[[f32; 3]], normal: [f32; 3], p: [f32; 3]) -> f32 {
     } else {
         -nearest
     }
+}
+
+/// The area of a flat polygon.
+fn polygon_area(ring: &[[f32; 3]]) -> f32 {
+    let mut n = [0.0f32; 3];
+    for i in 0..ring.len() {
+        n = add(n, cross(ring[i], ring[(i + 1) % ring.len()]));
+    }
+    len(n) / 2.0
 }
 
 fn chain_lines(r: &[[f32; 3]], out: &mut Vec<([f32; 3], [f32; 3], [f32; 4])>) {
@@ -2284,5 +2391,42 @@ mod tests {
         t.set_tool(Tool::Eraser);
         t.click(&mut m, &on_group).unwrap();
         assert!(m.instances().is_empty());
+    }
+
+    #[test]
+    fn text_on_a_face_starts_with_its_area() {
+        let (mut m, top) = box_model();
+        let (mut t, _) = with(Tool::Text);
+        t.click(&mut m, &top).unwrap();
+        t.click(&mut m, &ground_hit([4.0, 4.0, 0.0], Snap::Ground)).unwrap();
+        let l = &m.notes().labels[0];
+        assert_eq!(l.text, "4.00 m²");
+        assert_eq!((l.point, l.at), ([1.0, 1.0, 2.0], [4.0, 4.0, 0.0]));
+        assert_eq!(t.edit_label, Some(0), "the viewer opens it for typing");
+        // at a corner it gives the position
+        t.click(&mut m, &ground_hit([2.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
+        t.click(&mut m, &ground_hit([3.0, 0.0, 0.0], Snap::Ground)).unwrap();
+        assert_eq!(m.notes().labels[1].text, "(2 m, 0 m, 0 m)");
+    }
+
+    #[test]
+    fn the_axes_tool_turns_the_drawing_axes() {
+        let mut m = Model::new();
+        let (mut t, _) = with(Tool::Axes);
+        t.click(&mut m, &ground_hit([1.0, 1.0, 0.0], Snap::Endpoint)).unwrap();
+        t.click(&mut m, &ground_hit([1.0, 3.0, 0.0], Snap::Endpoint)).unwrap();
+        t.click(&mut m, &ground_hit([0.0, 1.5, 0.0], Snap::Ground)).unwrap();
+        let a = m.notes().axes;
+        assert_eq!(a.origin, [1.0, 1.0, 0.0]);
+        assert_eq!(a.dirs[0], [0.0, 1.0, 0.0], "red along the old green");
+        assert!((a.dirs[1][0] + 1.0).abs() < 1e-6, "green square to it, toward the click");
+        assert!((a.dirs[2][2] - 1.0).abs() < 1e-6, "blue still up");
+        assert_eq!(t.tool, Tool::Select);
+        // a move now locks onto the new red axis
+        t.axes = a;
+        let lock = ray_axis_lock([1.0, 1.0, 0.0], &Cursor { origin: [1.0, 4.0, 10.0], dir: [0.0, 0.0, -1.0], hit: None }, &a.dirs);
+        assert_eq!(lock.map(|l| l.1), Some(0));
+        m.undo();
+        assert!(m.notes().axes.is_default(), "placing the axes is undone like an edit");
     }
 }

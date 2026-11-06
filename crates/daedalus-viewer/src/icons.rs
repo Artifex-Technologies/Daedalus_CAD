@@ -49,9 +49,9 @@ const ACCENT: Color32 = Color32::from_rgb(232, 120, 40);
 
 /// Draws `icon` into `rect` (a square) in `ink`. `dim` greys it out (a tool that cannot be used now, or not built yet).
 pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool, ink: Color32) {
-    let dim = dim || matches!(icon, Icon::Planned(_));
+    let dim = dim || matches!(icon, Icon::Planned(Planned::Text3D));
     let fade = |c: Color32| if dim { c.gamma_multiply(0.35) } else { c };
-    let d = Draw { p, rect, w: rect.width(), ink: fade(ink), accent: fade(ACCENT) };
+    let d = Draw { p, rect, w: rect.width(), ink: fade(ink), accent: fade(ACCENT), dim };
     d.icon(icon);
 }
 
@@ -61,6 +61,7 @@ struct Draw<'a> {
     w: f32,
     ink: Color32,
     accent: Color32,
+    dim: bool,
 }
 
 impl Draw<'_> {
@@ -358,6 +359,8 @@ impl Draw<'_> {
                 self.circle(0.5, 0.5, 0.14);
                 self.dot(0.5, 0.5);
             }
+            Icon::Tool(Tool::Text) => self.planned(Planned::Text),
+            Icon::Tool(Tool::Axes) => self.planned(Planned::Axes),
             Icon::Tool(Tool::Walk) => {
                 // two footprints: a sole and a heel each
                 for (x, y) in [(0.3, 0.42), (0.68, 0.22)] {
@@ -416,7 +419,7 @@ impl Draw<'_> {
             Planned::Axes => {
                 let o = (0.36, 0.64);
                 for (end, c) in [((0.9, 0.84), Color32::from_rgb(214, 70, 52)), ((0.86, 0.36), Color32::from_rgb(52, 160, 72)), ((0.36, 0.08), Color32::from_rgb(70, 120, 220))] {
-                    self.line_with(&[o, end], Stroke::new(self.w / 15.0, c.gamma_multiply(0.35)));
+                    self.line_with(&[o, end], Stroke::new(self.w / 15.0, if self.dim { c.gamma_multiply(0.35) } else { c }));
                 }
             }
             Planned::Text3D => {

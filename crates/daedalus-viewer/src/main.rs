@@ -94,6 +94,10 @@ struct State {
     shown_title: String,
     /// View > Toolbar: down the left side instead of across the top (remembered in settings.conf).
     toolbar_left: bool,
+    /// Text being typed into: its number in the notes and the words so far.
+    label_edit: Option<(usize, String)>,
+    /// The text box opens this frame (its words get selected).
+    label_fresh: bool,
 }
 
 /// Something that replaces the document or ends the program, held while the person is asked about unsaved changes.
@@ -172,6 +176,8 @@ impl State {
             shown_title: String::new(),
             // the Large Tool Set down the left side unless across the top was chosen
             toolbar_left: settings::load("toolbar").as_deref() != Some("top"),
+            label_edit: None,
+            label_fresh: false,
         };
         s.refresh();
         s
@@ -309,6 +315,7 @@ impl State {
 
     /// Rebuilds GPU geometry after an edit, a selection change or a preview step.
     fn refresh(&mut self) {
+        self.tools.axes = self.model.notes().axes;
         let preview = self.tools.preview_mesh(&self.model);
         self.display = match (&self.readonly, &preview) {
             (Some(m), _) => m.clone(),
@@ -387,13 +394,16 @@ impl State {
         }
         candidates.extend(self.tools.pending_points().into_iter().map(|p| (Vec3::from(p), Snap::Endpoint)));
         // the origin, and the point of each axis nearest the mouse (as SketchUp snaps onto the axes)
-        candidates.push((Vec3::ZERO, Snap::Origin));
-        for (i, axis) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
+        let axes = self.model.notes().axes;
+        let axes_at = Vec3::from(axes.origin);
+        candidates.push((axes_at, Snap::Origin));
+        for (i, axis) in axes.dirs.into_iter().map(Vec3::from).enumerate() {
             let b = axis.dot(dir);
             let denom = 1.0 - b * b;
             if denom.abs() > 1e-6 {
-                let s = (b * dir.dot(-origin) - axis.dot(-origin)) / denom;
-                candidates.push((axis * s, Snap::OnAxis(i as u8)));
+                let w0 = axes_at - origin;
+                let s = (b * dir.dot(w0) - axis.dot(w0)) / denom;
+                candidates.push((axes_at + axis * s, Snap::OnAxis(i as u8)));
             }
         }
         // guide points, and the point of each guide line nearest the mouse
@@ -443,10 +453,11 @@ impl State {
                     let off_face = (p - face_point).dot(Vec3::from(plane.normal)).abs();
                     (off < 1e-4 && off_face < 1e-3 * (1.0 + p.length())).then_some((f, plane))
                 });
+                let ground = self.ground();
                 let (face, plane) = match on_face {
                     Some((f, plane)) => (Some(f), plane),
-                    None if p.z.abs() < 1e-5 => (None, Plane::ground()),
-                    None => (None, Plane { origin: p.into(), ..Plane::ground() }),
+                    None if (p - Vec3::from(ground.origin)).dot(Vec3::from(ground.normal)).abs() < 1e-5 => (None, ground),
+                    None => (None, Plane { origin: p.into(), ..ground }),
                 };
                 let (face, instance) = face.map_or((None, None), |f| self.owner(f));
                 Some(Hit { point: p.into(), plane, face, line: None, instance, snap })
@@ -456,9 +467,10 @@ impl State {
                 let (face, instance) = self.owner(f);
                 face_plane(f, p).map(|plane| Hit { point: p.into(), plane, face, line: None, instance, snap: Snap::OnFace })
             }
-            (None, None) => Plane::ground()
-                .intersect_ray(origin.into(), dir.into())
-                .map(|p| Hit { point: p, plane: Plane::ground(), face: None, line: None, instance: None, snap: Snap::Ground }),
+            (None, None) => {
+                let ground = self.ground();
+                ground.intersect_ray(origin.into(), dir.into()).map(|p| Hit { point: p, plane: ground, face: None, line: None, instance: None, snap: Snap::Ground })
+            }
         };
         // the loose line nearest the mouse on screen, for the Eraser
         let active_lines = if self.readonly.is_some() { 0 } else { self.model.mesh().lines.len() };
@@ -471,6 +483,52 @@ impl State {
         let line = line.min_by(|x, y| x.1.total_cmp(&y.1)).map(|(i, _)| i);
         let hit = hit.map(|h| Hit { line, ..h });
         Cursor { origin: origin.into(), dir: dir.into(), hit }
+    }
+
+    /// The ground for drawing: the red-green plane of the drawing axes.
+    fn ground(&self) -> Plane {
+        let a = self.model.notes().axes;
+        Plane { origin: a.origin, u: a.dirs[0], v: a.dirs[1], normal: a.dirs[2] }
+    }
+
+    /// The text under the mouse, if any (by where it is drawn on screen).
+    fn label_at(&self) -> Option<usize> {
+        let (w, h) = self.size();
+        let ppp = self.egui_ctx.pixels_per_point();
+        self.model.notes().labels.iter().enumerate().rev().find_map(|(i, l)| {
+            let (x, y) = self.camera.project(Vec3::from(l.at), w, h)?;
+            let longest = l.text.lines().map(|t| t.chars().count()).max().unwrap_or(1).max(4) as f32;
+            let half = (longest * 3.6 + 6.0) * ppp;
+            let tall = (l.text.lines().count().max(1) as f32 * 8.0 + 4.0) * ppp;
+            ((self.cursor.0 - x).abs() <= half && (self.cursor.1 - y).abs() <= tall).then_some(i)
+        })
+    }
+
+    /// Starts typing into text `i`.
+    fn edit_label(&mut self, i: usize) {
+        if let Some(l) = self.model.notes().labels.get(i) {
+            self.label_edit = Some((i, l.text.clone()));
+            self.label_fresh = true;
+        }
+    }
+
+    /// Typing into text is done: the words go in (no words: the text goes).
+    fn finish_label(&mut self) {
+        let Some((i, text)) = self.label_edit.take() else { return };
+        let text = text.trim().to_string();
+        let unchanged = self.model.notes().labels.get(i).is_some_and(|l| l.text == text);
+        if !unchanged {
+            self.model.edit_notes(|n| {
+                if i < n.labels.len() {
+                    if text.is_empty() {
+                        n.labels.remove(i);
+                    } else {
+                        n.labels[i].text = text;
+                    }
+                }
+            });
+        }
+        self.window.request_redraw();
     }
 
     fn mouse_moved(&mut self) {
@@ -515,6 +573,23 @@ impl State {
             }
             return;
         }
+        // text: a double-click with Select types into it, the Eraser takes it
+        if let Some(i) = self.label_at() {
+            match self.tools.tool {
+                Tool::Select if count == 2 => {
+                    self.edit_label(i);
+                    return;
+                }
+                Tool::Eraser => {
+                    self.model.edit_notes(|n| {
+                        n.labels.remove(i);
+                    });
+                    self.window.request_redraw();
+                    return;
+                }
+                _ => {}
+            }
+        }
         // Select in an open group: a click outside it, or a double-click on nothing, closes it (as in SketchUp)
         if self.tools.tool == Tool::Select && self.model.open_depth() > 0 {
             let outside = c.hit.is_some_and(|h| h.face.is_none() && h.instance.is_none() && h.snap == Snap::OnFace);
@@ -543,6 +618,10 @@ impl State {
         };
         if let Err(e) = result {
             self.message = Some(e);
+        }
+        // text just placed: type its words now
+        if let Some(i) = self.tools.edit_label.take() {
+            self.edit_label(i);
         }
         self.after_edit();
     }
@@ -836,6 +915,10 @@ impl State {
                 self.refresh();
             }
             UiAction::DeleteGuides => self.model.edit_notes(|n| n.guides.clear()),
+            UiAction::ResetAxes => {
+                self.model.edit_notes(|n| n.axes = daedalus_core::scene::Axes::default());
+                self.refresh();
+            }
             UiAction::ToggleOrtho => self.camera.ortho = !self.camera.ortho,
             UiAction::Undo => self.history(true),
             UiAction::Redo => self.history(false),
@@ -940,13 +1023,20 @@ impl State {
     fn axes(&self) -> Vec<LineVertex> {
         let reach = self.camera.distance * 40.0;
         let mut out = Vec::new();
+        let axes = self.model.notes().axes;
         for (i, color) in AXIS_COLORS.iter().take(3).enumerate() {
             let faded = [color[0] * 0.4 + 0.55, color[1] * 0.4 + 0.55, color[2] * 0.4 + 0.55, 1.0];
             for (sign, color) in [(1.0, *color), (-1.0, faded)] {
-                let mut end = [0.0; 3];
-                end[i] = reach * sign;
-                out.push(LineVertex { position: [0.0; 3], color });
+                let end = (Vec3::from(axes.origin) + Vec3::from(axes.dirs[i]) * reach * sign).into();
+                out.push(LineVertex { position: axes.origin, color });
                 out.push(LineVertex { position: end, color });
+            }
+        }
+        // text leaders, from the point to the text
+        for l in &self.model.notes().labels {
+            if l.point != l.at {
+                out.push(LineVertex { position: l.point, color: [0.15, 0.15, 0.18, 1.0] });
+                out.push(LineVertex { position: l.at, color: [0.15, 0.15, 0.18, 1.0] });
             }
         }
         // dimensions, in dark grey
@@ -1013,6 +1103,8 @@ impl State {
             | Tool::Rotate
             | Tool::TapeMeasure
             | Tool::Protractor
+            | Tool::Text
+            | Tool::Axes
                 if !self.over_ui =>
             {
                 self
@@ -1050,6 +1142,15 @@ impl State {
                 .into_iter()
                 .filter_map(|(p, t)| self.camera.project(Vec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), t)))
                 .collect(),
+            texts: self
+                .model
+                .notes()
+                .labels
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| self.label_edit.as_ref().is_none_or(|e| e.0 != *i))
+                .filter_map(|(_, l)| self.camera.project(Vec3::from(l.at), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), l.text.clone())))
+                .collect(),
             can_go_back: !self.views.is_empty(),
             own_frame: frame::OWN_FRAME,
             maximized: self.maximized(),
@@ -1064,6 +1165,14 @@ impl State {
         let mut actions = Vec::new();
         // the file dialog and the "save changes?" question are drawn over the chrome; taken out while drawn
         let mut dialog = self.dialog.take();
+        let mut label_edit = self.label_edit.take();
+        let label_pos = label_edit
+            .as_ref()
+            .and_then(|(i, _)| self.model.notes().labels.get(*i))
+            .and_then(|l| self.camera.project(Vec3::from(l.at), w, h))
+            .map(|(x, y)| egui::pos2(x / ppp, y / ppp));
+        let mut label_done = false;
+        let label_fresh = std::mem::take(&mut self.label_fresh);
         let mut dialog_out = None;
         let ask = self.ask;
         let mut answer: Option<&'static str> = None;
@@ -1091,6 +1200,26 @@ impl State {
             if let Some(d) = dialog.as_mut() {
                 dialog_out = d.show(ctx).map(|o| (d.purpose, o));
             }
+            // typing into text: a box where the text stands; Enter or a click elsewhere finishes
+            if let (Some((_, text)), Some(pos)) = (label_edit.as_mut(), label_pos) {
+                egui::Area::new(egui::Id::new("text-edit")).fixed_pos(pos - egui::vec2(80.0, 12.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        let out = egui::TextEdit::singleline(text).desired_width(160.0).hint_text("Text").show(ui);
+                        if label_fresh {
+                            // the words it starts with are selected, so typing replaces them (as in SketchUp)
+                            let mut st = out.state.clone();
+                            let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()));
+                            st.cursor.set_char_range(Some(all));
+                            st.store(ui.ctx(), out.response.id);
+                        }
+                        let r = out.response;
+                        r.request_focus();
+                        if r.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape)) {
+                            label_done = true;
+                        }
+                    });
+                });
+            }
             if ask.is_some() {
                 egui::Window::new("Save changes?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                     ui.label(format!("{doc_name} has changes that are not saved."));
@@ -1109,6 +1238,10 @@ impl State {
             }
         });
         self.dialog = if dialog_out.is_some() { None } else { dialog };
+        self.label_edit = label_edit;
+        if label_done {
+            self.finish_label();
+        }
         self.egui_state.handle_platform_output(&self.window, out.platform_output);
         let ui = UiFrame {
             primitives: ctx.tessellate(out.shapes, out.pixels_per_point),

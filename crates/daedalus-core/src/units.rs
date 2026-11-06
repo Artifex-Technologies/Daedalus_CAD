@@ -124,6 +124,21 @@ fn number(t: &str) -> Option<f64> {
 }
 
 /// A typed length in metres. A bare number is in `units`; a written unit wins.
+/// An area (square metres) as shown in `units`: square millimetres, centimetres, metres, inches, or feet for feet and
+/// inches, to a sensible number of places.
+pub fn format_area(square_metres: f32, units: Units) -> String {
+    let a = square_metres as f64;
+    let (v, name) = match units {
+        Units::Millimetres => (a * 1e6, "mm²"),
+        Units::Centimetres => (a * 1e4, "cm²"),
+        Units::Metres => (a, "m²"),
+        Units::Inches => (a / (INCH * INCH), "in²"),
+        Units::FeetInches => (a / (12.0 * INCH).powi(2), "ft²"),
+    };
+    let places = if v.abs() >= 100.0 { 0 } else { 2 };
+    format!("{v:.places$} {name}")
+}
+
 pub fn parse(text: &str, units: Units) -> Option<f32> {
     let t = text.trim();
     let (neg, t) = match t.strip_prefix('-') {
@@ -150,6 +165,14 @@ pub fn parse(text: &str, units: Units) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn areas_read_in_the_units_shown() {
+        assert_eq!(format_area(6.0, Units::Metres), "6.00 m²");
+        assert_eq!(format_area(0.5, Units::Millimetres), "500000 mm²");
+        assert_eq!(format_area(0.09290304, Units::FeetInches), "1.00 ft²");
+        assert_eq!(format_area(0.00064516, Units::Inches), "1.00 in²");
+    }
+
     use super::*;
 
     fn close(a: Option<f32>, b: f64) -> bool {

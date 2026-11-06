@@ -42,6 +42,8 @@ pub enum UiAction {
     CloseGroup,
     Explode,
     MakeUnique,
+    /// Tools > Reset Axes: the drawing axes back at the origin, along the model's own.
+    ResetAxes,
     Undo,
     Redo,
     Inspect,
@@ -76,6 +78,8 @@ pub struct UiView<'a> {
     pub paint_color: Option<[u8; 3]>,
     /// Dimension labels: where on screen (points) and the text.
     pub labels: Vec<(Pos2, String)>,
+    /// Text (the Text tool): where on screen (points) and the words.
+    pub texts: Vec<(Pos2, String)>,
     /// A section plane is placed, and whether it cuts.
     pub section: Option<bool>,
     /// Camera > Previous has a view to go back to.
@@ -269,7 +273,11 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 ui.separator();
                 tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull, Tool::Offset, Tool::FollowMe], &mut actions);
                 ui.separator();
-                tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor, Tool::Dimensions], &mut actions);
+                tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor, Tool::Dimensions, Tool::Text, Tool::Axes], &mut actions);
+                if ui.button("Reset Axes").clicked() {
+                    actions.push(UiAction::ResetAxes);
+                    ui.close_menu();
+                }
                 ui.separator();
                 tool_items(ui, v, &[Tool::SectionPlane], &mut actions);
                 ui.separator();
@@ -408,6 +416,18 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
             let r = egui::Rect::from_center_size(*pos, galley.size() + egui::vec2(8.0, 4.0));
             painter.rect_filled(r, 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 220));
             painter.galley(r.min + egui::vec2(4.0, 2.0), galley, Color32::from_gray(30));
+        }
+    }
+
+    // text, on a plate with a thin border (several lines allowed)
+    if !v.texts.is_empty() {
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("text-labels")));
+        for (pos, text) in &v.texts {
+            let galley = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(13.0), Color32::from_gray(25));
+            let r = egui::Rect::from_center_size(*pos, galley.size() + egui::vec2(10.0, 6.0));
+            painter.rect_filled(r, 2.0, Color32::from_rgba_unmultiplied(255, 255, 255, 235));
+            painter.rect_stroke(r, 2.0, Stroke::new(1.0_f32, Color32::from_gray(120)), egui::StrokeKind::Inside);
+            painter.galley(r.min + egui::vec2(5.0, 3.0), galley, Color32::from_gray(25));
         }
     }
 
@@ -565,8 +585,8 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
             t(Tool::TapeMeasure),
             t(Tool::Dimensions),
             t(Tool::Protractor),
-            P(Planned::Text),
-            P(Planned::Axes),
+            t(Tool::Text),
+            t(Tool::Axes),
             P(Planned::Text3D),
             t(Tool::Orbit),
             t(Tool::Pan),
