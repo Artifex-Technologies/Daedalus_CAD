@@ -80,6 +80,10 @@ struct State {
     sheet_open: bool,
     sheet_tab: usize,
     flange_defaults: (f64, f64, usize, bool, bool),
+    /// What the Fold tool adds (a jog, angle degrees, a jog's step mm, a fold's position, down), and its first point (the
+    /// part's instance and the point, part mm) once picked.
+    fold_defaults: (bool, f64, f64, usize, bool),
+    fold_first: Option<(usize, [f64; 3])>,
     /// The selected part as the panel shows it, for the model state and selection it was made for.
     sheet_cache: Option<(u64, Option<ui::SheetView>)>,
     /// The flat pattern DXF being saved is in inches.
@@ -232,6 +236,8 @@ impl State {
             stress: None,
             sheet_tab: 0,
             flange_defaults: (20.0, 90.0, 0, false, false),
+            fold_defaults: (false, 90.0, 10.0, 0, false),
+            fold_first: None,
             sheet_cache: None,
             dxf_inches: false,
             convert: None,
@@ -922,13 +928,26 @@ impl State {
                 thickness: p.rule.thickness,
                 k_factor: p.rule.k_factor,
                 bend_radius: p.rule.bend_radius,
+                relief: (relief_index(p.rule.corner_relief_shape), p.rule.corner_relief, p.rule.relief_width, p.rule.relief_depth),
                 flat: p.shown_flat,
                 flanges: p
                     .flanges
                     .iter()
                     .map(|f| {
-                        let pos = daedalus_sheet::part::FlangePosition::ALL.iter().position(|q| Some(*q) == daedalus_sheet::part::FlangePosition::from_key(&f.position)).unwrap_or(0);
-                        (f.height, f.angle_deg, pos, f.down, f.hem)
+                        use daedalus_sheet::part::{FlangePosition, FoldPosition, StepKind};
+                        let kind = f.kind();
+                        let pos = if kind == StepKind::Fold {
+                            FoldPosition::ALL.iter().position(|q| Some(*q) == FoldPosition::from_key(&f.position)).unwrap_or(0)
+                        } else {
+                            FlangePosition::ALL.iter().position(|q| Some(*q) == FlangePosition::from_key(&f.position)).unwrap_or(0)
+                        };
+                        let k = match kind {
+                            StepKind::Flange => 0,
+                            StepKind::Hem => 1,
+                            StepKind::Fold => 2,
+                            StepKind::Jog => 3,
+                        };
+                        (f.height, f.angle_deg, pos, f.down, k)
                     })
                     .collect(),
                 base,
@@ -979,7 +998,8 @@ impl State {
             return;
         };
         let name = MATERIALS.get(preset).map(|m| m.name.to_string()).unwrap_or_else(|| format!("{} mm sheet", t));
-        let rule = RuleValues { k_factor: k, bend_radius: r, ..RuleValues::steel(t) };
+        // square corner reliefs, as cutting shops such as SendCutSend ask for (SolidCraft's own default cuts none)
+        let rule = RuleValues { k_factor: k, bend_radius: r, corner_relief_shape: daedalus_sheet::sheet::ReliefShape::Rectangular, ..RuleValues::steel(t) };
         // the face as the model has it (open context coordinates are model coordinates while editing)
         let mesh = self.model.mesh().to_mesh();
         let made = part_from_face(&mesh, f, &name, rule)
@@ -1026,6 +1046,48 @@ impl State {
             self.change_part("Hem", |p| p.add_hem(pick, h, down));
         } else {
             self.change_part("Flange", |p| p.add_flange(pick, h, a, position, down));
+        }
+        self.sheet_open = true;
+    }
+
+    /// The Fold tool's click: the first point of the line, then the second, which folds (or jogs) the part along it.
+    fn fold_at(&mut self, i: usize, point: [f64; 3]) {
+        use daedalus_sheet::part::FoldPosition;
+        let Some(back) = self.model.instance_world(i).and_then(|w| w.inverse()) else { return };
+        let def = self.model.instances()[i].def;
+        let is_part = self.model.definition(def).and_then(|d| d.part.as_deref()).is_some_and(daedalus_sheet::part::is_sheet);
+        if !is_part {
+            self.message = Some("Fold: click a face of a sheet-metal part (Tools > Sheet Metal makes one of a face).".into());
+            self.fold_first = None;
+            return;
+        }
+        self.tools.selected.clear();
+        self.tools.instances = vec![i];
+        if self.sheet_part().is_some_and(|p| p.2.shown_flat) {
+            self.message = Some("Fold: show the part bent first (Sheet Metal panel, 3D tab).".into());
+            return;
+        }
+        let local = back.apply(point);
+        let pick = [local[0] * 1000.0, local[1] * 1000.0, local[2] * 1000.0];
+        match self.fold_first.take() {
+            Some((j, a)) if j == i => {
+                if dist3(a, pick) < 0.5 {
+                    self.fold_first = Some((j, a));
+                    self.message = Some("Fold: click a second point, apart from the first, on the line to fold along.".into());
+                    return;
+                }
+                let (jog, angle, step, pos, down) = self.fold_defaults;
+                if jog {
+                    self.change_part("Jog", |p| p.add_jog(a, pick, step, angle, down));
+                } else {
+                    let position = FoldPosition::ALL[pos.min(FoldPosition::ALL.len() - 1)];
+                    self.change_part("Fold", |p| p.add_fold(a, pick, angle, position, down));
+                }
+            }
+            _ => {
+                self.fold_first = Some((i, pick));
+                self.message = Some("Fold: now click a second point on the line to fold along.".into());
+            }
         }
         self.sheet_open = true;
     }
@@ -1107,7 +1169,8 @@ impl State {
         let Some(def) = self.model.instances().get(i).map(|x| x.def) else { return };
         let Some(mesh) = self.model.definition(def).map(|d| d.ctx.mesh.clone()) else { return };
         let name = daedalus_sheet::part::MATERIALS.get(preset).map(|m| m.name.to_string()).unwrap_or_else(|| format!("{t} mm sheet"));
-        let rule = RuleValues { k_factor: k, bend_radius: r, ..RuleValues::steel(t) };
+        // square corner reliefs, as cutting shops such as SendCutSend ask for (SolidCraft's own default cuts none)
+        let rule = RuleValues { k_factor: k, bend_radius: r, corner_relief_shape: daedalus_sheet::sheet::ReliefShape::Rectangular, ..RuleValues::steel(t) };
         let made = daedalus_sheet::part::part_from_solid(&mesh, fixed, &bends, &name, rule)
             .map(|mut p| {
                 // a shelled solid keeps its own walls: named by them when they are not the preset's thickness
@@ -1439,6 +1502,18 @@ impl State {
             self.refresh();
             return;
         }
+        // Fold: two points on a face of a sheet-metal part, the line to fold (or jog) along
+        if self.tools.tool == Tool::Fold {
+            if self.readonly.is_some() {
+                return;
+            }
+            match c.hit.and_then(|h| h.instance.map(|i| (i, h.point))) {
+                Some((i, point)) => self.fold_at(i, point),
+                None => self.message = Some("Fold: click a face of a sheet-metal part.".into()),
+            }
+            self.refresh();
+            return;
+        }
         // Flange: a flange on the sheet-metal part's edge under the mouse
         if self.tools.tool == Tool::Flange {
             if self.readonly.is_some() {
@@ -1591,9 +1666,10 @@ impl State {
     }
 
     fn set_tool(&mut self, tool: Tool) {
-        if matches!(tool, Tool::Flange | Tool::SheetConvert) {
+        if matches!(tool, Tool::Flange | Tool::SheetConvert | Tool::Fold) {
             self.sheet_open = true;
         }
+        self.fold_first = None;
         if tool == Tool::Stress {
             self.stress_open = true;
         }
@@ -2114,6 +2190,11 @@ impl State {
                     p.set_rule(&name, rule)
                 });
             }
+            UiAction::SheetRelief(shape, corner, width, depth) => self.change_part("Reliefs", |p| {
+                let rule = daedalus_sheet::sheet::RuleValues { corner_relief_shape: RELIEFS[shape.min(3)], corner_relief: corner, relief_width: width, relief_depth: depth, ..p.rule };
+                let material = p.material.clone();
+                p.set_rule(&material, rule)
+            }),
             UiAction::SheetFlat(flat) => self.change_part("Show", |p| {
                 p.shown_flat = flat;
                 Ok(())
@@ -2124,6 +2205,11 @@ impl State {
             }
             UiAction::SheetRemoveFlange(i) => self.change_part("Flange", |p| p.remove_flange(i)),
             UiAction::FlangeDefaults(h, a, pos, down, hem) => self.flange_defaults = (h, a, pos, down, hem),
+            UiAction::SheetFold(i, step, a, pos, down) => {
+                let position = daedalus_sheet::part::FoldPosition::ALL[pos.min(1)];
+                self.change_part("Fold", |p| p.set_fold(i, step, a, position, down));
+            }
+            UiAction::FoldDefaults(jog, a, step, pos, down) => self.fold_defaults = (jog, a, step, pos, down),
         }
         self.window.request_redraw();
     }
@@ -2355,6 +2441,8 @@ impl State {
             sheet,
             face_for_part,
             flange_defaults: self.flange_defaults,
+            fold_defaults: self.fold_defaults,
+            fold_first: self.fold_first.is_some(),
             stress_open: self.stress_open,
             stress: self.stress.as_ref().map(|s| s.view(self.model.state())),
             converting: self.convert.as_ref().and_then(|(i, fixed, bends)| {
@@ -2940,6 +3028,18 @@ fn nearest_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     let l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
     let t = if l2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1] + (p[2] - a[2]) * d[2]) / l2).clamp(0.0, 1.0) } else { 0.0 };
     [a[0] + t * d[0], a[1] + t * d[1], a[2] + t * d[2]]
+}
+
+/// The corner relief shapes as the Sheet Metal panel numbers them.
+const RELIEFS: [daedalus_sheet::sheet::ReliefShape; 4] = [
+    daedalus_sheet::sheet::ReliefShape::Notch,
+    daedalus_sheet::sheet::ReliefShape::Round,
+    daedalus_sheet::sheet::ReliefShape::Rectangular,
+    daedalus_sheet::sheet::ReliefShape::Tear,
+];
+
+fn relief_index(shape: daedalus_sheet::sheet::ReliefShape) -> usize {
+    RELIEFS.iter().position(|r| *r == shape).unwrap_or(0)
 }
 
 fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {

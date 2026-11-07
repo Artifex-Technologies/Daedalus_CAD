@@ -411,6 +411,16 @@ impl Draw {
                 self.line_with(&[(0.2, 0.28), (0.44, 0.16)], accent);
                 self.head(0.5, 0.13, 1.0, -0.5, 0.09, self.accent);
             }
+            Icon::Tool(Tool::Fold) => {
+                // a plate with a dashed fold line across it, the far part turned up along it
+                self.closed(&[(0.08, 0.62), (0.52, 0.62), (0.62, 0.86), (0.18, 0.86)]);
+                self.dashed((0.52, 0.62), (0.62, 0.86));
+                self.closed(&[(0.52, 0.62), (0.62, 0.86), (0.8, 0.5), (0.7, 0.26)]);
+                let accent = Stroke::new(1.5_f32, self.accent);
+                let turn = self.arc(0.72, 0.62, 0.2, 10.0, 80.0);
+                self.line_with(&turn, accent);
+                self.head(0.75, 0.42, -0.4, -1.0, 0.09, self.accent);
+            }
             Icon::Tool(Tool::Stress) => {
                 // a bracket held at its foot (hatching), pushed down at its tip (arrow), bending
                 self.line(&[(0.14, 0.86), (0.14, 0.3)]);

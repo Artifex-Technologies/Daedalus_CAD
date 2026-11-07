@@ -66,13 +66,16 @@ pub enum Tool {
     /// Sheet metal: Convert to Sheet Metal. Click a face of a solid group or component (it stays put), then each edge that
     /// becomes a bend; Convert in the Sheet Metal panel.
     SheetConvert,
+    /// Sheet metal: Fold. Click two points on a face of a sheet-metal part: the line to fold along (a fold, or a jog, as the
+    /// Sheet Metal panel's 3D tab says).
+    Fold,
     /// Stress Test: click a solid group or component, then the faces that hold it and the faces that are pushed (the Stress
     /// Test panel says which a click marks).
     Stress,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 48] = [
+    pub const ALL: [Tool; 49] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -120,6 +123,7 @@ impl Tool {
         Tool::Interact,
         Tool::Flange,
         Tool::SheetConvert,
+        Tool::Fold,
         Tool::Stress,
     ];
 
@@ -172,6 +176,7 @@ impl Tool {
             Tool::Interact => "Interact",
             Tool::Flange => "Flange",
             Tool::SheetConvert => "Convert to Sheet Metal",
+            Tool::Fold => "Fold or Jog",
             Tool::Stress => "Stress Test",
         }
     }
@@ -226,6 +231,7 @@ impl Tool {
             | Tool::Interact
             | Tool::Flange
             | Tool::SheetConvert
+            | Tool::Fold
             | Tool::Stress => None,
         }
     }
@@ -1705,6 +1711,7 @@ impl Tools {
             (Tool::Interact, _) => "Click a dynamic component to run its onClick actions (Component Attributes sets them).",
             (Tool::Flange, _) => "Click an edge of a sheet-metal part to add a flange (height, angle and position in the Sheet Metal panel).",
             (Tool::SheetConvert, _) => "Click a face of a solid group (it stays put), then each edge that becomes a bend; then Convert in the Sheet Metal panel.",
+            (Tool::Fold, _) => "Click two points on a face of a sheet-metal part: the line to fold along (the side away from the larger part moves). Fold or jog, angle and step: Sheet Metal panel, 3D tab.",
             (Tool::Stress, _) => "Click a solid group or component to test, then the faces that hold it (supports) and the faces that are pushed (loads); then Run in the Stress Test panel.",
             (t, _) if t.solid().is_some() && self.solid_first.is_none() => match t {
                 Tool::SolidSubtract => "Click the solid to take away (it goes), then the solid to take it from.",

@@ -6,7 +6,7 @@
 use crate::tools::Tool;
 use crate::ui::{panel_head, SheetView, UiAction, UiView};
 use daedalus_core::units::{self, Units};
-use daedalus_sheet::part::{FlangePosition, MATERIALS};
+use daedalus_sheet::part::{FlangePosition, FoldPosition, MATERIALS};
 use egui::{pos2, vec2, Color32, Rect, RichText, Sense, Shape, Stroke};
 
 const TABS: [&str; 3] = ["Drawing", "3D", "Flat pattern"];
@@ -164,9 +164,11 @@ fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<U
         actions.push(UiAction::SheetRule(t, k, r, preset));
     }
     ui.add_space(6.0);
-    ui.strong("Flanges");
+    reliefs(ui, v, s, actions);
+    ui.add_space(6.0);
+    ui.strong("Flanges, folds and jogs");
     if s.flanges.is_empty() {
-        ui.label(RichText::new("None yet: the Flange tool (3D tab) adds one on an edge.").weak());
+        ui.label(RichText::new("None yet: the Flange and Fold tools (3D tab) add them.").weak());
         return;
     }
     egui::Grid::new(("sheet-flanges", s.key)).num_columns(6).spacing([4.0, 3.0]).show(ui, |ui| {
@@ -176,26 +178,46 @@ fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<U
         ui.label(RichText::new("Position").weak().small());
         ui.label(RichText::new("Bent").weak().small());
         ui.end_row();
-        for (i, &(h, a, pos, down, hem)) in s.flanges.iter().enumerate() {
+        for (i, &(h, a, pos, down, kind)) in s.flanges.iter().enumerate() {
+            let (hem, fold, jog) = (kind == 1, kind == 2, kind == 3);
             let id = egui::Id::new(("sheet-flange", s.key, i));
             let (mut th, mut ta, mut tp, mut td) = ui.data_mut(|d| d.get_temp::<(String, String, usize, bool)>(id)).unwrap_or_else(|| (fmt(h), fmt(a), pos, down));
             ui.label(format!("{}", i + 1));
-            let r1 = ui.add(egui::TextEdit::singleline(&mut th).desired_width(56.0)).on_hover_text(if hem { "Hem length to its outer face, mm" } else { "Height from the outside of the bend, mm" });
             let mut changed = false;
+            let r1 = if fold {
+                ui.label(RichText::new("fold").weak());
+                None
+            } else {
+                let hint = if hem { "Hem length to its outer face, mm" } else if jog { "The jog's step, face to face, mm" } else { "Height from the outside of the bend, mm" };
+                Some(ui.add(egui::TextEdit::singleline(&mut th).desired_width(56.0)).on_hover_text(hint))
+            };
             let mut r2 = None;
             if hem {
                 ui.label(RichText::new("hem").weak());
                 ui.label("");
             } else {
                 r2 = Some(ui.add(egui::TextEdit::singleline(&mut ta).desired_width(40.0)).on_hover_text("Bend angle, degrees (90: square)"));
-                egui::ComboBox::from_id_salt((id, "pos")).selected_text(position_short(tp)).width(64.0).show_ui(ui, |ui| {
-                    for (k, p) in FlangePosition::ALL.iter().enumerate() {
-                        if ui.selectable_label(tp == k, p.label()).clicked() {
-                            tp = k;
-                            changed = true;
+                if jog {
+                    ui.label(RichText::new("jog").weak());
+                } else if fold {
+                    egui::ComboBox::from_id_salt((id, "pos")).selected_text(if tp == 1 { "Mould" } else { "Centre" }).width(64.0).show_ui(ui, |ui| {
+                        for (k, p) in FoldPosition::ALL.iter().enumerate() {
+                            if ui.selectable_label(tp == k, p.label()).clicked() {
+                                tp = k;
+                                changed = true;
+                            }
                         }
-                    }
-                });
+                    });
+                } else {
+                    egui::ComboBox::from_id_salt((id, "pos")).selected_text(position_short(tp)).width(64.0).show_ui(ui, |ui| {
+                        for (k, p) in FlangePosition::ALL.iter().enumerate() {
+                            if ui.selectable_label(tp == k, p.label()).clicked() {
+                                tp = k;
+                                changed = true;
+                            }
+                        }
+                    });
+                }
             }
             if ui.selectable_label(td, if td { "down" } else { "up" }).on_hover_text("Click to bend it the other way").clicked() {
                 td = !td;
@@ -204,11 +226,15 @@ fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<U
             if ui.small_button("×").on_hover_text("Take it away").clicked() {
                 actions.push(UiAction::SheetRemoveFlange(i));
             }
-            let enter = (r1.lost_focus() || r2.as_ref().is_some_and(|r| r.lost_focus())) && ui.input(|k| k.key_pressed(egui::Key::Enter));
+            let enter = (r1.as_ref().is_some_and(|r| r.lost_focus()) || r2.as_ref().is_some_and(|r| r.lost_focus())) && ui.input(|k| k.key_pressed(egui::Key::Enter));
             if enter || changed {
                 // a hem keeps its 180 degrees
                 let a = if hem { Some(180.0) } else { num(&ta) };
-                if let (Some(h), Some(a)) = (mm(&th), a) {
+                if fold || jog {
+                    if let (Some(step), Some(a)) = (if jog { mm(&th) } else { Some(0.0) }, a) {
+                        actions.push(UiAction::SheetFold(i, step, a, tp, td));
+                    }
+                } else if let (Some(h), Some(a)) = (mm(&th), a) {
                     actions.push(UiAction::SheetFlange(i, h, a, tp, td));
                 }
             }
@@ -217,6 +243,39 @@ fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<U
         }
     });
     ui.label(RichText::new("Enter applies a change.").weak().small());
+}
+
+/// The reliefs: what is cut where two flanges meet at a corner, and where a bend ends short of an edge.
+fn reliefs(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiAction>) {
+    const SHAPES: [(&str, &str); 4] = [
+        ("None", "Nothing cut: the bends end square at the corner"),
+        ("Round", "A round cut about the corner of the bends"),
+        ("Square", "A square cut on the corner of the bends (what cutting shops such as SendCutSend ask for)"),
+        ("Tear", "Both bends run to the corner; each end is cut straight from there"),
+    ];
+    ui.strong("Reliefs");
+    let id = egui::Id::new(("sheet-relief", s.key));
+    let (shape0, c0, w0, d0) = s.relief;
+    let (mut shape, mut tc, mut tw, mut td) = ui.data_mut(|d| d.get_temp::<(usize, String, String, String)>(id)).unwrap_or_else(|| (shape0, fmt(c0), fmt(w0), fmt(d0)));
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Corners").weak());
+        for (k, (name, hint)) in SHAPES.iter().enumerate() {
+            if ui.selectable_label(shape == k, *name).on_hover_text(*hint).clicked() {
+                shape = k;
+                changed = true;
+            }
+        }
+    });
+    changed |= field(ui, "Corner size", &mut tc, "How far across the corner relief is, mm (Enter sets it)");
+    changed |= field(ui, "Bend relief width", &mut tw, "Width of the cut where a bend stops short of an edge, mm (Enter sets it)");
+    changed |= field(ui, "Bend relief depth", &mut td, "How far that cut runs past the bend, mm (Enter sets it)");
+    if let (Some(c), Some(w), Some(d)) = (mm(&tc), mm(&tw), mm(&td)) {
+        if changed && v.editable && (shape, c, w, d) != s.relief && c >= 0.0 && w >= 0.0 && d >= 0.0 {
+            actions.push(UiAction::SheetRelief(shape, c, w, d));
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(id, (shape, tc, tw, td)));
 }
 
 fn position_short(i: usize) -> &'static str {
@@ -286,9 +345,61 @@ fn model_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiA
     }
     ui.data_mut(|d| d.insert_temp(id, (th, ta, tp, td, thm)));
     ui.add_space(8.0);
+    fold_section(ui, v, actions);
+    ui.add_space(8.0);
     if ui.button("Export part as STEP…").on_hover_text("The bent part as an exact solid, for the fabricator or another CAD program").clicked() {
         actions.push(UiAction::ExportPartStep);
     }
+}
+
+/// The Fold tool and what it adds: a fold (one bend along the line) or a jog (two, the far side stepped aside and parallel).
+fn fold_section(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
+    ui.horizontal(|ui| {
+        if ui.add_enabled(v.editable, egui::Button::new("Fold tool").selected(v.tool == Tool::Fold)).clicked() {
+            actions.push(UiAction::Tool(Tool::Fold));
+        }
+        ui.label(RichText::new(if v.tool == Tool::Fold && v.fold_first { "now the line's second point" } else { "then two points on a face: the line" }).weak());
+    });
+    let id = egui::Id::new("fold-defaults");
+    let (j0, a0, s0, p0, d0) = v.fold_defaults;
+    let (mut tj, mut ta, mut ts, mut tp, mut td) = ui.data_mut(|d| d.get_temp::<(bool, String, String, usize, bool)>(id)).unwrap_or_else(|| (j0, fmt(a0), fmt(s0), p0, d0));
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Kind").weak());
+        for (jog, name, hint) in [(false, "Fold", "One bend along the line"), (true, "Jog", "Two bends the opposite way: the far side steps aside and stays parallel")] {
+            if ui.selectable_label(tj == jog, name).on_hover_text(hint).clicked() {
+                tj = jog;
+                changed = true;
+            }
+        }
+        ui.label(RichText::new("  Bent").weak());
+        for (down, name) in [(false, "Up"), (true, "Down")] {
+            if ui.selectable_label(td == down, name).on_hover_text("Up: toward the face the part was made from").clicked() {
+                td = down;
+                changed = true;
+            }
+        }
+    });
+    changed |= field(ui, "Angle", &mut ta, "Bend angle, degrees, 90 is square (Enter sets it)");
+    if tj {
+        changed |= field(ui, "Step", &mut ts, "How far the far side moves, face to face, mm (Enter sets it)");
+    } else {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Line").weak());
+            for (k, p) in FoldPosition::ALL.iter().enumerate() {
+                if ui.selectable_label(tp == k, if k == 0 { "Centre" } else { "Mould" }).on_hover_text(p.label()).clicked() {
+                    tp = k;
+                    changed = true;
+                }
+            }
+        });
+    }
+    if let (Some(a), Some(st)) = (num(&ta), mm(&ts)) {
+        if changed && (tj, a, st, tp, td) != (j0, a0, s0, p0, d0) && a > 0.0 && a <= 180.0 && st > 0.0 {
+            actions.push(UiAction::FoldDefaults(tj, a, st, tp, td));
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(id, (tj, ta, ts, tp, td)));
 }
 
 /// Flat pattern: the blank, its bend lines and bend table, and DXF for the cutting shop.

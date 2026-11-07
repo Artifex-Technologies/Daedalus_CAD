@@ -94,6 +94,8 @@ pub enum UiAction {
     MakeSheetPart(f64, f64, f64, usize),
     /// The selected part's rule changed: thickness, K-factor, bend radius (mm), preset (as above).
     SheetRule(f64, f64, f64, usize),
+    /// The selected part's reliefs changed: corner relief shape (as SheetView::relief), its size, bend relief width, depth (mm).
+    SheetRelief(usize, f64, f64, f64),
     /// The selected part shown unfolded (true) or folded.
     SheetFlat(bool),
     /// Flange `0` of the selected part changed to height (mm), angle (degrees), position (index into FlangePosition::ALL),
@@ -102,6 +104,11 @@ pub enum UiAction {
     SheetRemoveFlange(usize),
     /// What the Flange tool adds: height (mm), angle (degrees), position, bent down, a hem.
     FlangeDefaults(f64, f64, usize, bool, bool),
+    /// Fold or jog `0` of the selected part changed to: step (mm, a jog's), angle (degrees), position (into
+    /// FoldPosition::ALL, a fold's), bent down.
+    SheetFold(usize, f64, f64, usize, bool),
+    /// What the Fold tool adds: a jog (else a fold), angle (degrees), a jog's step (mm), a fold's position, bent down.
+    FoldDefaults(bool, f64, f64, usize, bool),
     /// Convert to Sheet Metal: make the part (thickness, K-factor, radius, preset), or start the picks again.
     ConvertSheet(f64, f64, f64, usize),
     ConvertReset,
@@ -142,9 +149,13 @@ pub struct SheetView {
     pub thickness: f64,
     pub k_factor: f64,
     pub bend_radius: f64,
+    /// The reliefs: corner relief shape (0 none, 1 round, 2 square, 3 tear), its size, and the bend relief's width and
+    /// depth (mm).
+    pub relief: (usize, f64, f64, f64),
     pub flat: bool,
-    /// Each flange: height, angle (degrees), position (index into FlangePosition::ALL), bent down, a hem.
-    pub flanges: Vec<(f64, f64, usize, bool, bool)>,
+    /// Each step, in order: height (a jog's step), angle (degrees), position (into FlangePosition::ALL, or FoldPosition::ALL
+    /// for a fold), bent down, and what it is (0 flange, 1 hem, 2 fold, 3 jog).
+    pub flanges: Vec<(f64, f64, usize, bool, usize)>,
     /// The base outline and holes (Drawing tab) and the flat pattern's loops and bend centre lines (Flat pattern tab).
     pub base: Vec<Vec<[f64; 2]>>,
     pub flat_loops: Vec<Vec<[f64; 2]>>,
@@ -217,6 +228,9 @@ pub struct UiView<'a> {
     pub sheet: Option<SheetView>,
     pub face_for_part: bool,
     pub flange_defaults: (f64, f64, usize, bool, bool),
+    /// What the Fold tool adds (a jog, angle, step, position, down), and whether its first point is picked.
+    pub fold_defaults: (bool, f64, f64, usize, bool),
+    pub fold_first: bool,
     /// Convert to Sheet Metal under way: the solid's name, whether its fixed face is picked, and how many bend edges.
     pub converting: Option<(String, bool, usize)>,
     /// The Stress Test panel: open, and the test under way (None: no part picked yet).
@@ -816,7 +830,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                         actions.push(UiAction::SheetMetal);
                         ui.close_menu();
                     }
-                    tool_items(ui, v, &[Tool::Flange, Tool::SheetConvert], &mut actions);
+                    tool_items(ui, v, &[Tool::Flange, Tool::Fold, Tool::SheetConvert], &mut actions);
                     if ui.button("Sheet Metal Panel").clicked() {
                         actions.push(UiAction::SheetMetal);
                         ui.close_menu();
@@ -1179,6 +1193,7 @@ fn toolbar_groups() -> [Vec<Slot>; 4] {
             t(Tool::FlipEdge),
             t(Tool::Interact),
             t(Tool::Flange),
+            t(Tool::Fold),
             t(Tool::SheetConvert),
             t(Tool::Stress),
         ],

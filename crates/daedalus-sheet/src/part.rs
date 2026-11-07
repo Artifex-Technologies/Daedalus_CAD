@@ -117,7 +117,8 @@ pub struct SolidSource {
     pub bends: Vec<[f64; 3]>,
 }
 
-/// An edge flange (or a hem) as the user asked for it.
+/// An edge flange, a hem, a fold or a jog as the user asked for it, in the order they were added (the part is built again
+/// from them in this order).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FlangeAsked {
     /// The point picked on the edge (part mm).
@@ -132,6 +133,70 @@ pub struct FlangeAsked {
     /// A flat hem (folded right back onto the sheet; the angle and position do not apply).
     #[serde(default)]
     pub hem: bool,
+    /// A fold along a line across a panel, or a jog (then `height` is its step and `position` is not used); `pick` is unused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fold: Option<FoldLine>,
+}
+
+/// Where a fold or jog runs: two points on its line, on a face of the panel it folds (part mm).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FoldLine {
+    pub a: [f64; 3],
+    pub b: [f64; 3],
+    /// Two folds the opposite way round, so the far side stays parallel and steps aside by `height` (a joggle).
+    #[serde(default)]
+    pub jog: bool,
+}
+
+/// Where a fold's bend sits against the line drawn (SolidCraft's names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FoldPosition {
+    /// The middle of the bend on the line: the bend line a shop's DXF expects.
+    Centre,
+    /// Where the outer faces would meet (the mould line): the side that stays measures the same to it folded as flat.
+    Mould,
+}
+
+impl FoldPosition {
+    pub const ALL: [FoldPosition; 2] = [FoldPosition::Centre, FoldPosition::Mould];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            FoldPosition::Centre => "centerline",
+            FoldPosition::Mould => "mould",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<FoldPosition> {
+        FoldPosition::ALL.into_iter().find(|p| p.key() == k)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FoldPosition::Centre => "Centre line on the line drawn",
+            FoldPosition::Mould => "Mould line on the line drawn",
+        }
+    }
+}
+
+/// What a step is: a flange, a hem, a fold or a jog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepKind {
+    Flange,
+    Hem,
+    Fold,
+    Jog,
+}
+
+impl FlangeAsked {
+    pub fn kind(&self) -> StepKind {
+        match &self.fold {
+            Some(f) if f.jog => StepKind::Jog,
+            Some(_) => StepKind::Fold,
+            None if self.hem => StepKind::Hem,
+            None => StepKind::Flange,
+        }
+    }
 }
 
 /// The kind a part's text names, so `Definition::part` can hold other kinds later.
@@ -175,12 +240,83 @@ pub fn part_from_solid(mesh: &Mesh, fixed: [f64; 3], bends: &[[f64; 3]], materia
 /// A flange or hem as asked, added to `sheet`.
 fn apply(sheet: &mut SheetBody, f: &FlangeAsked, rule: &RuleValues) -> Result<()> {
     let pick = Vec3::new(f.pick[0], f.pick[1], f.pick[2]);
+    if let Some(line) = &f.fold {
+        let (a, b) = (Vec3::new(line.a[0], line.a[1], line.a[2]), Vec3::new(line.b[0], line.b[1], line.b[2]));
+        if line.jog {
+            return jog(sheet, a, b, f.height, f.angle_deg.to_radians(), rule.bend_radius, f.down);
+        }
+        let mut warning = None;
+        sheet.add_fold(a, b, f.angle_deg.to_radians(), rule.bend_radius, &f.position, f.down, None, &mut warning)?;
+        return Ok(());
+    }
     if f.hem {
         sheet.add_hem(pick, f.height, rule.hem_gap, f.down)?;
     } else {
         let position = FlangePosition::from_key(&f.position).unwrap_or(FlangePosition::Inside);
         sheet.add_flange(pick, f.height, f.angle_deg.to_radians(), rule.bend_radius, position.key(), f.down)?;
     }
+    Ok(())
+}
+
+/// The second fold of a jog: `s` (flat mm) from where the first one's bend starts, the other way round. Returns the sheet, the
+/// far side's step from the base (top face to top face, along the base's normal) and how parallel it is to the base (1: it is).
+fn jog_second(first: &SheetBody, i: usize, s: f64, angle: f64, radius: f64, flip: bool) -> Result<(SheetBody, f64, f64)> {
+    use crate::util::apply_point;
+    let f = first.flanges[i].clone();
+    let t = first.t;
+    let flat3 = |q: Vec2, z: f64| Vec3::new(q.x, q.y, z);
+    let c = f.p + f.n * s;
+    let big = 1.0e4;
+    let m = first.world(Some(i));
+    let (wa, wb) = (apply_point(&m, flat3(c - f.d * big, t)), apply_point(&m, flat3(c + f.d * big, t)));
+    let mut next = first.clone();
+    let mut warning = None;
+    let j = next.add_fold(wa, wb, angle, radius, "centerline", flip, None, &mut warning)?;
+    let g = next.flanges[j].clone();
+    let q = g.p + g.n * (next.allowance(&g) + 1.0);
+    let (far, base) = (next.world(Some(j)), next.world(None));
+    let normal = |m: &crate::util::Mat| {
+        let v = apply_point(m, Vec3::Z) - apply_point(m, Vec3::ZERO);
+        v.normalized().unwrap_or(Vec3::Z)
+    };
+    let base_n = normal(&base);
+    let step = (apply_point(&far, flat3(q, t)) - apply_point(&base, flat3(q, t))).dot(base_n);
+    Ok((next, step, normal(&far).dot(base_n)))
+}
+
+/// A jog on the panel the line `a`-`b` lies on: a fold of `angle` there (up, or `down`), then one the other way round further
+/// on, placed so the far side, parallel to the panel again, has stepped `step` mm aside (face to face). The flat between the
+/// two bends follows from the step; a step too small for the bends (they would overlap) is refused, saying the least.
+fn jog(sheet: &mut SheetBody, a: Vec3, b: Vec3, step: f64, angle: f64, radius: f64, down: bool) -> Result<()> {
+    if !(step > 0.0 && step.is_finite()) {
+        return invalid("the jog's step must be more than 0");
+    }
+    let mut first = sheet.clone();
+    let mut warning = None;
+    let i = first.add_fold(a, b, angle, radius, "centerline", down, None, &mut warning)?;
+    let ba = first.allowance(&first.flanges[i]);
+    // the second bend starts where the first ends at the earliest (no flat between them)
+    let s0 = ba * 1.5 + 1e-3;
+    // which way round makes the far side parallel (a Z, not a U)
+    let flip = [!down, down]
+        .into_iter()
+        .find(|&fl| jog_second(&first, i, s0, angle, radius, fl).is_ok_and(|(_, _, par)| par > 0.999))
+        .ok_or_else(|| DocError::Invalid("the jog's second bend could not be made".into()))?;
+    let (_, o1, _) = jog_second(&first, i, s0, angle, radius, flip)?;
+    let (_, o2, _) = jog_second(&first, i, s0 + 5.0, angle, radius, flip)?;
+    let slope = (o2.abs() - o1.abs()) / 5.0;
+    if !(slope > 1e-9) {
+        return invalid("the jog's step does not grow with the flat between its bends (is the angle 0?)");
+    }
+    if step < o1.abs() - 1e-9 {
+        return invalid(format!("a jog with these bends steps at least {} mm (a smaller radius or angle allows less)", fmt_mm(o1.abs())));
+    }
+    let s = s0 + (step - o1.abs()) / slope;
+    let (next, o, _) = jog_second(&first, i, s, angle, radius, flip)?;
+    if (o.abs() - step).abs() > 1e-6 {
+        return invalid(format!("the jog came out {} mm instead of {} mm", fmt_mm(o.abs()), fmt_mm(step)));
+    }
+    *sheet = next;
     Ok(())
 }
 
@@ -242,6 +378,28 @@ impl SheetPart {
         Ok(())
     }
 
+    /// Fold or jog `i` changed: its angle (degrees), a jog's step (mm; ignored for a fold), a fold's position, its direction.
+    /// The part is unchanged if it fails.
+    pub fn set_fold(&mut self, i: usize, step: f64, angle_deg: f64, position: FoldPosition, down: bool) -> Result<()> {
+        let mut next = self.clone();
+        let Some(f) = next.flanges.get_mut(i) else { return invalid("no such fold") };
+        let jog = match &f.fold {
+            Some(line) => line.jog,
+            None => return invalid("that is not a fold or a jog"),
+        };
+        if jog {
+            check_flange(step, angle_deg)?;
+            f.height = step;
+        } else {
+            check_flange(1.0, angle_deg)?;
+            f.position = position.key().into();
+        }
+        (f.angle_deg, f.down) = (angle_deg, down);
+        next.rebuild()?;
+        *self = next;
+        Ok(())
+    }
+
     /// Flange `i` taken away (and any added after it that no longer finds its edge stops the change).
     pub fn remove_flange(&mut self, i: usize) -> Result<()> {
         let mut next = self.clone();
@@ -275,14 +433,34 @@ impl SheetPart {
     /// `angle_deg` bend angle (0…180), radius from the part's rule. The part is unchanged if it fails.
     pub fn add_flange(&mut self, pick: [f64; 3], height: f64, angle_deg: f64, position: FlangePosition, down: bool) -> Result<()> {
         check_flange(height, angle_deg)?;
-        self.add(FlangeAsked { pick, height, angle_deg, position: position.key().into(), down, hem: false })
+        self.add(FlangeAsked { pick, height, angle_deg, position: position.key().into(), down, hem: false, fold: None })
     }
 
     /// Adds a flat hem on the part's edge nearest `pick` (part mm): folded right back onto the sheet, `length` to its outer
     /// face, the rule's hem gap inside. The part is unchanged if it fails.
     pub fn add_hem(&mut self, pick: [f64; 3], length: f64, down: bool) -> Result<()> {
         check_flange(length, 180.0)?;
-        self.add(FlangeAsked { pick, height: length, angle_deg: 180.0, position: FlangePosition::Inside.key().into(), down, hem: true })
+        self.add(FlangeAsked { pick, height: length, angle_deg: 180.0, position: FlangePosition::Inside.key().into(), down, hem: true, fold: None })
+    }
+
+    /// Adds a fold along the line through `a` and `b` (part mm, on a face of the panel to fold): `angle_deg` (0…180), up or
+    /// `down`, the bend centred on the line or its mould line there. The side away from the larger part moves. The part is
+    /// unchanged if it fails.
+    pub fn add_fold(&mut self, a: [f64; 3], b: [f64; 3], angle_deg: f64, position: FoldPosition, down: bool) -> Result<()> {
+        check_flange(1.0, angle_deg)?;
+        let fold = Some(FoldLine { a, b, jog: false });
+        self.add(FlangeAsked { pick: a, height: 0.0, angle_deg, position: position.key().into(), down, hem: false, fold })
+    }
+
+    /// Adds a jog (a joggle) along the line through `a` and `b`: the side away from the larger part steps `step` mm aside
+    /// (face to face) through two bends of `angle_deg`, up or `down`, and stays parallel. The part is unchanged if it fails.
+    pub fn add_jog(&mut self, a: [f64; 3], b: [f64; 3], step: f64, angle_deg: f64, down: bool) -> Result<()> {
+        check_flange(step, angle_deg)?;
+        if angle_deg >= 179.0 {
+            return invalid("a jog's bends must be less than 179 degrees");
+        }
+        let fold = Some(FoldLine { a, b, jog: true });
+        self.add(FlangeAsked { pick: a, height: step, angle_deg, position: "centerline".into(), down, hem: false, fold })
     }
 
     fn add(&mut self, f: FlangeAsked) -> Result<()> {
@@ -649,6 +827,100 @@ mod tests {
             }
         }
         [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]
+    }
+
+    /// A 120 x 60 mm steel plate, 2 mm (no holes), as a part.
+    fn plain_plate() -> SheetPart {
+        let outer = Loop2::polygon(&[Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 60.0), Vec2::new(0.0, 60.0)]).ccw();
+        SheetPart::from_region("Steel 2 mm", steel2(), Region2 { outer, holes: Vec::new() }).unwrap()
+    }
+
+    /// The top face's height (mm, along +Z) of the part's piece at flat point (x, y), folded.
+    fn top_at(p: &SheetPart, x: f64, y: f64) -> f64 {
+        let s = &p.sheet;
+        // the piece that holds the point in the flat: the flange whose panel starts last before it, else the base
+        let mut best: (Option<usize>, f64) = (None, f64::NEG_INFINITY);
+        for (i, f) in s.flanges.iter().enumerate() {
+            let along = (Vec2::new(x, y) - f.p).dot(f.n) - s.allowance(f);
+            if along > 0.0 && along < 1e5 && f.p.dot(f.n) > best.1 {
+                best = (Some(i), f.p.dot(f.n));
+            }
+        }
+        crate::util::apply_point(&s.world(best.0), Vec3::new(x, y, s.t)).z
+    }
+
+    #[test]
+    fn a_fold_across_the_plate_bends_it_and_the_blank_keeps_its_size() {
+        let mut p = plain_plate();
+        p.add_fold([80.0, -10.0, 2.0], [80.0, 70.0, 2.0], 90.0, FoldPosition::Centre, false).unwrap();
+        assert_eq!(p.flanges[0].kind(), StepKind::Fold);
+        let table = p.bend_table();
+        assert_eq!(table.len(), 1);
+        assert!((table[0].0 - 90.0).abs() < 1e-9 && (table[0].2 - 60.0).abs() < 1e-6, "{table:?}");
+        let (w, h) = p.sheet.flat_size().unwrap();
+        assert!((w - 120.0).abs() < 1e-6 && (h - 60.0).abs() < 1e-6, "the fold takes its bend out of the sheet: {w} x {h}");
+        // bent: the short side stands up, about 40 mm less half the bend
+        let bent = p.faces(false).unwrap();
+        let [sx, _, sz] = size(&bent);
+        assert!(sx < 0.1 && sz > 0.03, "{sx} x {sz} m");
+        // turned, then taken away: the plate again
+        p.set_fold(0, 0.0, 45.0, FoldPosition::Mould, true).unwrap();
+        assert!((p.bend_table()[0].0 - 45.0).abs() < 1e-9);
+        p.remove_flange(0).unwrap();
+        assert!(p.bend_table().is_empty());
+    }
+
+    #[test]
+    fn a_jog_steps_the_far_side_aside_by_what_was_asked_and_keeps_it_parallel() {
+        for (step, angle, down) in [(10.0, 90.0, false), (4.0, 45.0, false), (6.0, 60.0, true)] {
+            let what = format!("{step} mm at {angle} degrees{}", if down { ", down" } else { "" });
+            let mut p = plain_plate();
+            p.add_jog([80.0, -10.0, 2.0], [80.0, 70.0, 2.0], step, angle, down).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eq!(p.flanges[0].kind(), StepKind::Jog);
+            let table = p.bend_table();
+            assert_eq!(table.len(), 2, "{what}: two bends");
+            assert!(table.iter().all(|b| (b.0 - angle).abs() < 1e-6), "{what}: {table:?}");
+            // the far end's top face against the base's
+            let moved = top_at(&p, 118.0, 30.0) - top_at(&p, 5.0, 30.0);
+            assert!((moved.abs() - step).abs() < 1e-6, "{what}: stepped {moved} mm");
+            assert_eq!(moved < 0.0, down, "{what}: the way asked");
+            let (w, _) = p.sheet.flat_size().unwrap();
+            assert!((w - 120.0).abs() < 1e-6, "{what}: the blank keeps its length ({w})");
+        }
+        // too small for the bends: refused, saying the least
+        let mut p = plain_plate();
+        let e = p.add_jog([80.0, -10.0, 2.0], [80.0, 70.0, 2.0], 0.5, 90.0, false).unwrap_err().to_string();
+        assert!(e.contains("at least"), "{e}");
+        assert!(p.flanges.is_empty(), "unchanged");
+    }
+
+    #[test]
+    fn every_corner_relief_shape_makes_a_part_with_two_flanges_at_a_corner() {
+        use crate::sheet::ReliefShape;
+        for shape in [ReliefShape::Notch, ReliefShape::Round, ReliefShape::Rectangular, ReliefShape::Tear] {
+            let outer = Loop2::polygon(&[Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 60.0), Vec2::new(0.0, 60.0)]).ccw();
+            let rule = RuleValues { corner_relief_shape: shape, corner_relief: 6.0, ..steel2() };
+            let mut p = SheetPart::from_region("Steel 2 mm", rule, Region2 { outer, holes: Vec::new() }).unwrap();
+            p.add_flange([60.0, 0.0, 0.0], 20.0, 90.0, FlangePosition::Inside, false).unwrap_or_else(|e| panic!("{shape:?}: {e}"));
+            p.add_flange([120.0, 30.0, 0.0], 20.0, 90.0, FlangePosition::Inside, false).unwrap_or_else(|e| panic!("{shape:?}: {e}"));
+            p.faces(true).unwrap_or_else(|e| panic!("{shape:?}: flat: {e}"));
+            p.faces(false).unwrap_or_else(|e| panic!("{shape:?}: bent: {e}"));
+            assert_eq!(p.bend_table().len(), 2, "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn parts_without_folds_read_as_before_and_folds_read_back() {
+        let mut p = plain_plate();
+        p.add_flange([0.0, 30.0, 0.0], 20.0, 90.0, FlangePosition::Inside, false).unwrap();
+        let old = p.to_text();
+        assert!(!old.contains("\"fold\""), "a flange writes no fold");
+        assert_eq!(SheetPart::from_text(&old).unwrap().flanges[0].kind(), StepKind::Flange);
+        p.add_jog([80.0, -10.0, 2.0], [80.0, 70.0, 2.0], 8.0, 90.0, false).unwrap();
+        let mut back = SheetPart::from_text(&p.to_text()).unwrap();
+        assert_eq!(back.flanges[1].kind(), StepKind::Jog);
+        back.rebuild().unwrap();
+        assert_eq!(back.bend_table().len(), 3);
     }
 
     #[test]

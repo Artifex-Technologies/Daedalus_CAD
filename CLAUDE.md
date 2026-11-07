@@ -65,7 +65,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 317 tests pass (2026-11-07, 110 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 321 tests pass (2026-11-07, 114 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -200,6 +200,15 @@ the current state is:
   edge), Convert in the panel; a shelled solid keeps its walls' thickness; the part keeps the solid (`SolidSource`) and
   rebuilds from it. Checked on screen (an L with 2 mm walls: blank matches hand numbers). Not yet: typing in the panel
   driven on screen (no keys sent to the nested desktop), jogs and other SolidCraft features in the UI.
+- Folds, jogs and reliefs (2026-11-07): `SheetPart::add_fold` (SolidCraft's `add_fold`: a bend along a line across a
+  panel, centre or mould line on it; the blank keeps its size) and `add_jog` (two folds the opposite way; the second fold's
+  distance solved so the far side steps exactly the asked amount, face to face, and stays parallel; a step too small for
+  the bends is refused with the least). They are steps in the part's ordered list (`FlangeAsked::fold`, `.daedalus` reads
+  old parts unchanged). Tools > Sheet Metal > Fold or Jog (toolbar too): two clicks on a face of the part draw the line;
+  the 3D tab sets fold or jog, angle, step, line position, up or down; the Drawing tab lists and edits them. Reliefs in the
+  Drawing tab: corner relief None / Round / Square / Tear and its size, bend relief width and depth; new parts start with
+  square corner reliefs (what SendCutSend asks for; SolidCraft's default cuts none). Tested in the part model (fold, jogs at
+  90/45/60 degrees up and down, every relief shape at a two-flange corner); not yet seen on screen.
 - Box selection (2026-11-07, `f52ceb3`): with Select, drag a box. Left to right takes what is wholly inside;
   right to left (dashed, crossing) takes what it touches. Ctrl adds, Shift toggles, Ctrl+Shift takes out. It takes faces,
   edges and loose lines of the geometry being edited, and groups/components whole.
@@ -213,8 +222,8 @@ the current state is:
   300 000 cubes). Checked on screen 2026-11-07 on an L bracket (80 x 100 x 60 mm, 2 mm): held by the upright, 100 N down on
   the flat leg: 27 600 cubes of 1 mm, 10 s, 57.8 MPa (hand 58.5), 0.47 mm, 0.217 kg (0.220). Not built: shell elements
   (voxels already bend right at two cubes across a sheet), several load cases, results saved in the file.
-- Next milestones (my decision, 2026-11-07: stress testing first, now built): more sheet metal (jogs and the other SolidCraft
-  features in the UI) and the Dynamic Components extras (Hidden, Copies, Material, Parent!, per-copy values). Constraints are
+- Next milestones (my decision, 2026-11-07: stress testing first, now built): more sheet metal (folds, jogs and reliefs
+  done; still: path flanges, holes and cut-outs on bent panels, K-factor tables) and the Dynamic Components extras (Hidden, Copies, Material, Parent!, per-copy values). Constraints are
   still to come too.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
   constraint solver, reuse CADCraft crates or reimplement.
