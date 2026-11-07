@@ -65,7 +65,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 329 tests pass (2026-11-07, 120 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 330 tests pass (2026-11-07, 120 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -179,8 +179,10 @@ the current state is:
   onClick SET/ALTER (Interact tool). Panels in the tray: Component Options (labelled attributes, Enter applies) and
   Component Attributes (rows, + Built-in, Apply). Checked on screen. Since 2026-11-07 also Hidden, Copies (with COPY in
   formulas), Material and `Parent!` references (`model::dc_view`, applied wherever the scene is flattened: drawing, export,
-  picking, the stress test). Not yet: per-copy values (copies share; Make Unique), because an instance is only a definition and
-  a transform. Location skipped for now (my call, 2026-11-06).
+  picking, the stress test). Per-copy values (2026-11-07): Component Options and Interact change the selected copy alone; a
+  component placed more than once gets a definition of its own first (`Door#2`, as SketchUp does,
+  `Model::set_copy_attributes`), while Component Attributes changes the component and every copy. Location skipped for now
+  (my call, 2026-11-06).
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").
@@ -236,7 +238,7 @@ the current state is:
   (voxels already bend right at two cubes across a sheet), several load cases, results saved in the file.
 - Next milestones (my decision, 2026-11-07: stress testing first, now built): more sheet metal (folds, jogs and reliefs
   done 2026-11-07, as are path flanges, holes on bent panels and bend tables; next there: seeing them on screen, then
-  SolidCraft's other features as needed) and per-copy values for Dynamic Components. Constraints are still to come too.
+  SolidCraft's other features as needed) Constraints are still to come.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
   constraint solver, reuse CADCraft crates or reimplement.
 

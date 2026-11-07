@@ -72,7 +72,7 @@ struct State {
     /// The Dynamic Components panels are open; what they hand back (a whole new attribute list).
     attributes_open: bool,
     options_open: bool,
-    dc_out: std::cell::RefCell<Option<Vec<daedalus_core::dynamic::Attribute>>>,
+    dc_out: std::cell::RefCell<Option<(Vec<daedalus_core::dynamic::Attribute>, bool)>>,
     /// The texture files on the GPU (in the model's order), and each one's average colour (what Shaded shows).
     loaded_textures: Vec<String>,
     texture_colors: Vec<[u8; 3]>,
@@ -2789,9 +2789,12 @@ impl State {
         }
         // the Dynamic Components panels' changes: the selected component's attributes, all of them
         let handed = self.dc_out.borrow_mut().take();
-        if let Some(list) = handed {
-            if let Some(def) = self.one_instance().and_then(|i| self.model.instances().get(i)).map(|i| i.def) {
-                match self.model.set_attributes(def, list) {
+        if let Some((list, this_copy)) = handed {
+            if let Some((i, def)) = self.one_instance().and_then(|i| self.model.instances().get(i).map(|x| (i, x.def))) {
+                // Component Options change the copy selected (it gets a component of its own when shared); Component
+                // Attributes the component, every copy of it
+                let done = if this_copy { self.model.set_copy_attributes(i, list) } else { self.model.set_attributes(def, list) };
+                match done {
                     Ok(()) => self.message = None,
                     Err(e) => self.message = Some(format!("Not applied: {e}.")),
                 }

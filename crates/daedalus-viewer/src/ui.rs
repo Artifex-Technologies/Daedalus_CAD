@@ -254,7 +254,9 @@ pub struct UiView<'a> {
     pub attributes_open: bool,
     pub options_open: bool,
     pub dc: Option<DcView>,
-    pub dc_out: &'a std::cell::RefCell<Option<Vec<daedalus_core::dynamic::Attribute>>>,
+    /// What the Dynamic Components panels hand back: the attributes, and whether for the selected copy alone (Component
+    /// Options) or for its whole component (Component Attributes).
+    pub dc_out: &'a std::cell::RefCell<Option<(Vec<daedalus_core::dynamic::Attribute>, bool)>>,
     /// The Sheet Metal panel: open, its tab, the selected part (if one is), whether one face is selected (a part can be
     /// made of it), and what the Flange tool adds (height mm, angle, position, down, hem).
     pub sheet_open: bool,
@@ -433,7 +435,7 @@ fn component_options(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>)
         if done {
             let mut list: Vec<_> = dc.attrs.iter().map(|x| x.0.clone()).collect();
             list[i].formula = text.clone();
-            *v.dc_out.borrow_mut() = Some(list);
+            *v.dc_out.borrow_mut() = Some((list, true));
             ui.data_mut(|d| d.remove::<String>(id));
         } else {
             ui.data_mut(|d| d.insert_temp(id, text));
@@ -495,7 +497,7 @@ fn component_attributes(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiActio
                 .filter(|(n, _, _)| !n.trim().is_empty())
                 .map(|(n, f, l)| Attribute { name: n.trim().to_string(), formula: f.trim().to_string(), label: Some(l.trim().to_string()).filter(|l| !l.is_empty()) })
                 .collect();
-            *v.dc_out.borrow_mut() = Some(list);
+            *v.dc_out.borrow_mut() = Some((list, false));
         }
     });
     ui.label(egui::RichText::new("X Y Z place it, LenX LenY LenZ size it, RotZ turns it; onClick: SET(\"Name\", value); ALTER(\"Name\", a, b)").weak().small());

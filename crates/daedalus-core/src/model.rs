@@ -186,6 +186,17 @@ fn owner_values(scene: &Scene, open: &[usize]) -> std::collections::HashMap<Stri
 
 /// Every copy of `def` in the context at `open` placed and sized by its attributes: the built-ins it sets (X, Y, Z, LenX,
 /// LenY, LenZ, RotZ) replace where it is and how big; the rest stay as they were.
+/// The name for a copy of component `name` made its own: `Door#2` (one more than the highest number on that name), `Door#3`
+/// from `Door#2`.
+fn copy_name(scene: &Scene, name: &str) -> String {
+    let stem = match name.rsplit_once('#') {
+        Some((s, n)) if !s.is_empty() && n.parse::<u32>().is_ok() => s,
+        _ => name,
+    };
+    let n = scene.defs.iter().filter_map(|d| d.name.strip_prefix(stem)?.strip_prefix('#')?.parse::<u32>().ok()).max().unwrap_or(1);
+    format!("{stem}#{}", n + 1)
+}
+
 fn apply_dynamic(scene: &mut Scene, open: &[usize], def: usize) -> Result<(), String> {
     let (size, _) = def_box(scene, def);
     let attrs = scene.defs[def].attributes.clone();
@@ -701,8 +712,33 @@ impl Model {
         .map_err(|e| e.to_string())
     }
 
-    /// Interact: copy `i`'s onClick actions run (they change its component's attributes), and its copies follow. Returns
-    /// whether it had anything to do.
+    /// Component Options: copy `i`'s attributes become `attrs`, for that copy alone. A component placed more than once gets a
+    /// definition of its own first (`Door#2` beside `Door`, as SketchUp's dynamic components do), so the other copies keep
+    /// their values. One undo step; nothing changes when a formula goes wrong.
+    pub fn set_copy_attributes(&mut self, i: usize, attrs: Vec<crate::dynamic::Attribute>) -> Result<(), String> {
+        let inst = *self.instances().get(i).ok_or("that is not a component here")?;
+        let mut trial = self.scene.clone();
+        let def = if trial.uses(inst.def) > 1 {
+            let mut d = trial.defs[inst.def].clone();
+            d.name = copy_name(&trial, &d.name);
+            trial.defs.push(d);
+            let def = trial.defs.len() - 1;
+            trial.ctx_mut(&self.open).ok_or("that is not a component here")?.instances[i].def = def;
+            def
+        } else {
+            inst.def
+        };
+        trial.defs[def].attributes = attrs;
+        apply_dynamic(&mut trial, &self.open, def)?;
+        self.edit_scene(|_, s, _| {
+            *s = trial;
+            Ok(())
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// Interact: copy `i`'s onClick actions run; they change that copy's attributes alone (see
+    /// [`set_copy_attributes`](Self::set_copy_attributes)). Returns whether it had anything to do.
     pub fn interact(&mut self, i: usize) -> Result<bool, String> {
         let inst = *self.instances().get(i).ok_or("click a dynamic component")?;
         let mut attrs = self.scene.defs[inst.def].attributes.clone();
@@ -710,7 +746,7 @@ impl Model {
         if !crate::dynamic::on_click(&mut attrs, &given)? {
             return Ok(false);
         }
-        self.set_attributes(inst.def, attrs)?;
+        self.set_copy_attributes(i, attrs)?;
         Ok(true)
     }
 
@@ -1737,6 +1773,43 @@ mod tests {
         assert!(m.set_attributes(def, vec![a("LenX", "=Nope*2")]).is_err());
         assert!((size(&m).0[0] - 3.0).abs() < 1e-9);
         assert_eq!(m.attribute_values(i).unwrap()["width"].num(), 3.0);
+    }
+
+    #[test]
+    fn options_changed_on_one_copy_leave_the_other_copies_as_they_were() {
+        use crate::dynamic::Attribute;
+        let a = |n: &str, f: &str| Attribute { name: n.into(), formula: f.into(), label: Some("Width".into()).filter(|_| n == "Width") };
+        let (mut m, i, def) = cube_component();
+        m.set_attributes(def, vec![a("Width", "1"), a("LenX", "=Width"), a("onClick", "ALTER(\"Width\", 1, 2)")]).unwrap();
+        let j = m.copy_instances(&[i], &Xform::translation([3.0, 0.0, 0.0])).unwrap()[0];
+        let width = |m: &Model, k: usize| {
+            let mut mesh = Mesh::new();
+            m.scene.flatten_instance(&m.instances()[k], &Xform::IDENTITY, &mut mesh);
+            let (lo, hi) = mesh.bounds().unwrap();
+            hi[0] - lo[0]
+        };
+        assert_eq!(m.instances()[j].def, def, "copies share their component");
+        let defs = m.scene.defs.len();
+        // Component Options on the copy: it gets a component of its own, the first keeps 1 m
+        m.set_copy_attributes(j, vec![a("Width", "2.5"), a("LenX", "=Width"), a("onClick", "ALTER(\"Width\", 1, 2)")]).unwrap();
+        assert!((width(&m, j) - 2.5).abs() < 1e-9 && (width(&m, i) - 1.0).abs() < 1e-9);
+        assert_eq!(m.scene.defs.len(), defs + 1);
+        let own = m.instances()[j].def;
+        assert_ne!(own, def);
+        assert_eq!(m.scene.defs[own].name, format!("{}#2", m.scene.defs[def].name.rsplit_once('#').map(|p| p.0).unwrap_or(&m.scene.defs[def].name)));
+        // now alone in its component, it changes in place
+        m.set_copy_attributes(j, vec![a("Width", "3"), a("LenX", "=Width")]).unwrap();
+        assert_eq!((m.instances()[j].def, m.scene.defs.len()), (own, defs + 1));
+        // Interact on the first: only it turns to 2 m
+        let k = m.copy_instances(&[i], &Xform::translation([0.0, 3.0, 0.0])).unwrap()[0];
+        assert!(m.interact(i).unwrap());
+        assert!((width(&m, i) - 2.0).abs() < 1e-9 && (width(&m, k) - 1.0).abs() < 1e-9 && (width(&m, j) - 3.0).abs() < 1e-9);
+        // each change one undo step, a bad one none
+        let before = m.scene.defs.len();
+        assert!(m.set_copy_attributes(k, vec![a("LenX", "=Nope")]).is_err());
+        assert_eq!(m.scene.defs.len(), before);
+        assert!(m.undo());
+        assert!((width(&m, i) - 1.0).abs() < 1e-9 && m.instances()[i].def == def);
     }
 
     /// A 1 m cube made a component; returns the model, its instance and its definition.
