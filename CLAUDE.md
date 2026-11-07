@@ -65,7 +65,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 330 tests pass (2026-11-07, 120 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 331 tests pass (2026-11-07, 120 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -128,7 +128,10 @@ the current state is:
   ~/.local/share/daedalus/openskp, not part of the build), which writes `.dskp` (our text format) that
   `daedalus-io/src/skp.rs` builds into groups and components; faces that would make an edge non-manifold or clash in
   winding go into a nested "(overlapping faces)" group. My 29 models converted (OBJ checked: sizes right); the .dskp
-  path is unit-tested, not yet tried on my files. Claude Code's safety check does not let Claude run OpenSKP itself.
+  path is unit-tested, and since 2026-11-07 tried on my files: all 29 open (`cargo run -p daedalus-io --example
+  open_check -- FILE...`), the largest about 51,000 faces, and each saves to `.daedalus` and reopens the same. That check found
+  a bug, fixed: a model with soft edges was saved as version 2 or 3, whose reader joins faces across seams, so three parts lost
+  about 40 % of their faces on the way back; such a model is now written as version 4. Claude Code's safety check does not let Claude run OpenSKP itself.
 - Edges in the selection (2026-11-06): a Select click within 6 px of an edge or loose line of the geometry being edited takes
   the line (blue), not the face behind it (Ctrl adds, Shift toggles; a triple-click still takes everything joined). Delete
   (`HalfEdgeMesh::erase_edges`): a loose line goes; an edge between two faces in one plane joins them (`merge::join_pair`;

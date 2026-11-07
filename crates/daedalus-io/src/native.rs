@@ -366,7 +366,10 @@ fn v3(p: [f64; 3]) -> String {
 pub fn write_scene(scene: &Scene) -> Vec<u8> {
     let extras = |m: &Mesh| !m.lines.is_empty() || !m.seams.is_empty() || m.colors.iter().any(|c| c.is_some());
     let holes = std::iter::once(&scene.root).chain(scene.defs.iter().map(|d| &d.ctx)).any(|c| c.mesh.holes.iter().any(|h| !h.is_empty()));
-    let holes = holes || !scene.textures.is_empty();
+    // seams (soft edges) mean "join these faces" when a file before version 4 is read (rings saved before faces had holes), so a
+    // model with soft edges of its own (SketchUp's, between faces that stay apart) is written as version 4 at least
+    let seams = std::iter::once(&scene.root).chain(scene.defs.iter().map(|d| &d.ctx)).any(|c| !c.mesh.seams.is_empty());
+    let holes = holes || !scene.textures.is_empty() || seams;
     let version = if scene.defs.iter().any(|d| d.part.is_some()) {
         6
     } else if scene.defs.iter().any(|d| !d.attributes.is_empty()) {
@@ -476,12 +479,28 @@ mod tests {
         let mut m = cube();
         m.add_vertex([5.0, 0.0, 0.0]);
         m.lines.push([0, 8]);
-        m.seams.push([0, 1]);
         m.set_color(2, Some([10, 200, 30].into()));
         let bytes = Native.export(&m).unwrap();
         assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 2\n"));
         let back = Native.import(&bytes).unwrap();
         assert_eq!(back, m);
+    }
+
+    /// Soft edges between faces in one plane (a SketchUp model's triangulated flats) stay soft edges: before version 4 a seam
+    /// meant "join these faces" (rings saved before faces had holes), so such a model is written as version 4.
+    #[test]
+    fn soft_edges_between_flat_faces_keep_the_faces_apart() {
+        let mut m = Mesh::new();
+        for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]] {
+            m.add_vertex(p);
+        }
+        m.add_face(vec![0, 1, 2]);
+        m.add_face(vec![0, 2, 3]);
+        m.seams.push([0, 2]);
+        let bytes = Native.export(&m).unwrap();
+        assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 4\n"));
+        let back = Native.import(&bytes).unwrap();
+        assert_eq!((back.faces.len(), back.seams.len()), (2, 1), "two triangles and the soft edge between them");
     }
 
     #[test]
