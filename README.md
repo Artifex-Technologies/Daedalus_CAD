@@ -2,6 +2,8 @@
 
 A SketchUp-style modeler in Rust, built from first principles (no code derived from other applications).
 
+![A house and a shed drawn in Daedalus: painted walls and roof, windows and a door cut into the walls, a dimension and a text label](docs/images/house.png)
+
 ## Goals
 One multi-purpose CAD tool: SketchUp-style 3D modeling for buildings and layouts, top-down 2D
 drafting, and mechanical part design including sheet metal (flat patterns and bend lines for
@@ -20,7 +22,7 @@ Laid out like SketchUp: menus and toolbar on top, hints and the Measurements box
 
 | Tool | Key | Use |
 |---|---|---|
-| Select | Space | click a face; Delete erases it |
+| Select | Space | click a face, an edge or a line (Ctrl adds, Shift toggles); Delete erases it |
 | Line | L | click corners; click the start point to close the loop into a face |
 | Rectangle | R | two corners, or type `width,height` after the first |
 | Circle | C | centre, then radius (click or type); type `24s` to set segments |
@@ -125,13 +127,27 @@ The Units menu shows and takes lengths in millimetres, centimetres, metres, inch
 is in the chosen unit; a unit written after it always wins, so `300mm`, `1.2m`, `6"`, `4'` or `4' 6 1/2"` work whatever is shown.
 The choice is remembered (`~/.config/daedalus/settings.conf`). The model itself is kept in metres.
 
+![The same house with a section plane cutting away its front half, looking into the rooms](docs/images/section.png)
+
+A section plane cuts the model open to look inside; the cut is filled and outlined.
+
+## SketchUp files
+SketchUp models (`.skp`) open with File > Open, groups and components kept, through the `skp-convert` helper (see the
+licence notes below). Here a house modelled in SketchUp, opened in Daedalus:
+
+![A two-part house modelled in SketchUp, opened in Daedalus with its walls, rooms and roof](docs/images/sketchup-import.png)
+
 ## Saving
 File > Save writes Daedalus's own `.daedalus` file: plain text (`v x y z` per vertex, `f` and vertex numbers per face) with
 a version on the first line, so it is readable, diffable and kept bit-exact. It also holds lines, colours, groups and
 components, guides, dimensions, text, the section plane and the drawing axes. Exporting to another format puts every group
 in place as plain geometry. Open, Save As, Import (STL, OBJ, DXF, DAE) and
-Export use a file browser built into the window. The title shows a dot while there are unsaved changes, and New, Open,
+Export use the desktop's own file dialog (Minos on the Yggdrasil desktop), or a file browser built into the window where
+there is none. The title shows a dot while there are unsaved changes, and New, Open,
 Import or closing the window asks before throwing them away.
+
+The demo models in these pictures are drawn by `cargo run -p daedalus-io --example demo_models -- FOLDER`, with the same
+calls the tools make.
 
 ## Next
 Solid Tools (union, subtract, intersect on groups), then the Sandbox (terrain) tools.
