@@ -130,6 +130,11 @@ the current state is:
   (`triangulate_with_holes`). `.daedalus` 4 writes `h` lines; older files' two-face rings (seams) are joined back
   (`Mesh::join_seamed_faces`). SketchUp faces come in with their holes (pinched outlines allowed). OBJ/DAE export a face
   with holes as triangles (`Mesh::polygons`). Not yet: Follow Me sweeps only a profile's outline.
+- Curves (2026-11-06, `core/src/curve.rs`): arcs and circles stay segments but are recognised from their shape (3+ equal
+  segments in a plane, same centre and radius, same turn of at most 60 degrees: rectangles and hexagons are not curves).
+  A Select click on a segment takes the whole curve. Entity Info (right-click menu or View menu; a panel on the right)
+  shows a curve's radius, segments (both editable until it is pushed/pulled into walls, as in SketchUp) and length; an
+  edge's length; a face's area and holes; a group's name. Right-click menu checked on screen 2026-11-06.
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

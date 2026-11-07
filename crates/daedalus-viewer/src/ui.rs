@@ -11,7 +11,7 @@ use crate::render::{FaceStyle, Style};
 use crate::tools::{Snap, Tool, AXIS_COLORS};
 use egui::{Align, Color32, Layout, Pos2, RichText, Stroke};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UiAction {
     Tool(Tool),
     ZoomExtents,
@@ -40,6 +40,11 @@ pub enum UiAction {
     MakeComponent,
     /// Erase the selection (Delete; the right-click menu's Erase).
     Erase,
+    /// Window > Entity Info (the right-click menu's Entity Info): the panel on the right, open or shut.
+    EntityInfo,
+    /// Entity Info on an arc or circle: its number of segments, or its radius (metres).
+    CurveSegments(usize),
+    CurveRadius(f64),
     EditGroup,
     CloseGroup,
     Explode,
@@ -68,6 +73,19 @@ pub enum UiAction {
 }
 
 /// Everything the chrome shows, gathered by the viewer each frame.
+/// What Entity Info shows about the selection.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Info {
+    /// An arc or circle: whether it is an arc, its segments, radius and length (shown in the units), whether they can still
+    /// change, and a key that changes with the curve (so a half-typed value is dropped when another is selected).
+    Curve { arc: bool, segments: usize, radius: String, length: String, editable: bool, key: u64 },
+    Edge { length: String },
+    Face { area: String, holes: usize },
+    Group { name: String, component: bool },
+    /// Several things: how many.
+    Many(usize),
+}
+
 pub struct UiView<'a> {
     pub tool: Tool,
     pub units: daedalus_core::units::Units,
@@ -88,6 +106,9 @@ pub struct UiView<'a> {
     pub can_go_back: bool,
     /// Something is selected (faces or groups).
     pub has_selection: bool,
+    /// The Entity Info panel is open, and what it shows (None: nothing selected).
+    pub info_open: bool,
+    pub info: Option<Info>,
     /// Exactly one group or component is selected: whether it is a component.
     pub one_instance: Option<bool>,
     /// The groups and components open for editing, from the top ("Group#1 › Component#2"), if any.
@@ -116,12 +137,17 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView) -> (Vec<UiAction>
     let area = egui::Area::new(egui::Id::new("context-menu")).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
         egui::Frame::menu(ui.style()).show(ui, |ui| {
             ui.set_min_width(170.0);
+            // items as in a menu: no button box until the pointer is on one, the full width
+            ui.style_mut().visuals.button_frame = false;
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
             let mut item = |ui: &mut egui::Ui, enabled: bool, label: &str, shortcut: &str, action: UiAction| {
                 if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(shortcut)).clicked() {
                     actions.push(action);
                     open = false;
                 }
             };
+            item(ui, true, "Entity Info", "", UiAction::EntityInfo);
             item(ui, v.editable && v.has_selection, "Erase", "Delete", UiAction::Erase);
             ui.separator();
             let kind = if v.one_instance == Some(true) { "Component" } else { "Group" };
@@ -136,6 +162,7 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView) -> (Vec<UiAction>
             ui.separator();
             item(ui, true, "Select All", "Ctrl+A", UiAction::SelectAll);
             item(ui, true, "Zoom Extents", "Shift+Z", UiAction::ZoomExtents);
+            });
         });
     });
     let clicked_away = ctx.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer();
@@ -143,6 +170,88 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView) -> (Vec<UiAction>
         open = false;
     }
     (actions, open)
+}
+
+/// The Entity Info panel on the right (SketchUp's tray): what the selection is, and for an arc or circle its segments and
+/// radius to change (applied on Enter).
+fn entity_info(ctx: &egui::Context, v: &UiView, actions: &mut Vec<UiAction>) {
+    egui::SidePanel::right("entity-info").resizable(false).exact_width(230.0).show(ctx, |ui| {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.strong("Entity Info");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("×").on_hover_text("Close").clicked() {
+                    actions.push(UiAction::EntityInfo);
+                }
+            });
+        });
+        ui.separator();
+        let row = |ui: &mut egui::Ui, label: &str, value: &str| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(label).weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(value));
+            });
+        };
+        match &v.info {
+            None => {
+                ui.label(egui::RichText::new("Nothing selected").weak());
+            }
+            Some(Info::Many(n)) => {
+                ui.label(format!("{n} entities"));
+            }
+            Some(Info::Edge { length }) => {
+                ui.label("Edge");
+                row(ui, "Length", length);
+            }
+            Some(Info::Face { area, holes }) => {
+                ui.label("Face");
+                row(ui, "Area", area);
+                if *holes > 0 {
+                    row(ui, "Holes", &holes.to_string());
+                }
+            }
+            Some(Info::Group { name, component }) => {
+                ui.label(if *component { "Component" } else { "Group" });
+                row(ui, "Name", name);
+            }
+            Some(Info::Curve { arc, segments, radius, length, editable, key }) => {
+                ui.label(if *arc { "Arc" } else { "Circle" });
+                // the values being typed, kept while the same curve is selected
+                let id = egui::Id::new(("curve-edit", *key));
+                let (mut segs, mut rad) = ui.data_mut(|d| d.get_temp::<(String, String)>(id)).unwrap_or_else(|| (segments.to_string(), radius.clone()));
+                let field = |ui: &mut egui::Ui, label: &str, text: &mut String| -> bool {
+                    let mut done = false;
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(label).weak());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let r = ui.add_enabled(*editable, egui::TextEdit::singleline(text).desired_width(90.0));
+                            done = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        });
+                    });
+                    done
+                };
+                if field(ui, "Radius", &mut rad) {
+                    // in the units shown, unless a unit is written
+                    match daedalus_core::units::parse(&rad, v.units) {
+                        Some(r) if r > 0.0 => actions.push(UiAction::CurveRadius(r)),
+                        _ => rad = radius.clone(),
+                    }
+                }
+                if field(ui, "Segments", &mut segs) {
+                    match segs.trim().parse::<usize>() {
+                        Ok(n) => actions.push(UiAction::CurveSegments(n)),
+                        Err(_) => segs = segments.to_string(),
+                    }
+                }
+                ui.data_mut(|d| d.insert_temp(id, (segs, rad)));
+                row(ui, "Length", length);
+                if !*editable {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Pushed or pulled into walls: its segments and radius can no longer change.").weak().small());
+                }
+            }
+        }
+    });
 }
 
 pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
@@ -262,6 +371,12 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 tool_items(ui, v, &[Tool::PositionCamera, Tool::Walk, Tool::LookAround], &mut actions);
             });
             ui.menu_button("View", |ui| {
+                let mut info = v.info_open;
+                if ui.checkbox(&mut info, "Entity Info").clicked() {
+                    actions.push(UiAction::EntityInfo);
+                    ui.close_menu();
+                }
+                ui.separator();
                 ui.label(egui::RichText::new("Face Style").weak());
                 for f in FaceStyle::ALL {
                     if ui.radio(v.style.faces == f, f.label()).clicked() {
@@ -501,6 +616,9 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 color,
             );
         }
+    }
+    if v.info_open {
+        entity_info(ctx, v, &mut actions);
     }
     actions
 }

@@ -57,6 +57,10 @@ struct State {
     right_press_at: (f32, f32),
     /// The right-click menu, open at this point (physical pixels).
     context_at: Option<(f32, f32)>,
+    /// The Entity Info panel is open.
+    info_open: bool,
+    /// What it shows, for the model state and selection it was worked out for.
+    info_cache: Option<(u64, Option<ui::Info>)>,
     press_at: (f32, f32),
     modifiers: ModifiersState,
     model: Model,
@@ -178,6 +182,8 @@ impl State {
             right_down: false,
             right_press_at: (0.0, 0.0),
             context_at: None,
+            info_open: false,
+            info_cache: None,
             press_at: (0.0, 0.0),
             modifiers: ModifiersState::empty(),
             model,
@@ -682,6 +688,75 @@ impl State {
         best.map(|(e, _)| e)
     }
 
+    /// What Entity Info shows about the selection (worked out again only when the model or the selection changed).
+    fn info(&mut self) -> Option<ui::Info> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.doc, self.model.state(), self.model.open_depth(), &self.tools.selected, &self.tools.edges, &self.tools.instances, self.tools.units.key()).hash(&mut h);
+        let key = h.finish();
+        if let Some((k, info)) = &self.info_cache {
+            if *k == key {
+                return info.clone();
+            }
+        }
+        let units = self.tools.units;
+        let mesh = self.model.mesh().to_mesh();
+        let (faces, edges, inst) = (&self.tools.selected, &self.tools.edges, &self.tools.instances);
+        let info = if faces.is_empty() && inst.is_empty() && !edges.is_empty() {
+            let curve = self.model.curve_at(edges[0][0], edges[0][1]).filter(|c| {
+                let mut ce = c.edges();
+                ce.sort_unstable();
+                ce == *edges
+            });
+            match curve {
+                Some(c) => Some(ui::Info::Curve {
+                    arc: !c.closed,
+                    segments: c.segments(),
+                    radius: daedalus_core::units::format(c.radius, units),
+                    length: daedalus_core::units::format(c.length(&mesh), units),
+                    editable: self.readonly.is_none() && daedalus_core::curve::reshapeable(&mesh, &c),
+                    key,
+                }),
+                None if edges.len() == 1 => {
+                    let [a, b] = edges[0];
+                    let (p, q) = (DVec3::from(mesh.positions[a as usize]), DVec3::from(mesh.positions[b as usize]));
+                    Some(ui::Info::Edge { length: daedalus_core::units::format(p.distance(q), units) })
+                }
+                None => Some(ui::Info::Many(edges.len())),
+            }
+        } else if faces.len() == 1 && edges.is_empty() && inst.is_empty() && faces[0] < mesh.faces.len() {
+            let f = faces[0];
+            let area: f64 = mesh.triangulate_face(f).iter().map(|t| {
+                let [a, b, c] = t.map(|v| DVec3::from(mesh.positions[v as usize]));
+                (b - a).cross(c - a).length() / 2.0
+            }).sum();
+            Some(ui::Info::Face { area: daedalus_core::units::format_area(area, units), holes: mesh.holes_of(f).len() })
+        } else if inst.len() == 1 && faces.is_empty() && edges.is_empty() {
+            self.model.definition(inst[0]).map(|d| ui::Info::Group { name: d.name.clone(), component: d.component })
+        } else if self.tools.has_selection() {
+            Some(ui::Info::Many(faces.len() + edges.len() + inst.len()))
+        } else {
+            None
+        };
+        self.info_cache = Some((key, info.clone()));
+        info
+    }
+
+    /// Entity Info on the selected arc or circle: new segments and/or radius.
+    fn reshape_curve(&mut self, segments: Option<usize>, radius: Option<f64>) {
+        let Some(&[a, b]) = self.tools.edges.first() else { return };
+        let Some(c) = self.model.curve_at(a, b) else { return };
+        match self.model.reshape_curve(a, b, segments.unwrap_or(c.segments()), radius.unwrap_or(c.radius)) {
+            Ok(made) => {
+                self.tools.model_changed();
+                self.tools.select_edges(&made.edges(), false, false);
+                self.message = None;
+            }
+            Err(e) => self.message = Some(e),
+        }
+        self.after_edit();
+    }
+
     /// Right-click: what is under the mouse is selected first if it is not already (as in SketchUp), then the menu opens.
     fn open_context_menu(&mut self) {
         if self.tools.tool.edits() || self.tools.tool == Tool::Select {
@@ -796,7 +871,11 @@ impl State {
             if let Some(e) = self.edge_at() {
                 if count == 1 {
                     let (add, toggle) = (self.modifiers.control_key(), self.modifiers.shift_key());
-                    self.tools.select_edge(e, add, toggle);
+                    // an arc or circle is taken whole, as in SketchUp
+                    match self.readonly.is_none().then(|| self.model.curve_at(e[0], e[1])).flatten() {
+                        Some(c) => self.tools.select_edges(&c.edges(), add, toggle),
+                        None => self.tools.select_edge(e, add, toggle),
+                    }
                     self.refresh();
                 }
                 return;
@@ -1139,6 +1218,12 @@ impl State {
             UiAction::DeleteDimensions => self.model.edit_notes(|n| n.dims.clear()),
             UiAction::MakeGroup => self.make_group(false),
             UiAction::Erase => self.erase_selected(),
+            UiAction::EntityInfo => {
+                self.info_open = !self.info_open;
+                self.window.request_redraw();
+            }
+            UiAction::CurveSegments(n) => self.reshape_curve(Some(n), None),
+            UiAction::CurveRadius(r) => self.reshape_curve(None, Some(r)),
             UiAction::MakeComponent => self.make_group(true),
             UiAction::EditGroup => {
                 if let Some(i) = self.one_instance() {
@@ -1370,6 +1455,7 @@ impl State {
             _ => None,
         };
         let (label, current) = self.tools.measurement();
+        let info = if self.info_open { self.info() } else { None };
         let view = UiView {
             tool: self.tools.tool,
             units: self.tools.units,
@@ -1388,6 +1474,8 @@ impl State {
             paint_color: self.tools.paint_color,
             section: self.model.notes().section.map(|s| s.active),
             has_selection: self.tools.has_selection(),
+            info_open: self.info_open,
+            info,
             one_instance: self.one_instance().and_then(|i| self.model.instances().get(i)).and_then(|inst| self.model.definition(inst.def)).map(|d| d.component),
             editing: (self.model.open_depth() > 0).then(|| self.model.open_names().join(" › ")),
             labels: self

@@ -536,6 +536,27 @@ impl Model {
         })
     }
 
+    /// The arc or circle the edge `a`-`b` of the open context belongs to, if any (see [`crate::curve`]).
+    pub fn curve_at(&self, a: u32, b: u32) -> Option<crate::curve::Curve> {
+        crate::curve::curve_through(&self.mesh.to_mesh(), a, b)
+    }
+
+    /// Entity Info on an arc or circle: redraws it with `segments` segments and radius `radius`, as one undo step. Fails
+    /// (and changes nothing) once it has been pushed or pulled into walls, as in SketchUp.
+    pub fn reshape_curve(&mut self, a: u32, b: u32, segments: usize, radius: f64) -> Result<crate::curve::Curve, String> {
+        let mesh = self.mesh.to_mesh();
+        let c = crate::curve::curve_through(&mesh, a, b).ok_or("that edge is not part of an arc or circle")?;
+        let mut trial = mesh.clone();
+        let made = crate::curve::reshape(&mut trial, &c, segments, radius)?;
+        HalfEdgeMesh::from_mesh(&trial).map_err(|e| e.to_string())?;
+        self.edit(|m| {
+            *m = HalfEdgeMesh::from_mesh(&trial)?;
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?;
+        Ok(made)
+    }
+
     /// Paint Bucket: paints `faces` with `color` (None: back to the default material), as one undo step.
     pub fn paint(&mut self, faces: &[usize], color: Option<[u8; 3]>) -> Result<(), TopologyError> {
         self.edit(|m| {

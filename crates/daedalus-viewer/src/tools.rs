@@ -412,6 +412,25 @@ impl Tools {
         !self.selected.is_empty() || !self.instances.is_empty() || !self.edges.is_empty()
     }
 
+    /// Select tool click on a curve: all its `edges` at once (replacing the selection; with `add` added; with `toggle` taken
+    /// out if they were all in, else put in).
+    pub fn select_edges(&mut self, edges: &[[u32; 2]], add: bool, toggle: bool) {
+        let norm: Vec<[u32; 2]> = edges.iter().map(|&[a, b]| [a.min(b), a.max(b)]).collect();
+        if !add && !toggle {
+            self.selected.clear();
+            self.instances.clear();
+            self.edges.clear();
+        }
+        let all_in = norm.iter().all(|e| self.edges.binary_search(e).is_ok());
+        if toggle && all_in {
+            self.edges.retain(|e| !norm.contains(e));
+            return;
+        }
+        self.edges.extend(norm);
+        self.edges.sort_unstable();
+        self.edges.dedup();
+    }
+
     /// Select tool click on an edge or loose line (vertices `a`, `b` of the open context): it replaces the selection; with
     /// `add` (Ctrl) it is added, with `toggle` (Shift) it goes in or out.
     pub fn select_edge(&mut self, [a, b]: [u32; 2], add: bool, toggle: bool) {
