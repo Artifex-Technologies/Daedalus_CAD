@@ -328,6 +328,8 @@ pub struct Tools {
     pub arc_segments: u32,
     /// Selected groups and components (instances of the open context), sorted.
     pub instances: Vec<usize>,
+    /// Selected edges and loose lines of the open context, as vertex pairs (lower number first), sorted.
+    pub edges: Vec<[u32; 2]>,
     /// Paint Bucket's colour (None: the default material, which takes paint off).
     pub paint_color: Option<[u8; 3]>,
     /// Move makes a copy (Ctrl toggles it while moving, as in SketchUp).
@@ -356,6 +358,7 @@ impl Default for Tools {
             selected: Vec::new(),
             arc_segments: DEFAULT_ARC_SEGMENTS,
             instances: Vec::new(),
+            edges: Vec::new(),
             paint_color: Some([196, 92, 64]),
             copy: false,
             last_copy: None,
@@ -385,6 +388,7 @@ impl Tools {
         if matches!(self.op, Op::Idle) {
             self.selected.clear();
             self.instances.clear();
+            self.edges.clear();
         }
         self.op = Op::Idle;
         self.copy = false;
@@ -396,15 +400,34 @@ impl Tools {
         self.op = Op::Idle;
         self.selected.clear();
         self.instances.clear();
+        self.edges.clear();
         self.hover_face = None;
         self.hover_instance = None;
         self.last_push = None;
         self.last_copy = None;
     }
 
-    /// Whether anything is selected (faces or groups).
+    /// Whether anything is selected (faces, edges or groups).
     pub fn has_selection(&self) -> bool {
-        !self.selected.is_empty() || !self.instances.is_empty()
+        !self.selected.is_empty() || !self.instances.is_empty() || !self.edges.is_empty()
+    }
+
+    /// Select tool click on an edge or loose line (vertices `a`, `b` of the open context): it replaces the selection; with
+    /// `add` (Ctrl) it is added, with `toggle` (Shift) it goes in or out.
+    pub fn select_edge(&mut self, [a, b]: [u32; 2], add: bool, toggle: bool) {
+        let e = [a.min(b), a.max(b)];
+        if !add && !toggle {
+            self.selected.clear();
+            self.instances.clear();
+            self.edges.clear();
+        }
+        match self.edges.binary_search(&e) {
+            Ok(k) if toggle => {
+                self.edges.remove(k);
+            }
+            Ok(_) => {}
+            Err(k) => self.edges.insert(k, e),
+        }
     }
 
     /// Select tool click: `face` replaces the selection; with `add` (Ctrl) it is added, with `toggle` (Shift) it goes in
@@ -415,6 +438,7 @@ impl Tools {
             if !add && !toggle {
                 self.selected.clear();
                 self.instances.clear();
+                self.edges.clear();
             }
             match self.instances.binary_search(&i) {
                 Ok(k) if toggle => {
@@ -429,6 +453,7 @@ impl Tools {
             if !add && !toggle {
                 self.selected.clear();
                 self.instances.clear();
+                self.edges.clear();
             }
             return;
         };
@@ -445,6 +470,7 @@ impl Tools {
         if !add && !toggle {
             self.selected.clear();
             self.instances.clear();
+            self.edges.clear();
         }
         self.selected.extend(faces);
         self.selected.sort_unstable();
@@ -467,6 +493,10 @@ impl Tools {
         let faces: Vec<usize> = faces.into_iter().filter(|&f| f < model.mesh().face_count()).collect();
         let inst: Vec<usize> = inst.into_iter().filter(|&i| i < model.instances().len()).collect();
         let mut verts: Vec<u32> = faces.iter().flat_map(|&f| model.mesh().face_vertices(f)).collect();
+        if self.has_selection() {
+            let n = model.mesh().vertex_count() as u32;
+            verts.extend(self.edges.iter().flatten().copied().filter(|&v| v < n));
+        }
         verts.sort_unstable();
         verts.dedup();
         (!verts.is_empty() || !inst.is_empty()).then_some(Target { faces, verts, inst })
@@ -623,7 +653,7 @@ impl Tools {
         match (self.tool, &self.op) {
             (Tool::PushPull | Tool::Eraser, Op::Idle) => self.hover_face.into_iter().collect(),
             (Tool::PushPull, _) => Vec::new(),
-            (t, Op::Idle) if t.transforms() && self.selected.is_empty() => self.hover_face.into_iter().collect(),
+            (t, Op::Idle) if t.transforms() && !self.has_selection() => self.hover_face.into_iter().collect(),
             _ => self.selected.clone(),
         }
     }
@@ -1947,6 +1977,31 @@ mod tests {
     fn bounds(m: &Model) -> ([f32; 3], [f32; 3]) {
         let mesh = m.mesh().to_mesh();
         mesh.bounds().unwrap()
+    }
+
+    #[test]
+    fn edges_are_selected_and_erased_like_faces() {
+        let (mut m, top) = box_model();
+        let mut t = Tools::default();
+        // a top edge: two corners of the top face that follow each other round it
+        let ring = m.mesh().face_vertices(top.hit.unwrap().face.unwrap());
+        let edge = [ring[1], ring[0]];
+        t.select_edge(edge, false, false);
+        assert_eq!(t.edges, vec![[ring[0].min(ring[1]), ring[0].max(ring[1])]]);
+        assert!(t.has_selection());
+        // a face click replaces it; Ctrl adds it back; Shift takes it out again
+        t.select(&m, top.hit.unwrap().face, None, false, false, false);
+        assert!(t.edges.is_empty());
+        t.select_edge(edge, true, false);
+        assert_eq!((t.selected.len(), t.edges.len()), (1, 1));
+        t.select_edge(edge, false, true);
+        assert!(t.edges.is_empty());
+        // Delete on the edge alone: the two faces on it go (box edges are not between faces in one plane)
+        t.select_edge(edge, false, false);
+        assert_eq!(m.erase_all(&t.selected, &t.edges, &t.instances), Ok(0));
+        assert_eq!(m.mesh().face_count(), 4);
+        assert!(m.undo());
+        assert_eq!(m.mesh().face_count(), 6);
     }
 
     #[test]

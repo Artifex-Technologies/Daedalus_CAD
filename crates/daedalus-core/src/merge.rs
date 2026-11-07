@@ -84,6 +84,20 @@ fn outline(group: &[&Vec<u32>]) -> Option<Vec<u32>> {
     (loop_.len() == next.len()).then_some(loop_)
 }
 
+/// Faces `a` and `b` as one outline, if they lie in one plane, face the same way and together make one simple loop (the
+/// Eraser on the edge between them, as in SketchUp). None otherwise.
+pub(crate) fn join_pair(mesh: &Mesh, a: usize, b: usize, tol: f32) -> Option<Vec<u32>> {
+    coplanar(mesh, a, b, tol).then(|| outline(&[&mesh.faces[a], &mesh.faces[b]])).flatten()
+}
+
+/// Whether faces `a` and `b` lie in one plane (within `tol`) and face the same way.
+pub(crate) fn coplanar(mesh: &Mesh, a: usize, b: usize, tol: f32) -> bool {
+    let tol = tol as f64;
+    let (Some((na, da)), Some((nb, db))) = (plane(mesh, &mesh.faces[a]), plane(mesh, &mesh.faces[b])) else { return false };
+    let in_plane = mesh.faces[b].iter().all(|&v| (dot(na, p(mesh, v)) - da).abs() <= tol) && (da - db).abs() <= tol * 4.0;
+    dot(na, nb) > 1.0 - 1e-6 && in_plane
+}
+
 /// Merges coplanar neighbours. `tol` is the distance (model units) within which two planes count as one. Returns the merged mesh
 /// and, for every face of `mesh`, the index of the face it became part of.
 pub fn merge_coplanar(mesh: &Mesh, tol: f32) -> (Mesh, Vec<usize>) {

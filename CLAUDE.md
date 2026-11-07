@@ -117,6 +117,11 @@ the current state is:
   `daedalus-io/src/skp.rs` builds into groups and components; faces that would make an edge non-manifold or clash in
   winding go into a nested "(overlapping faces)" group. Matt's 29 models converted (OBJ checked: sizes right); the .dskp
   path is unit-tested, not yet tried on his files. Claude Code's safety check does not let Claude run OpenSKP itself.
+- Edges in the selection (2026-11-06): a Select click within 6 px of an edge or loose line of the geometry being edited takes
+  the line (blue), not the face behind it (Ctrl adds, Shift toggles; a triple-click still takes everything joined). Delete
+  (`HalfEdgeMesh::erase_edges`): a loose line goes; an edge between two faces in one plane joins them (`merge::join_pair`;
+  kept, with a message, if they would not make one simple face); any other edge takes the faces on it, and faces seamed to
+  them. Move/Rotate/Scale carry selected edges' vertices.
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

@@ -387,8 +387,9 @@ impl Model {
         })
     }
 
-    /// Delete on a mixed selection: faces and instances of the open context, as one undo step.
-    pub fn erase_all(&mut self, faces: &[usize], instances: &[usize]) -> Result<(), TopologyError> {
+    /// Delete on a mixed selection: faces, edges (vertex pairs, see [`HalfEdgeMesh::erase_edges`]) and instances of the open
+    /// context, as one undo step. Returns how many edges were kept (two faces in one plane that could not become one).
+    pub fn erase_all(&mut self, faces: &[usize], edges: &[[u32; 2]], instances: &[usize]) -> Result<usize, TopologyError> {
         let mut faces = faces.to_vec();
         faces.sort_unstable_by(|a, b| b.cmp(a));
         faces.dedup();
@@ -397,6 +398,7 @@ impl Model {
         ids.dedup();
         self.edit_scene(|m, s, open| {
             faces.iter().try_for_each(|&f| m.erase_face(f))?;
+            let kept = if edges.is_empty() { 0 } else { m.erase_edges(edges)? };
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             for &i in &ids {
                 if i >= ctx.instances.len() {
@@ -405,7 +407,7 @@ impl Model {
                 ctx.instances.remove(i);
             }
             s.purge();
-            Ok(())
+            Ok(kept)
         })
     }
 

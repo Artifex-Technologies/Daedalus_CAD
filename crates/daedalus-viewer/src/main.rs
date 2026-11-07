@@ -30,6 +30,8 @@ use winit::window::{Window, WindowId};
 
 /// How close (in pixels) the cursor must be to a point to snap onto it.
 const SNAP_RADIUS: f32 = 12.0;
+/// How close (pixels) the Select tool must be to an edge to take it rather than the face behind.
+const EDGE_PICK_RADIUS: f32 = 6.0;
 
 /// Position Camera: eye height above the point clicked (SketchUp's 5' 6").
 const EYE_HEIGHT: f32 = 1.676;
@@ -62,6 +64,8 @@ struct State {
     /// Faces of `display` below this are the geometry being edited; up to `faded_from`, faces of instances (`owners`
     /// names whose, one per face); from `faded_from` on, outside the open context.
     active_faces: usize,
+    /// Vertices of the display that belong to the geometry being edited (they come first, numbered as in the model).
+    active_vertices: u32,
     owners: Vec<usize>,
     faded_from: usize,
     faded_vertex: u32,
@@ -174,6 +178,7 @@ impl State {
             readonly,
             display: Mesh::new(),
             active_faces: 0,
+            active_vertices: 0,
             owners: Vec::new(),
             faded_from: 0,
             faded_vertex: 0,
@@ -424,6 +429,7 @@ impl State {
             (None, None) => self.model.mesh().to_mesh(),
         };
         self.active_faces = self.display.faces.len();
+        self.active_vertices = self.display.positions.len() as u32;
         // its triangles: kept while the model is unchanged (a highlight or a hover does not split every face again)
         let key = (self.doc, self.model.state(), self.model.open_depth() + if self.readonly.is_some() { 1 << 20 } else { 0 });
         self.tris = match (&preview, &self.active_tris) {
@@ -496,7 +502,7 @@ impl State {
         };
         highlight.sort_unstable();
         self.edges = self.display.visible_edges();
-        self.gpu.set_scene(&self.display, &self.tris, &highlight, &self.flagged, (self.faded_from, self.faded_vertex));
+        self.gpu.set_scene(&self.display, &self.tris, &highlight, &self.tools.edges, &self.flagged, (self.faded_from, self.faded_vertex));
         self.shown_highlight = highlight;
         self.window.request_redraw();
     }
@@ -638,6 +644,38 @@ impl State {
         })
     }
 
+    /// The edge or loose line of the geometry being edited nearest the mouse on screen (within a few pixels), if no face
+    /// stands in front of it: what a Select click near a line takes, as in SketchUp, rather than the face behind.
+    fn edge_at(&self) -> Option<[u32; 2]> {
+        let (w, h) = self.size();
+        let (origin, dir) = self.camera.ray(self.cursor.0, self.cursor.1, w, h);
+        let face_t = self.display.pick_triangles(&self.tris, origin.into(), dir.into()).map(|(_, t)| t);
+        let mut best: Option<([u32; 2], f32)> = None;
+        for &(a, b) in &self.edges {
+            if a >= self.active_vertices || b >= self.active_vertices {
+                continue;
+            }
+            let (pa, pb) = (Vec3::from(self.display.positions[a as usize]), Vec3::from(self.display.positions[b as usize]));
+            let (Some(sa), Some(sb)) = (self.camera.project(pa, w, h), self.camera.project(pb, w, h)) else { continue };
+            let d = segment_distance(self.cursor, sa, sb);
+            if d > EDGE_PICK_RADIUS || best.is_some_and(|(_, bd)| d >= bd) {
+                continue;
+            }
+            // the point of the edge under the mouse must not be hidden by a face nearer the eye (its own faces are at the
+            // same depth, so they do not hide it)
+            let (dx, dy) = (sb.0 - sa.0, sb.1 - sa.1);
+            let l2 = dx * dx + dy * dy;
+            let s = if l2 > 0.0 { (((self.cursor.0 - sa.0) * dx + (self.cursor.1 - sa.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            let q = pa + (pb - pa) * s;
+            let depth = (q - origin).dot(dir);
+            if face_t.is_some_and(|t| depth > t * 1.001 + 1e-3 * (1.0 + depth.abs())) {
+                continue;
+            }
+            best = Some(([a.min(b), a.max(b)], d));
+        }
+        best.map(|(e, _)| e)
+    }
+
     /// Starts typing into text `i`.
     fn edit_label(&mut self, i: usize) {
         if let Some(l) = self.model.notes().labels.get(i) {
@@ -724,6 +762,18 @@ impl State {
                 _ => {}
             }
         }
+        // Select near an edge or loose line takes the line, not the face behind it (a triple-click still takes everything
+        // joined)
+        if self.tools.tool == Tool::Select && count < 3 {
+            if let Some(e) = self.edge_at() {
+                if count == 1 {
+                    let (add, toggle) = (self.modifiers.control_key(), self.modifiers.shift_key());
+                    self.tools.select_edge(e, add, toggle);
+                    self.refresh();
+                }
+                return;
+            }
+        }
         // Select in an open group: a click outside it, or a double-click on nothing, closes it (as in SketchUp)
         if self.tools.tool == Tool::Select && self.model.open_depth() > 0 {
             let outside = c.hit.is_some_and(|h| h.face.is_none() && h.instance.is_none() && h.snap == Snap::OnFace);
@@ -797,8 +847,15 @@ impl State {
         if self.readonly.is_some() || !self.tools.has_selection() {
             return;
         }
-        if let Err(e) = self.model.erase_all(&self.tools.selected, &self.tools.instances) {
-            self.message = Some(e.to_string());
+        match self.model.erase_all(&self.tools.selected, &self.tools.edges, &self.tools.instances) {
+            Ok(0) => {}
+            Ok(n) => {
+                self.message = Some(format!(
+                    "{n} edge{} kept: the faces either side lie in one plane but would not make one simple face.",
+                    if n == 1 { " was" } else { "s were" }
+                ))
+            }
+            Err(e) => self.message = Some(e.to_string()),
         }
         self.tools.model_changed();
         self.after_edit();

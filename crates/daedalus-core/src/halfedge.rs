@@ -275,6 +275,82 @@ impl HalfEdgeMesh {
         Ok(())
     }
 
+    /// Erases edges, given as vertex pairs (Delete on selected edges), as SketchUp does: a loose line goes; an edge between
+    /// two faces lying in one plane joins them into one face; any other edge takes the faces on it with it (and the faces
+    /// joined to those by hidden seams, which are one face with a hole), their other edges staying as loose lines where no
+    /// face is left. Returns how many edges were kept because the two faces either side could not become one simple face.
+    /// Vertices are kept so indices stay valid.
+    pub fn erase_edges(&mut self, edges: &[[u32; 2]]) -> Result<usize, TopologyError> {
+        use std::collections::HashSet;
+        let key = |a: u32, b: u32| (a.min(b), a.max(b));
+        let mut gone: Vec<(u32, u32)> = edges.iter().map(|&[a, b]| key(a, b)).collect();
+        gone.sort_unstable();
+        gone.dedup();
+        let gone_set: HashSet<(u32, u32)> = gone.iter().copied().collect();
+        let mut m = self.to_mesh();
+        m.lines.retain(|&[a, b]| !gone_set.contains(&key(a, b)));
+        let seams: HashSet<(u32, u32)> = m.seams.iter().map(|&[a, b]| key(a, b)).collect();
+        let on_edge = |m: &Mesh, e: (u32, u32)| -> Vec<usize> {
+            (0..m.faces.len()).filter(|&f| { let r = &m.faces[f]; (0..r.len()).any(|i| key(r[i], r[(i + 1) % r.len()]) == e) }).collect()
+        };
+        let mut kept = 0;
+        for &e in &gone {
+            let faces = on_edge(&m, e);
+            if faces.is_empty() {
+                continue;
+            }
+            if let [a, b] = faces[..] {
+                let joined = crate::merge::join_pair(&m, a, b, crate::model::MERGE_TOLERANCE);
+                if let Some(ring) = joined {
+                    let (lo, hi) = (a.min(b), a.max(b));
+                    m.remove_face(hi);
+                    m.faces[lo] = ring;
+                    continue;
+                }
+                // in one plane but not one simple face (it would have a hole): left as it is, rather than lose both
+                if crate::merge::coplanar(&m, a, b, crate::model::MERGE_TOLERANCE) {
+                    kept += 1;
+                    continue;
+                }
+            }
+            // the faces on it go, with the faces seamed to them
+            let mut take: HashSet<usize> = faces.into_iter().collect();
+            loop {
+                let more: Vec<usize> = (0..m.faces.len())
+                    .filter(|f| !take.contains(f))
+                    .filter(|&f| {
+                        let r = &m.faces[f];
+                        (0..r.len()).any(|i| {
+                            let s = key(r[i], r[(i + 1) % r.len()]);
+                            seams.contains(&s) && take.iter().any(|&t| { let q = &m.faces[t]; (0..q.len()).any(|j| key(q[j], q[(j + 1) % q.len()]) == s) })
+                        })
+                    })
+                    .collect();
+                if more.is_empty() {
+                    break;
+                }
+                take.extend(more);
+            }
+            let mut take: Vec<usize> = take.into_iter().collect();
+            take.sort_unstable_by(|x, y| y.cmp(x));
+            let rings: Vec<Vec<u32>> = take.iter().map(|&f| m.remove_face(f)).collect();
+            let still: HashSet<(u32, u32)> = m.edges().into_iter().collect();
+            let mut lines: HashSet<(u32, u32)> = m.lines.iter().map(|&[a, b]| key(a, b)).collect();
+            for r in rings {
+                for i in 0..r.len() {
+                    let s = key(r[i], r[(i + 1) % r.len()]);
+                    if !still.contains(&s) && !seams.contains(&s) && !gone_set.contains(&s) && lines.insert(s) {
+                        m.lines.push([s.0, s.1]);
+                    }
+                }
+            }
+        }
+        let face_edges: HashSet<(u32, u32)> = m.edges().into_iter().collect();
+        m.seams.retain(|&[a, b]| face_edges.contains(&key(a, b)));
+        *self = Self::from_mesh(&m)?;
+        Ok(kept)
+    }
+
     /// Loose line number `new_line` may close a loop: the shortest path of other loose lines and face edges from one of
     /// its ends back to the other, if it lies in one plane with at least three corners and covers no face already there,
     /// becomes a face (its loose lines turn into the face's edges).
@@ -710,5 +786,47 @@ mod tests {
         m.add_face(vec![0, 1, 2, 3]);
         let mut h = HalfEdgeMesh::from_mesh(&m).unwrap();
         assert_eq!(h.split_face(0, 0, 1), Err(TopologyError::InvalidSplit));
+    }
+
+    #[test]
+    fn erasing_the_edge_between_two_faces_in_one_plane_joins_them() {
+        // a 2x1 rectangle split down the middle: two squares sharing the edge 1-4
+        let mut m = Mesh::new();
+        for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]] {
+            m.add_vertex(p);
+        }
+        m.add_face(vec![0, 1, 4, 5]);
+        m.add_face(vec![1, 2, 3, 4]);
+        let mut h = HalfEdgeMesh::from_mesh(&m).unwrap();
+        assert_eq!(h.erase_edges(&[[4, 1]]), Ok(0));
+        assert_eq!(h.face_count(), 1);
+        assert!(h.lines.is_empty());
+        let mut ring = h.face_vertices(0);
+        ring.sort_unstable();
+        assert_eq!(ring, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn erasing_an_edge_of_a_box_takes_the_two_faces_on_it() {
+        let mut h = HalfEdgeMesh::from_mesh(&cube()).unwrap();
+        // the edge 0-1 is on the bottom (0 2 3 1) and the front (0 1 5 4)
+        assert_eq!(h.erase_edges(&[[0, 1]]), Ok(0));
+        assert_eq!(h.face_count(), 4);
+        // every other edge of the two faces still borders a face that is left: no loose lines
+        assert!(h.lines.is_empty());
+        assert!(!h.to_mesh().edges().contains(&(0, 1)));
+    }
+
+    #[test]
+    fn erasing_the_outline_edge_of_a_lone_face_leaves_its_other_edges_as_lines() {
+        let mut h = square();
+        assert_eq!(h.erase_edges(&[[0, 1]]), Ok(0));
+        assert_eq!(h.face_count(), 0);
+        let mut lines: Vec<(u32, u32)> = h.lines.iter().map(|&[a, b]| (a.min(b), a.max(b))).collect();
+        lines.sort_unstable();
+        assert_eq!(lines, vec![(0, 3), (1, 2), (2, 3)]);
+        // and a loose line goes when erased
+        assert_eq!(h.erase_edges(&[[3, 2]]), Ok(0));
+        assert_eq!(h.lines.len(), 2);
     }
 }

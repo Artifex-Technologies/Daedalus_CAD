@@ -124,11 +124,21 @@ fn face_vertices(mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagge
 /// Edges of what lies outside an open group or component: drawn faint.
 const FADED_EDGE: [f32; 4] = [0.62, 0.63, 0.66, 1.0];
 
-fn edge_vertices(mesh: &Mesh, faded_vertex: u32) -> Vec<LineVertex> {
+/// Selected edges: SketchUp's selection blue, a little deeper than the selected faces' tint so a thin line still shows it.
+const SELECTED_EDGE: [f32; 4] = [0.05, 0.33, 0.95, 1.0];
+
+/// `selected`: edges drawn in the selection colour, as vertex pairs (lower number first), sorted.
+fn edge_vertices(mesh: &Mesh, faded_vertex: u32, selected: &[[u32; 2]]) -> Vec<LineVertex> {
     mesh.visible_edges()
         .into_iter()
         .flat_map(|(a, b)| {
-            let color = if a.min(b) >= faded_vertex { FADED_EDGE } else { EDGE_COLOR };
+            let color = if a.min(b) >= faded_vertex {
+                FADED_EDGE
+            } else if selected.binary_search(&[a.min(b), a.max(b)]).is_ok() {
+                SELECTED_EDGE
+            } else {
+                EDGE_COLOR
+            };
             [(a, color), (b, color)]
         })
         .map(|(v, color)| LineVertex { position: mesh.positions[v as usize], color })
@@ -432,9 +442,10 @@ impl Renderer {
     /// or component and are drawn faded.
     /// `tris`: each face's triangles (`Mesh::face_triangles`), kept by the caller so a highlight change does not split
     /// every face again.
-    pub fn set_scene(&mut self, mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagged: &[usize], faded: (usize, u32)) {
+    /// `selected_edges`: edges drawn in the selection colour (vertex pairs, lower number first, sorted).
+    pub fn set_scene(&mut self, mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], selected_edges: &[[u32; 2]], flagged: &[usize], faded: (usize, u32)) {
         let faces = face_vertices(mesh, tris, selected, flagged, faded.0);
-        let edges = edge_vertices(mesh, faded.1);
+        let edges = edge_vertices(mesh, faded.1, selected_edges);
         self.faces = (self.buffer(bytemuck::cast_slice(&faces)), faces.len() as u32);
         self.edges = (self.buffer(bytemuck::cast_slice(&edges)), edges.len() as u32);
     }
