@@ -41,6 +41,85 @@ pub enum SolidTool {
     Split,
 }
 
+/// Definition `def`'s size along its own axes (its geometry and what is placed in it), and its lowest corner.
+fn def_box(scene: &Scene, def: usize) -> ([f64; 3], [f64; 3]) {
+    let mut m = Mesh::new();
+    scene.flatten_instance(&Instance { def, xf: Xform::IDENTITY }, &Xform::IDENTITY, &mut m);
+    match m.bounds() {
+        Some((lo, hi)) => ([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], lo),
+        None => ([0.0; 3], [0.0; 3]),
+    }
+}
+
+/// The built-in attributes of a copy where it is now (lower-case names): X, Y, Z, LenX, LenY, LenZ, RotZ.
+fn placed(scene: &Scene, inst: &Instance) -> std::collections::HashMap<String, f64> {
+    let (size, _) = def_box(scene, inst.def);
+    let m = &inst.xf.0;
+    let col = |c: usize| [m[0][c], m[1][c], m[2][c]];
+    let len = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let o = inst.xf.origin();
+    [
+        ("x", o[0]),
+        ("y", o[1]),
+        ("z", o[2]),
+        ("lenx", size[0] * len(col(0))),
+        ("leny", size[1] * len(col(1))),
+        ("lenz", size[2] * len(col(2))),
+        ("rotz", col(0)[1].atan2(col(0)[0]).to_degrees()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
+}
+
+/// Every copy of `def` in the context at `open` placed and sized by its attributes: the built-ins it sets (X, Y, Z, LenX,
+/// LenY, LenZ, RotZ) replace where it is and how big; the rest stay as they were.
+fn apply_dynamic(scene: &mut Scene, open: &[usize], def: usize) -> Result<(), String> {
+    let (size, _) = def_box(scene, def);
+    let attrs = scene.defs[def].attributes.clone();
+    let sets = |n: &str| attrs.iter().any(|a| a.name.eq_ignore_ascii_case(n));
+    let copies: Vec<usize> = scene.ctx(open).map(|c| (0..c.instances.len()).filter(|&i| c.instances[i].def == def).collect()).unwrap_or_default();
+    for i in copies {
+        let inst = scene.ctx(open).expect("there").instances[i];
+        let given = placed(scene, &inst);
+        let v = crate::dynamic::evaluate(&attrs, &given)?;
+        let num = |n: &str| v.get(n).map(|x| x.num()).unwrap_or(given[n]);
+        let m = &inst.xf.0;
+        let col = |c: usize| [m[0][c], m[1][c], m[2][c]];
+        let len = |a: [f64; 3]| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+        // its axes: turned to RotZ when that is set, else as they are
+        let axes: [[f64; 3]; 3] = if sets("rotz") {
+            let t = num("rotz").to_radians();
+            [[t.cos(), t.sin(), 0.0], [-t.sin(), t.cos(), 0.0], [0.0, 0.0, 1.0]]
+        } else {
+            std::array::from_fn(|c| {
+                let a = col(c);
+                let l = len(a).max(1e-12);
+                a.map(|x| x / l)
+            })
+        };
+        // its scale along each axis: from LenX/LenY/LenZ when set (a size of nothing stays at 1), else as it is
+        let scale: [f64; 3] = std::array::from_fn(|c| {
+            let name = ["lenx", "leny", "lenz"][c];
+            if sets(name) && size[c] > 1e-12 {
+                (num(name) / size[c]).max(1e-9)
+            } else {
+                len(col(c))
+            }
+        });
+        let o = [num("x"), num("y"), num("z")];
+        let mut xf = [[0.0; 4]; 3];
+        for r in 0..3 {
+            for c in 0..3 {
+                xf[r][c] = axes[c][r] * scale[c];
+            }
+            xf[r][3] = o[r];
+        }
+        scene.ctx_mut(open).expect("there").instances[i].xf = Xform(xf);
+    }
+    Ok(())
+}
+
 /// The editable document: the geometry being edited, the rest of the scene (groups, components, notes), and an undo/redo
 /// history.
 ///
@@ -258,7 +337,7 @@ impl Model {
             let un = xf.inverse().ok_or(TopologyError::DegenerateNormal)?;
             let inner: Vec<Instance> = taken.iter().map(|&i| Instance { def: ctx.instances[i].def, xf: un.after(&ctx.instances[i].xf) }).collect();
             let name = s.new_name(component);
-            s.defs.push(Definition { name, component, glue: false, cut: false, ctx: Context { mesh: part.transformed(&to_def), instances: inner } });
+            s.defs.push(Definition { name, component, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: part.transformed(&to_def), instances: inner } });
             let def = s.defs.len() - 1;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             for &i in taken.iter().rev() {
@@ -285,7 +364,7 @@ impl Model {
             let xf = Xform::translation(back.apply(lo));
             let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
             let name = s.new_name(component);
-            s.defs.push(Definition { name, component, glue: false, cut: false, ctx: Context { mesh: mesh.transformed(&to_def), instances: Vec::new() } });
+            s.defs.push(Definition { name, component, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: mesh.transformed(&to_def), instances: Vec::new() } });
             let def = s.defs.len() - 1;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             ctx.instances.push(Instance { def, xf });
@@ -346,7 +425,7 @@ impl Model {
                 let xf = Xform::translation(back.apply(lo));
                 let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
                 let name = s.new_name(false);
-                s.defs.push(Definition { name, component: false, glue: false, cut: false, ctx: Context { mesh: r.transformed(&to_def), instances: Vec::new() } });
+                s.defs.push(Definition { name, component: false, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: r.transformed(&to_def), instances: Vec::new() } });
                 let def = s.defs.len() - 1;
                 let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
                 ctx.instances.push(Instance { def, xf });
@@ -466,6 +545,47 @@ impl Model {
             Ok(())
         })
         .map_err(|e| e.to_string())
+    }
+
+    /// Dynamic Components: definition `def`'s attributes.
+    pub fn attributes(&self, def: usize) -> &[crate::dynamic::Attribute] {
+        self.scene.defs.get(def).map(|d| d.attributes.as_slice()).unwrap_or(&[])
+    }
+
+    /// The values of copy `i` (of the open context)'s attributes, the built-ins included (from where it is).
+    pub fn attribute_values(&self, i: usize) -> Result<std::collections::HashMap<String, crate::dynamic::Value>, String> {
+        let inst = *self.instances().get(i).ok_or("that is not a component here")?;
+        let given = placed(&self.scene, &inst);
+        crate::dynamic::evaluate(&self.scene.defs[inst.def].attributes, &given)
+    }
+
+    /// Component Attributes: definition `def`'s attributes replaced by `attrs`, and every copy of it in the open context
+    /// placed and sized by them. One undo step; nothing changes when a formula goes wrong.
+    pub fn set_attributes(&mut self, def: usize, attrs: Vec<crate::dynamic::Attribute>) -> Result<(), String> {
+        if def >= self.scene.defs.len() {
+            return Err("no such component".into());
+        }
+        let mut trial = self.scene.clone();
+        trial.defs[def].attributes = attrs;
+        apply_dynamic(&mut trial, &self.open, def)?;
+        self.edit_scene(|_, s, _| {
+            *s = trial;
+            Ok(())
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// Interact: copy `i`'s onClick actions run (they change its component's attributes), and its copies follow. Returns
+    /// whether it had anything to do.
+    pub fn interact(&mut self, i: usize) -> Result<bool, String> {
+        let inst = *self.instances().get(i).ok_or("click a dynamic component")?;
+        let mut attrs = self.scene.defs[inst.def].attributes.clone();
+        let given = placed(&self.scene, &inst);
+        if !crate::dynamic::on_click(&mut attrs, &given)? {
+            return Ok(false);
+        }
+        self.set_attributes(inst.def, attrs)?;
+        Ok(true)
     }
 
     /// Explode: instance `i`'s geometry joins the open context's (welded where it touches, when that stays a valid
@@ -1460,6 +1580,37 @@ mod tests {
         // one undo takes the drape back, another the stamp
         assert!(m.undo() && m.undo());
         assert_eq!(crate::sandbox::height_at(&ground(&m), [5.0, 5.0]), Some(0.0));
+    }
+
+    #[test]
+    fn a_dynamic_component_sized_by_its_attributes() {
+        use crate::dynamic::Attribute;
+        let a = |n: &str, f: &str| Attribute { name: n.into(), formula: f.into(), label: None };
+        let mut m = Model::new();
+        m.add_rectangle([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+        m.push_pull(0, 1.0).unwrap();
+        let all: Vec<usize> = (0..m.mesh().face_count()).collect();
+        let i = m.make_group(&all, &[], true).unwrap();
+        let def = m.instances()[i].def;
+        let size = |m: &Model| {
+            let mut mesh = Mesh::new();
+            m.scene.flatten_instance(&m.instances()[i], &Xform::IDENTITY, &mut mesh);
+            let (lo, hi) = mesh.bounds().unwrap();
+            ([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], lo)
+        };
+        m.set_attributes(def, vec![a("Width", "2"), a("LenX", "=Width"), a("onClick", "ALTER(\"Width\", 2, 3)")]).unwrap();
+        let (s, _) = size(&m);
+        assert!((s[0] - 2.0).abs() < 1e-9 && (s[1] - 1.0).abs() < 1e-9, "{s:?}");
+        assert!(m.interact(i).unwrap());
+        assert!((size(&m).0[0] - 3.0).abs() < 1e-9, "clicked: 3 m");
+        let mut attrs = m.attributes(def).to_vec();
+        attrs.push(a("X", "5"));
+        m.set_attributes(def, attrs).unwrap();
+        assert!((size(&m).1[0] - 5.0).abs() < 1e-9, "moved to x = 5");
+        // a bad formula changes nothing
+        assert!(m.set_attributes(def, vec![a("LenX", "=Nope*2")]).is_err());
+        assert!((size(&m).0[0] - 3.0).abs() < 1e-9);
+        assert_eq!(m.attribute_values(i).unwrap()["width"].num(), 3.0);
     }
 
     #[test]

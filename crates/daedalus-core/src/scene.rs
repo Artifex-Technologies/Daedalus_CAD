@@ -118,6 +118,8 @@ pub struct Definition {
     /// Cut opening: its footprint (its faces lying flat against a face round it) cuts a hole in that face, as a window does
     /// in a wall.
     pub cut: bool,
+    /// Dynamic Components: its attributes (values and formulas; see `dynamic`), shared by its copies.
+    pub attributes: Vec<crate::dynamic::Attribute>,
     pub ctx: Context,
 }
 
@@ -412,9 +414,9 @@ mod tests {
         }
         unit.add_face(vec![0, 1, 2]);
         let mut s = Scene::default();
-        s.defs.push(Definition { name: "Leaf".into(), component: true, glue: false, cut: false, ctx: Context { mesh: unit, instances: vec![] } });
+        s.defs.push(Definition { name: "Leaf".into(), component: true, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: unit, instances: vec![] } });
         let inner = Instance { def: 0, xf: Xform::translation([0.0, 0.0, 1.0]) };
-        s.defs.push(Definition { name: "Box".into(), component: false, glue: false, cut: false, ctx: Context { mesh: Mesh::new(), instances: vec![inner, inner] } });
+        s.defs.push(Definition { name: "Box".into(), component: false, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: Mesh::new(), instances: vec![inner, inner] } });
         s.root.instances.push(Instance { def: 1, xf: Xform::translation([5.0, 0.0, 0.0]) });
         let flat = s.flatten();
         assert_eq!(flat.faces.len(), 2);

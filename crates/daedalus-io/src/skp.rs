@@ -439,7 +439,7 @@ fn context(b: &Block, colors: &HashMap<i64, [u8; 3]>, scene: &mut Scene, ids: &H
         m.seams = mesh.seams.clone();
         tidy(&mut m);
         let name = format!("{} (overlapping faces{})", if b.name.is_empty() { "Model" } else { &b.name }, if depth > 1 { format!(" {depth}") } else { String::new() });
-        scene.defs.push(Definition { name, component: false, glue: false, cut: false, ctx: Context { mesh: m, instances: Vec::new() } });
+        scene.defs.push(Definition { name, component: false, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: m, instances: Vec::new() } });
         let d = scene.defs.len() - 1;
         match holder {
             None => instances.push(Instance { def: d, xf: Xform::IDENTITY }),
@@ -477,7 +477,7 @@ fn assemble(defs: Vec<(i64, Block)>, top: Block, colors: &HashMap<i64, [u8; 3]>)
     // definitions get their numbers first, so instances can name them; their insides are filled in after
     let ids: HashMap<i64, usize> = defs.iter().enumerate().map(|(i, (id, _))| (*id, i)).collect();
     for (_, b) in &defs {
-        scene.defs.push(Definition { name: b.name.clone(), component: b.component, glue: false, cut: false, ctx: Context::default() });
+        scene.defs.push(Definition { name: b.name.clone(), component: b.component, glue: false, cut: false, attributes: Vec::new(), ctx: Context::default() });
     }
     for (i, (_, b)) in defs.iter().enumerate() {
         let ctx = context(b, colors, &mut scene, &ids);

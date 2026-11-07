@@ -2,6 +2,7 @@
 
 pub mod csg;
 pub mod curve;
+pub mod dynamic;
 pub mod halfedge;
 pub mod imprint;
 pub mod inspect;

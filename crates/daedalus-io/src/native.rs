@@ -1,7 +1,7 @@
 //! `.daedalus`: Daedalus's own file. Plain UTF-8 text, so it is readable, diffable and survives a version-control merge:
 //!
 //! ```text
-//! daedalus 4
+//! daedalus 5
 //! # anything after # is a comment (outside "quotes")
 //! v 0 0 0          one line per vertex: x y z (metres)
 //! f 0 1 2 3        one line per face: vertex indices, counter-clockwise seen from outside
@@ -14,6 +14,8 @@
 //! i 0 1 0 0 2  0 1 0 0  0 0 1 0     an instance of definition 0: three rows of its transform (version 3)
 //! def "Group#1" group               a definition: its own v, f, l, s, c, i lines up to "end" (version 3); a component
 //!                                   may add "glue" and "cut" (glued to faces, cutting an opening in the one it is on)
+//! attr "LenX" "=Width*2" "Width"    inside a definition: a Dynamic Components attribute, its value or formula, and (for one
+//!                                   the user may change) its label in Component Options (version 5)
 //! end
 //! guide line 0 0 0 1 0 0            notes (version 3): guide point x y z, guide line x y z dx dy dz,
 //! dim 0 0 0 1 0 0 0 -0.3 0          dim a b offset, text point at "words", section point normal on|off (one line each, one on at most),
@@ -30,7 +32,7 @@ use daedalus_core::scene::{Axes, Context, Definition, Dimension, Guide, Instance
 use daedalus_core::{Mesh, Paint};
 
 /// Version 2 added loose lines, seams and colours; version 3 groups and components (`def`, `i`) and notes.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 const MAGIC: &str = "daedalus";
 
 pub struct Native;
@@ -209,7 +211,7 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
                 };
                 // after the kind: "glue" and "cut" (a component glued to faces, cutting an opening in the one it is on)
                 let flag = |f: &str| rest.iter().skip(2).any(|w| w == f);
-                scene.defs.push(Definition { name, component, glue: flag("glue"), cut: flag("cut"), ctx: Context::default() });
+                scene.defs.push(Definition { name, component, glue: flag("glue"), cut: flag("cut"), attributes: Vec::new(), ctx: Context::default() });
                 block = Some(scene.defs.len() - 1);
             }
             "end" if v3 => {
@@ -244,6 +246,13 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
                 }
                 let c = numbers(&rest[..6], 6, what, n)?;
                 scene.notes.sections.push(Section { point: p3(&c), normal: p3(&c[3..]), active: rest[6] != "off" });
+            }
+            "attr" if version >= 5 => {
+                let Some(d) = block else { return Err(IoError::Parse(format!("line {n}: an attribute belongs inside a definition"))) };
+                if rest.len() < 2 || rest.len() > 3 {
+                    return Err(IoError::Parse(format!("line {n}: an attribute is a name, a value or formula, and maybe a label")));
+                }
+                scene.defs[d].attributes.push(daedalus_core::dynamic::Attribute { name: rest[0].clone(), formula: rest[1].clone(), label: rest.get(2).cloned() });
             }
             "texture" if version >= 4 => {
                 let what = "a texture is a name, an image file and its width and height";
@@ -349,7 +358,9 @@ pub fn write_scene(scene: &Scene) -> Vec<u8> {
     let extras = |m: &Mesh| !m.lines.is_empty() || !m.seams.is_empty() || m.colors.iter().any(|c| c.is_some());
     let holes = std::iter::once(&scene.root).chain(scene.defs.iter().map(|d| &d.ctx)).any(|c| c.mesh.holes.iter().any(|h| !h.is_empty()));
     let holes = holes || !scene.textures.is_empty();
-    let version = if holes {
+    let version = if scene.defs.iter().any(|d| !d.attributes.is_empty()) {
+        5
+    } else if holes {
         4
     } else if !scene.is_plain() || !scene.defs.is_empty() {
         3
@@ -365,6 +376,12 @@ pub fn write_scene(scene: &Scene) -> Vec<u8> {
         s.push_str(&format!("def {} {}{}{}\n", quote(&d.name), if d.component { "component" } else { "group" }, if d.glue { " glue" } else { "" }, if d.cut { " cut" } else { "" }));
         write_mesh(&mut s, &d.ctx.mesh);
         write_instances(&mut s, &d.ctx.instances);
+        for a in &d.attributes {
+            match &a.label {
+                Some(l) => s.push_str(&format!("attr {} {} {}\n", quote(&a.name), quote(&a.formula), quote(l))),
+                None => s.push_str(&format!("attr {} {}\n", quote(&a.name), quote(&a.formula))),
+            }
+        }
         s.push_str("end\n");
     }
     let n = &scene.notes;
@@ -457,7 +474,7 @@ mod tests {
     fn bad_files_are_refused_with_the_line() {
         let e = |t: &str| Native.import(t.as_bytes()).unwrap_err().to_string();
         assert!(e("hello\n").contains("not a .daedalus file"));
-        assert!(e("daedalus 5\n").contains("newer Daedalus"), "{}", e("daedalus 5\n"));
+        assert!(e("daedalus 6\n").contains("newer Daedalus"), "{}", e("daedalus 6\n"));
         assert!(e("daedalus 3\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\nh 0 1 2\n").contains("unknown entry"), "holes need version 4");
         assert!(e("daedalus 1\nv 0 0 0\nv 1 0 0\nl 0 1\n").contains("unknown entry"), "lines need version 2");
         assert!(e("daedalus 2\nv 0 0 0\nl 0 1\n").contains("vertex 1 is not defined"));
@@ -471,9 +488,9 @@ mod tests {
     #[test]
     fn groups_components_and_notes_come_back() {
         let mut s = Scene::from_mesh(cube());
-        s.defs.push(Definition { name: "Shelf \"A\"".into(), component: true, glue: true, cut: true, ctx: Context { mesh: cube(), instances: vec![] } });
+        s.defs.push(Definition { name: "Shelf \"A\"".into(), component: true, glue: true, cut: true, attributes: Vec::new(), ctx: Context { mesh: cube(), instances: vec![] } });
         let turn = Xform::from_fn(|p| [-p[1] + 2.0, p[0], p[2] + 0.5]);
-        s.defs.push(Definition { name: "Group#1".into(), component: false, glue: false, cut: false, ctx: Context { mesh: Mesh::new(), instances: vec![Instance { def: 0, xf: turn }] } });
+        s.defs.push(Definition { name: "Group#1".into(), component: false, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: Mesh::new(), instances: vec![Instance { def: 0, xf: turn }] } });
         s.root.instances.push(Instance { def: 1, xf: Xform::translation([3.0, 0.0, 0.0]) });
         s.root.instances.push(Instance { def: 0, xf: Xform::IDENTITY });
         s.notes.guides = vec![Guide::Point([1.0, 2.0, 3.0]), Guide::Line([0.0; 3], [0.0, 1.0, 0.0])];
@@ -490,6 +507,12 @@ mod tests {
         s.defs[0].ctx.mesh.set_color(1, Some(Paint { rgb: [150, 70, 50], texture: Some(0) }));
         let bytes = write_scene(&s);
         assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 4\n"));
+        assert_eq!(read_scene(&bytes).unwrap(), s);
+        // Dynamic Components attributes: version 5
+        s.defs[0].attributes.push(daedalus_core::dynamic::Attribute { name: "Width".into(), formula: "600mm".into(), label: Some("Width \"W\"".into()) });
+        s.defs[0].attributes.push(daedalus_core::dynamic::Attribute { name: "LenX".into(), formula: "=Width*2".into(), label: None });
+        let bytes = write_scene(&s);
+        assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 5\n"));
         assert_eq!(read_scene(&bytes).unwrap(), s);
         // read as a plain mesh, the instances are put in place
         assert_eq!(Native.import(&bytes).unwrap().faces.len(), 6 * 3);
