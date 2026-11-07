@@ -44,6 +44,10 @@ pub enum UiAction {
     Erase,
     /// Window > Entity Info (the right-click menu's Entity Info): the panel on the right, open or shut.
     EntityInfo,
+    /// Window > Outliner: the tree of groups and components, open or shut; and a row of it picked (selects that one,
+    /// opening the groups it is in).
+    Outliner,
+    OutlinerPick(usize),
     /// Entity Info on an arc or circle: its number of segments, or its radius (metres).
     CurveSegments(usize),
     CurveRadius(f64),
@@ -113,6 +117,9 @@ pub struct UiView<'a> {
     /// The Entity Info panel is open, and what it shows (None: nothing selected).
     pub info_open: bool,
     pub info: Option<Info>,
+    /// The Outliner is open, and its rows: depth, name, component, selected, open for editing.
+    pub outliner_open: bool,
+    pub outline: Vec<(usize, String, bool, bool, bool)>,
     /// Exactly one group or component is selected: whether it is a component.
     pub one_instance: Option<bool>,
     /// The groups and components open for editing, from the top ("Group#1 › Component#2"), if any.
@@ -135,7 +142,8 @@ pub struct UiView<'a> {
 
 /// The right-click menu at `at` (points), as SketchUp's context menu: what can be done with the selection. Returns the
 /// actions picked and whether the menu stays open (it closes on a pick, a click elsewhere or Esc).
-pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView) -> (Vec<UiAction>, bool) {
+/// `fresh`: the frame it opened in, whose clicks (the right-click that opened it) do not close it.
+pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView, fresh: bool) -> (Vec<UiAction>, bool) {
     let mut actions = Vec::new();
     let mut open = true;
     let area = egui::Area::new(egui::Id::new("context-menu")).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
@@ -152,6 +160,7 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView) -> (Vec<UiAction>
                 }
             };
             item(ui, true, "Entity Info", "", UiAction::EntityInfo);
+            item(ui, true, "Outliner", "", UiAction::Outliner);
             item(ui, v.editable && v.has_selection, "Erase", "Delete", UiAction::Erase);
             ui.separator();
             let kind = if v.one_instance == Some(true) { "Component" } else { "Group" };
@@ -169,7 +178,7 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView) -> (Vec<UiAction>
             });
         });
     });
-    let clicked_away = ctx.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer();
+    let clicked_away = !fresh && ctx.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer();
     if clicked_away || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         open = false;
     }
@@ -178,8 +187,53 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView) -> (Vec<UiAction>
 
 /// The Entity Info panel on the right (SketchUp's tray): what the selection is, and for an arc or circle its segments and
 /// radius to change (applied on Enter).
-fn entity_info(ctx: &egui::Context, v: &UiView, actions: &mut Vec<UiAction>) {
-    egui::SidePanel::right("entity-info").resizable(false).exact_width(230.0).show(ctx, |ui| {
+fn tray(ctx: &egui::Context, v: &UiView, actions: &mut Vec<UiAction>) {
+    egui::SidePanel::right("tray").resizable(false).exact_width(230.0).show(ctx, |ui| {
+        if v.info_open {
+            entity_info(ui, v, actions);
+        }
+        if v.outliner_open {
+            if v.info_open {
+                ui.add_space(10.0);
+            }
+            outliner(ui, v, actions);
+        }
+    });
+}
+
+/// The Outliner: every group and component, nested as they are; a click selects one.
+fn outliner(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.strong("Outliner");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("×").on_hover_text("Close").clicked() {
+                actions.push(UiAction::Outliner);
+            }
+        });
+    });
+    ui.separator();
+    if v.outline.is_empty() {
+        ui.label(egui::RichText::new("No groups or components").weak());
+        return;
+    }
+    egui::ScrollArea::vertical().id_salt("outliner").max_height(ui.available_height()).show(ui, |ui| {
+        for (i, (depth, name, component, selected, open)) in v.outline.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add_space(*depth as f32 * 12.0);
+                let mark = if *open { "▾" } else if *component { "◆" } else { "▪" };
+                let text = format!("{mark} {name}");
+                let label = if *open { egui::RichText::new(text).strong() } else { egui::RichText::new(text) };
+                if ui.selectable_label(*selected, label).clicked() {
+                    actions.push(UiAction::OutlinerPick(i));
+                }
+            });
+        }
+    });
+}
+
+fn entity_info(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
+    {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.strong("Entity Info");
@@ -255,7 +309,7 @@ fn entity_info(ctx: &egui::Context, v: &UiView, actions: &mut Vec<UiAction>) {
                 }
             }
         }
-    });
+    }
 }
 
 pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
@@ -378,6 +432,11 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 let mut info = v.info_open;
                 if ui.checkbox(&mut info, "Entity Info").clicked() {
                     actions.push(UiAction::EntityInfo);
+                    ui.close_menu();
+                }
+                let mut outliner = v.outliner_open;
+                if ui.checkbox(&mut outliner, "Outliner").clicked() {
+                    actions.push(UiAction::Outliner);
                     ui.close_menu();
                 }
                 ui.separator();
@@ -635,8 +694,8 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
             );
         }
     }
-    if v.info_open {
-        entity_info(ctx, v, &mut actions);
+    if v.info_open || v.outliner_open {
+        tray(ctx, v, &mut actions);
     }
     actions
 }

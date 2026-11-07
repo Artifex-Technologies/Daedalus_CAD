@@ -118,6 +118,30 @@ impl Model {
     }
 
     /// The names of the definitions opened, from the top ("Group#1 > Component#2").
+    /// The groups and components open for editing, as instance numbers from the top.
+    pub fn open_path(&self) -> &[usize] {
+        &self.open
+    }
+
+    /// The Outliner: every group and component placed, depth first from the top: (depth, name, component, path of instance
+    /// numbers from the top level down to it).
+    pub fn outline(&self) -> Vec<(usize, String, bool, Vec<usize>)> {
+        fn walk(scene: &Scene, ctx: &crate::scene::Context, path: &mut Vec<usize>, out: &mut Vec<(usize, String, bool, Vec<usize>)>, depth: usize) {
+            for (i, inst) in ctx.instances.iter().enumerate() {
+                let Some(d) = scene.defs.get(inst.def) else { continue };
+                path.push(i);
+                out.push((depth, d.name.clone(), d.component, path.clone()));
+                if depth < 32 {
+                    walk(scene, &d.ctx, path, out, depth + 1);
+                }
+                path.pop();
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.scene, &self.scene.root, &mut Vec::new(), &mut out, 0);
+        out
+    }
+
     pub fn open_names(&self) -> Vec<String> {
         (1..=self.open.len())
             .filter_map(|k| {

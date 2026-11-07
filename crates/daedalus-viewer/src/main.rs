@@ -57,8 +57,13 @@ struct State {
     right_press_at: (f32, f32),
     /// The right-click menu, open at this point (physical pixels).
     context_at: Option<(f32, f32)>,
+    /// The menu opened since the last frame (the click that opened it must not close it).
+    context_fresh: bool,
     /// The Entity Info panel is open.
     info_open: bool,
+    /// The Outliner is open; its rows, for the model state they were read at.
+    outliner_open: bool,
+    outline_cache: Option<(u64, Vec<(usize, String, bool, Vec<usize>)>)>,
     /// What it shows, for the model state and selection it was worked out for.
     info_cache: Option<(u64, Option<ui::Info>)>,
     press_at: (f32, f32),
@@ -182,7 +187,10 @@ impl State {
             right_down: false,
             right_press_at: (0.0, 0.0),
             context_at: None,
+            context_fresh: false,
             info_open: false,
+            outliner_open: false,
+            outline_cache: None,
             info_cache: None,
             press_at: (0.0, 0.0),
             modifiers: ModifiersState::empty(),
@@ -742,6 +750,58 @@ impl State {
         info
     }
 
+    /// The Outliner's rows (worked out again only when the model changed): depth, name, component, path from the top.
+    fn outline(&mut self) -> &[(usize, String, bool, Vec<usize>)] {
+        let key = self.doc.wrapping_mul(1_000_003) ^ self.model.state();
+        if self.outline_cache.as_ref().is_none_or(|(k, _)| *k != key) {
+            self.outline_cache = Some((key, self.model.outline()));
+        }
+        &self.outline_cache.as_ref().expect("just filled").1
+    }
+
+    /// The rows as the Outliner shows them: depth, name, component, selected, open for editing.
+    fn outline_rows(&mut self) -> Vec<(usize, String, bool, bool, bool)> {
+        let open = self.model.open_path().to_vec();
+        let picked = self.tools.instances.clone();
+        self.outline()
+            .iter()
+            .map(|(depth, name, component, path)| {
+                let (parent, last) = path.split_at(path.len() - 1);
+                let selected = parent == open.as_slice() && picked.contains(&last[0]);
+                let is_open = path.len() <= open.len() && open[..path.len()] == path[..];
+                (*depth, name.clone(), *component, selected, is_open)
+            })
+            .collect()
+    }
+
+    /// An Outliner row picked: the groups it is in are opened and it is selected (an open one is gone back into).
+    fn outliner_pick(&mut self, i: usize) {
+        if self.readonly.is_some() {
+            return;
+        }
+        let Some(path) = self.outline().get(i).map(|r| r.3.clone()) else { return };
+        let open = self.model.open_path().to_vec();
+        let is_open = path.len() <= open.len() && open[..path.len()] == path[..];
+        let (into, pick) = if is_open { (&path[..], None) } else { (&path[..path.len() - 1], path.last().copied()) };
+        if open != into {
+            self.model.close_all();
+            for &k in into {
+                if let Err(e) = self.model.open(k) {
+                    self.message = Some(format!("Cannot open it: {e}."));
+                    break;
+                }
+            }
+            self.tools.model_changed();
+        }
+        self.tools.instances.clear();
+        self.tools.selected.clear();
+        self.tools.edges.clear();
+        if let Some(k) = pick {
+            self.tools.instances.push(k);
+        }
+        self.after_edit();
+    }
+
     /// Entity Info on the selected arc or circle: new segments and/or radius.
     fn reshape_curve(&mut self, segments: Option<usize>, radius: Option<f64>) {
         let Some(&[a, b]) = self.tools.edges.first() else { return };
@@ -776,6 +836,7 @@ impl State {
             self.refresh();
         }
         self.context_at = Some(self.cursor);
+        self.context_fresh = true;
         self.window.request_redraw();
     }
 
@@ -1228,6 +1289,11 @@ impl State {
             UiAction::DeleteDimensions => self.model.edit_notes(|n| n.dims.clear()),
             UiAction::MakeGroup => self.make_group(false),
             UiAction::Erase => self.erase_selected(),
+            UiAction::Outliner => {
+                self.outliner_open = !self.outliner_open;
+                self.window.request_redraw();
+            }
+            UiAction::OutlinerPick(i) => self.outliner_pick(i),
             UiAction::EntityInfo => {
                 self.info_open = !self.info_open;
                 self.window.request_redraw();
@@ -1466,6 +1532,7 @@ impl State {
         };
         let (label, current) = self.tools.measurement();
         let info = if self.info_open { self.info() } else { None };
+        let outline = if self.outliner_open { self.outline_rows() } else { Vec::new() };
         let view = UiView {
             tool: self.tools.tool,
             units: self.tools.units,
@@ -1487,6 +1554,8 @@ impl State {
             has_selection: self.tools.has_selection(),
             info_open: self.info_open,
             info,
+            outliner_open: self.outliner_open,
+            outline,
             one_instance: self.one_instance().and_then(|i| self.model.instances().get(i)).and_then(|inst| self.model.definition(inst.def)).map(|d| d.component),
             editing: (self.model.open_depth() > 0).then(|| self.model.open_names().join(" › ")),
             labels: self
@@ -1534,11 +1603,12 @@ impl State {
         let mut answer: Option<&'static str> = None;
         let doc_name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
         let context_at = self.context_at;
+        let context_fresh = std::mem::take(&mut self.context_fresh);
         let mut context_open = context_at.is_some();
         let out = ctx.run(raw, |ctx| {
             actions = ui::draw(ctx, &view);
             if let Some((x, y)) = context_at {
-                let (picked, open) = ui::context_menu(ctx, egui::pos2(x / ppp, y / ppp), &view);
+                let (picked, open) = ui::context_menu(ctx, egui::pos2(x / ppp, y / ppp), &view, context_fresh);
                 actions.extend(picked);
                 context_open = open;
             }
