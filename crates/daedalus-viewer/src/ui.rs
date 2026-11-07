@@ -34,6 +34,11 @@ pub enum UiAction {
     DeleteDimensions,
     /// Paint Bucket's colour (None: the default material).
     PaintColor(Option<[u8; 3]>),
+    /// Paint Bucket: texture `i`, or a new one from an image file (picked in the file dialog).
+    PaintTexture(usize),
+    PickTexture,
+    /// Entity Info on a textured face: one tile's width and height (metres).
+    TextureSize(f64, f64),
     SelectAll,
     DeleteGuides,
     /// Groups and components (Edit menu): make one from the selection, open the selected one, close the open one,
@@ -88,7 +93,9 @@ pub enum Info {
     /// change, and a key that changes with the curve (so a half-typed value is dropped when another is selected).
     Curve { arc: bool, segments: usize, radius: String, length: String, editable: bool, key: u64 },
     Edge { length: String },
-    Face { area: String, holes: usize },
+    /// A face: its area, its holes, and its texture if it has one (name, a tile's width and height shown in the units,
+    /// and a key for the values being typed).
+    Face { area: String, holes: usize, texture: Option<(String, String, String, u64)> },
     /// A group or component: its name, and for a component whether it glues to faces and cuts an opening.
     Group { name: String, component: bool, glue: bool, cut: bool },
     /// Several things: how many.
@@ -105,6 +112,9 @@ pub struct UiView<'a> {
     pub can_redo: bool,
     pub style: Style,
     pub paint_color: Option<[u8; 3]>,
+    /// The texture Paint Bucket paints with (None: a plain colour), and every texture's name.
+    pub paint_texture: Option<usize>,
+    pub textures: Vec<String>,
     /// Dimension labels: where on screen (points) and the text.
     pub labels: Vec<(Pos2, String)>,
     /// Text (the Text tool): where on screen (points) and the words.
@@ -264,11 +274,33 @@ fn entity_info(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
                 ui.label("Edge");
                 row(ui, "Length", length);
             }
-            Some(Info::Face { area, holes }) => {
+            Some(Info::Face { area, holes, texture }) => {
                 ui.label("Face");
                 row(ui, "Area", area);
                 if *holes > 0 {
                     row(ui, "Holes", &holes.to_string());
+                }
+                if let Some((name, w, h, key)) = texture {
+                    row(ui, "Texture", name);
+                    let id = egui::Id::new(("texture-size", *key));
+                    let (mut tw, mut th) = ui.data_mut(|d| d.get_temp::<(String, String)>(id)).unwrap_or_else(|| (w.clone(), h.clone()));
+                    let mut done = false;
+                    for (label, text) in [("Tile width", &mut tw), ("Tile height", &mut th)] {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(label).weak());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let r = ui.add(egui::TextEdit::singleline(text).desired_width(90.0));
+                                done |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            });
+                        });
+                    }
+                    if done {
+                        match (daedalus_core::units::parse(&tw, v.units), daedalus_core::units::parse(&th, v.units)) {
+                            (Some(a), Some(b)) if a > 0.0 && b > 0.0 => actions.push(UiAction::TextureSize(a, b)),
+                            _ => (tw, th) = (w.clone(), h.clone()),
+                        }
+                    }
+                    ui.data_mut(|d| d.insert_temp(id, (tw, th)));
                 }
             }
             Some(Info::Group { name, component, glue, cut }) => {
@@ -646,8 +678,18 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     }
                     ui.label("Any colour");
                 });
-                if ui.radio(v.paint_color.is_none(), "Default (takes paint off)").clicked() {
+                if ui.radio(v.paint_color.is_none() && v.paint_texture.is_none(), "Default (takes paint off)").clicked() {
                     actions.push(UiAction::PaintColor(None));
+                }
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Textures").weak());
+                for (i, name) in v.textures.iter().enumerate() {
+                    if ui.radio(v.paint_texture == Some(i), name).clicked() {
+                        actions.push(UiAction::PaintTexture(i));
+                    }
+                }
+                if ui.button("Texture from file…").clicked() {
+                    actions.push(UiAction::PickTexture);
                 }
             });
     }
@@ -861,6 +903,7 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
             Act(Icon::Style(FaceStyle::Wireframe), UiAction::FaceStyle(FaceStyle::Wireframe)),
             Act(Icon::Style(FaceStyle::HiddenLine), UiAction::FaceStyle(FaceStyle::HiddenLine)),
             Act(Icon::Style(FaceStyle::Shaded), UiAction::FaceStyle(FaceStyle::Shaded)),
+            Act(Icon::Style(FaceStyle::Textured), UiAction::FaceStyle(FaceStyle::Textured)),
             Act(Icon::Style(FaceStyle::Monochrome), UiAction::FaceStyle(FaceStyle::Monochrome)),
         ],
     ]

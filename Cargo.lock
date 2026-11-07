@@ -570,6 +570,7 @@ dependencies = [
  "egui-winit",
  "epaint_default_fonts",
  "glam",
+ "image",
  "naga",
  "pollster",
  "ttf-parser",

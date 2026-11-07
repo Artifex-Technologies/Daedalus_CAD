@@ -63,7 +63,7 @@ pub struct HalfEdgeMesh {
     /// Hidden face edges (seams around holes).
     pub seams: Vec<[u32; 2]>,
     /// Face colours (see `Mesh::colors`).
-    pub colors: Vec<Option<[u8; 3]>>,
+    pub colors: Vec<Option<crate::Paint>>,
 }
 
 impl HalfEdgeMesh {
@@ -555,7 +555,7 @@ impl HalfEdgeMesh {
         // the pushed face keeps its colour (and so does the base it leaves behind); the new side walls start unpainted
         let color = m.color_of(face);
         m.remove_face(face);
-        let put = |m: &mut Mesh, mut rings: Vec<Vec<u32>>, color: Option<[u8; 3]>| {
+        let put = |m: &mut Mesh, mut rings: Vec<Vec<u32>>, color: Option<crate::Paint>| {
             let outline = rings.remove(0);
             m.faces.push(outline);
             let f = m.faces.len() - 1;

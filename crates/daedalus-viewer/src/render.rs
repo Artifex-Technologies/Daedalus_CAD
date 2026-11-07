@@ -22,7 +22,13 @@ struct Vertex {
     highlight: f32,
     /// The face's colour (Paint Bucket), or the default material's.
     color: [f32; 3],
+    /// Where on the face's texture, in tiles (it repeats), and which texture layer (-1: none).
+    uv: [f32; 2],
+    layer: f32,
 }
+
+/// Each texture's layer on the GPU is this many pixels square (an image of another size is resized to it).
+pub const TEXTURE_SIZE: u32 = 512;
 
 /// The default material: the light grey faces have when nothing is painted on them.
 const DEFAULT_FACE: [f32; 3] = [0.78, 0.80, 0.84];
@@ -67,10 +73,12 @@ pub enum FaceStyle {
     XRay,
     /// Lit faces, all in the default material (paint not shown).
     Monochrome,
+    /// Lit faces with their textures drawn (Shaded shows a textured face in its texture's colour).
+    Textured,
 }
 
 impl FaceStyle {
-    pub const ALL: [FaceStyle; 5] = [FaceStyle::Wireframe, FaceStyle::HiddenLine, FaceStyle::Shaded, FaceStyle::Monochrome, FaceStyle::XRay];
+    pub const ALL: [FaceStyle; 6] = [FaceStyle::Wireframe, FaceStyle::HiddenLine, FaceStyle::Shaded, FaceStyle::Textured, FaceStyle::Monochrome, FaceStyle::XRay];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -79,6 +87,7 @@ impl FaceStyle {
             FaceStyle::Shaded => "Shaded",
             FaceStyle::XRay => "X-Ray",
             FaceStyle::Monochrome => "Monochrome",
+            FaceStyle::Textured => "Shaded with Textures",
         }
     }
 
@@ -89,6 +98,7 @@ impl FaceStyle {
             FaceStyle::Shaded => "shaded",
             FaceStyle::XRay => "x-ray",
             FaceStyle::Monochrome => "monochrome",
+            FaceStyle::Textured => "textured",
         }
     }
 
@@ -105,7 +115,9 @@ pub struct Style {
 }
 
 /// Flat-shaded triangle list: every face gets its own vertices and normal.
-fn face_vertices(mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagged: &[usize], faded_from: usize) -> Vec<Vertex> {
+/// `tiles`: each texture's tile size (width, height, metres), by number; a face painted with one gets its place on it, the
+/// tiles lined up with the face (across: level in the face; up: square to that in it).
+fn face_vertices(mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagged: &[usize], faded_from: usize, tiles: &[[f64; 2]]) -> Vec<Vertex> {
     let mut out = Vec::new();
     for (fi, face) in mesh.faces.iter().enumerate() {
         let normal = newell(mesh, face).map(|c| c as f32);
@@ -118,10 +130,30 @@ fn face_vertices(mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagge
         } else {
             0.0
         };
-        let color = mesh.color_of(fi).map_or(DEFAULT_FACE, |c| c.map(|x| x as f32 / 255.0));
+        let paint = mesh.color_of(fi);
+        let color = paint.map_or(DEFAULT_FACE, |c| c.rgb.map(|x| x as f32 / 255.0));
+        // the texture's axes on this face: across level (or along x when it lies flat), up square to that
+        let texture = paint.and_then(|p| p.texture).filter(|&t| (t as usize) < tiles.len());
+        let n = newell(mesh, face);
+        let across = if n[2].abs() > 0.999 { [1.0, 0.0, 0.0] } else {
+            let a = [-n[1], n[0], 0.0];
+            let l = (a[0] * a[0] + a[1] * a[1]).sqrt();
+            [a[0] / l, a[1] / l, 0.0]
+        };
+        let up = [n[1] * across[2] - n[2] * across[1], n[2] * across[0] - n[0] * across[2], n[0] * across[1] - n[1] * across[0]];
         for &tri in tris.get(fi).map(Vec::as_slice).unwrap_or(&[]) {
             for v in tri {
-                out.push(Vertex { position: gpu(mesh.positions[v as usize]), normal, highlight, color });
+                let p = mesh.positions[v as usize];
+                let (uv, layer) = match texture {
+                    Some(t) => {
+                        let [w, h] = tiles[t as usize];
+                        let dot = |a: [f64; 3]| p[0] * a[0] + p[1] * a[1] + p[2] * a[2];
+                        // images run downward; the face's up runs up
+                        ([(dot(across) / w.max(1e-9)) as f32, (-dot(up) / h.max(1e-9)) as f32], t as f32)
+                    }
+                    None => ([0.0, 0.0], -1.0),
+                };
+                out.push(Vertex { position: gpu(p), normal, highlight, color, uv, layer });
             }
         }
     }
@@ -211,6 +243,9 @@ pub struct Renderer {
     overlay_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// What the bind group is made from, to remake it when the textures change.
+    bind_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
     depth_view: wgpu::TextureView,
     /// Samples per pixel actually used (MSAA, or 1 where the GPU cannot), and the multisampled colour target.
     samples: u32,
@@ -262,22 +297,46 @@ impl Renderer {
         });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() }],
+        // textures repeat across a face
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("textures"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
         });
+        let bind_group = texture_bind_group(&device, &queue, &bgl, &uniform_buffer, &sampler, &[]);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[&bgl],
@@ -294,7 +353,7 @@ impl Renderer {
         let face_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32x3],
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32, 3 => Float32x3, 4 => Float32x2, 5 => Float32],
         };
         // a pair of line vertices (one segment) per instance: the shader turns it into a strip
         let line_layout = wgpu::VertexBufferLayout {
@@ -436,6 +495,8 @@ impl Renderer {
             overlay_pipeline,
             uniform_buffer,
             bind_group,
+            bind_layout: bgl,
+            sampler,
         }
     }
 
@@ -456,11 +517,17 @@ impl Renderer {
     /// `tris`: each face's triangles (`Mesh::face_triangles`), kept by the caller so a highlight change does not split
     /// every face again.
     /// `selected_edges`: edges drawn in the selection colour (vertex pairs, lower number first, sorted).
-    pub fn set_scene(&mut self, mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], selected_edges: &[[u32; 2]], flagged: &[usize], faded: (usize, u32)) {
-        let faces = face_vertices(mesh, tris, selected, flagged, faded.0);
+    /// `tiles`: each texture's tile size, by number (see `face_vertices`).
+    pub fn set_scene(&mut self, mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], selected_edges: &[[u32; 2]], flagged: &[usize], faded: (usize, u32), tiles: &[[f64; 2]]) {
+        let faces = face_vertices(mesh, tris, selected, flagged, faded.0, tiles);
         let edges = edge_vertices(mesh, faded.1, selected_edges);
         self.faces = (self.buffer(bytemuck::cast_slice(&faces)), faces.len() as u32);
         self.edges = (self.buffer(bytemuck::cast_slice(&edges)), edges.len() as u32);
+    }
+
+    /// The textures faces may be painted with, by number: each `TEXTURE_SIZE` square, RGBA, rows top first.
+    pub fn set_textures(&mut self, layers: &[Vec<u8>]) {
+        self.bind_group = texture_bind_group(&self.device, &self.queue, &self.bind_layout, &self.uniform_buffer, &self.sampler, layers);
     }
 
     fn buffer(&self, contents: &[u8]) -> wgpu::Buffer {
@@ -504,6 +571,7 @@ impl Renderer {
             FaceStyle::HiddenLine => 1.0,
             FaceStyle::XRay => 2.0,
             FaceStyle::Monochrome => 3.0,
+            FaceStyle::Textured => 4.0,
             _ => 0.0,
         };
         let uniforms = Uniforms {
@@ -539,7 +607,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            if matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded | FaceStyle::Monochrome) {
+            if matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded | FaceStyle::Textured | FaceStyle::Monochrome) {
                 pass.set_pipeline(&self.face_pipeline);
                 pass.set_vertex_buffer(0, self.faces.0.slice(..));
                 pass.draw(0..self.faces.1, 0..1);
@@ -547,7 +615,7 @@ impl Renderer {
             pass.set_pipeline(&self.edge_pipeline);
             pass.set_vertex_buffer(0, self.edges.0.slice(..));
             pass.draw(0..6, 0..self.edges.1 / 2);
-            if style.back_edges && matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded | FaceStyle::Monochrome) {
+            if style.back_edges && matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded | FaceStyle::Textured | FaceStyle::Monochrome) {
                 pass.set_pipeline(&self.back_edge_pipeline);
                 pass.draw(0..6, 0..self.edges.1 / 2);
             }
@@ -608,4 +676,41 @@ mod shader_tests {
                 .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         }
     }
+}
+
+/// The bind group: the uniforms, the textures as layers of one array (a blank layer when there are none), the sampler.
+fn texture_bind_group(device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu::BindGroupLayout, uniforms: &wgpu::Buffer, sampler: &wgpu::Sampler, layers: &[Vec<u8>]) -> wgpu::BindGroup {
+    let count = layers.len().max(1) as u32;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("textures"),
+        size: wgpu::Extent3d { width: TEXTURE_SIZE, height: TEXTURE_SIZE, depth_or_array_layers: count },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let want = (TEXTURE_SIZE * TEXTURE_SIZE * 4) as usize;
+    for (i, data) in layers.iter().enumerate() {
+        if data.len() != want {
+            continue;
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: i as u32 }, aspect: wgpu::TextureAspect::All },
+            data,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * TEXTURE_SIZE), rows_per_image: Some(TEXTURE_SIZE) },
+            wgpu::Extent3d { width: TEXTURE_SIZE, height: TEXTURE_SIZE, depth_or_array_layers: 1 },
+        );
+    }
+    let view = texture.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    })
 }

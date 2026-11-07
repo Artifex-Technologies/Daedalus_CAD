@@ -3,9 +3,12 @@
 //!
 //!     cargo run -p daedalus-io --example demo_models -- OUT_FOLDER
 //!
-//! writes `house.daedalus` and `house-section.daedalus` (the same house with a section plane cutting through it).
+//! writes `house.daedalus`, `house-section.daedalus` (the same house with a section plane cutting through it) and
+//! `house-textured.daedalus` (brick walls and a tiled roof; the two images are drawn here too, as PNG files beside it).
 
 use daedalus_core::model::Model;
+use daedalus_core::scene::Texture;
+use daedalus_core::Paint;
 use daedalus_core::scene::{Dimension, Label};
 use std::path::Path;
 
@@ -50,9 +53,9 @@ fn house() -> Model {
     let ridge = [vertex_at(&m, [0.0, 3.0, 3.0]), vertex_at(&m, [8.0, 3.0, 3.0])];
     m.transform_vertices(&ridge, |p| [p[0], p[1], p[2] + 2.2]).unwrap();
     let walls = faces_where(&m, |_, n| n[2].abs() < 0.1);
-    m.paint(&walls, Some(WALL)).unwrap();
+    m.paint(&walls, Some(WALL.into())).unwrap();
     let roof = faces_where(&m, |_, n| n[2] > 0.1);
-    m.paint(&roof, Some(ROOF)).unwrap();
+    m.paint(&roof, Some(ROOF.into())).unwrap();
     // windows in the front (y = 0), the back (y = 6) and the gable end (x = 8), and a door
     let mut glass = vec![];
     for (x0, x1) in [(0.9, 2.5), (5.5, 7.1)] {
@@ -63,10 +66,10 @@ fn house() -> Model {
     glass.push([[8.0, 2.6, 3.4], [8.0, 3.4, 3.4], [8.0, 3.4, 4.2], [8.0, 2.6, 4.2]]);
     for w in &glass {
         let back = opening(&mut m, w, 0.15);
-        m.paint(&[back], Some(GLASS)).unwrap();
+        m.paint(&[back], Some(GLASS.into())).unwrap();
     }
     let door = opening(&mut m, &[[3.4, 0.0, 0.05], [4.6, 0.0, 0.05], [4.6, 0.0, 2.2], [3.4, 0.0, 2.2]], 0.1);
-    m.paint(&[door], Some(DOOR)).unwrap();
+    m.paint(&[door], Some(DOOR.into())).unwrap();
     // the house becomes a group, so the shed beside it stays apart
     let all: Vec<usize> = (0..m.mesh().face_count()).collect();
     m.make_group(&all, &[], false).unwrap();
@@ -77,9 +80,9 @@ fn house() -> Model {
     let back_top = [vertex_at(&m, [10.0, 3.0, 2.2]), vertex_at(&m, [12.4, 3.0, 2.2])];
     m.transform_vertices(&back_top, |p| [p[0], p[1], p[2] - 0.4]).unwrap();
     let all: Vec<usize> = (0..m.mesh().face_count()).collect();
-    m.paint(&all, Some(WOOD)).unwrap();
+    m.paint(&all, Some(WOOD.into())).unwrap();
     let top = find(&m, |_, n| n[2] > 0.5);
-    m.paint(&[top], Some(ROOF)).unwrap();
+    m.paint(&[top], Some(ROOF.into())).unwrap();
     m.make_group(&all, &[], false).unwrap();
 
     m.edit_notes(|n| {
@@ -102,5 +105,36 @@ fn main() {
         n.add_section([0.0, 2.6, 0.0], [0.0, -1.0, 0.0]);
     });
     daedalus_io::save_scene(&m.document(), &out.join("house-section.daedalus")).unwrap();
+    // the same house in brick, with a tiled roof
+    m.edit_notes(|n| n.sections.clear());
+    let brick = out.join("brick.png");
+    image::RgbImage::from_fn(256, 128, |x, y| {
+        // courses 64 px high, every other one shifted half a brick; mortar lines 6 px
+        let course = y / 64;
+        let xs = (x + if course % 2 == 1 { 64 } else { 0 }) % 128;
+        let mortar = y % 64 < 6 || xs < 6;
+        let shade = ((x * 7 + y * 13) % 23) as u8;
+        if mortar { image::Rgb([205, 200, 190]) } else { image::Rgb([150 + shade, 62 + shade / 2, 44]) }
+    })
+    .save(&brick)
+    .unwrap();
+    let tiles = out.join("roof-tiles.png");
+    image::RgbImage::from_fn(128, 128, |x, y| {
+        let edge = y % 64 < 5 || (x + if (y / 64) % 2 == 1 { 32 } else { 0 }) % 64 < 3;
+        if edge { image::Rgb([70, 40, 35]) } else { image::Rgb([120, (48 + y % 64 / 4) as u8, 40]) }
+    })
+    .save(&tiles)
+    .unwrap();
+    let wall_tex = m.add_texture(Texture { name: "Brick".into(), path: brick.display().to_string(), size: [0.9, 0.45] });
+    let roof_tex = m.add_texture(Texture { name: "Roof tiles".into(), path: tiles.display().to_string(), size: [0.6, 0.6] });
+    // inside the house group: its walls and roof
+    m.open(0).unwrap();
+    let walls = faces_where(&m, |_, n| n[2].abs() < 0.1);
+    let walls: Vec<usize> = walls.into_iter().filter(|&f| m.mesh().to_mesh().color_of(f).map(|c| c.rgb) == Some(WALL)).collect();
+    m.paint(&walls, Some(Paint { rgb: [150, 70, 50], texture: Some(wall_tex as u16) })).unwrap();
+    let roof = faces_where(&m, |_, n| n[2] > 0.1);
+    m.paint(&roof, Some(Paint { rgb: [120, 55, 42], texture: Some(roof_tex as u16) })).unwrap();
+    m.close();
+    daedalus_io::save_scene(&m.document(), &out.join("house-textured.daedalus")).unwrap();
     println!("written to {}", out.display());
 }

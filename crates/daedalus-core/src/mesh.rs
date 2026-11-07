@@ -1,6 +1,20 @@
 use crate::halfedge::ray_triangle;
 use crate::triangulate::{triangulate, triangulate_with_holes};
 
+/// A face's paint (Paint Bucket): a colour, and a texture drawn over it (an index into the scene's textures, see
+/// `scene::Texture`), as SketchUp's materials are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Paint {
+    pub rgb: [u8; 3],
+    pub texture: Option<u16>,
+}
+
+impl From<[u8; 3]> for Paint {
+    fn from(rgb: [u8; 3]) -> Self {
+        Paint { rgb, texture: None }
+    }
+}
+
 /// Indexed polygon mesh. Faces may have any number of vertices (>= 3).
 ///
 /// This is the interchange representation used by importers/exporters.
@@ -14,7 +28,7 @@ pub struct Mesh {
     /// Face edges that are not drawn: the seams that join the two faces around a hole (see `imprint::cut_hole`).
     pub seams: Vec<[u32; 2]>,
     /// Paint Bucket colours, one per face (None: the default material). May be shorter than `faces`: the rest are unpainted.
-    pub colors: Vec<Option<[u8; 3]>>,
+    pub colors: Vec<Option<Paint>>,
     /// The openings in each face (a wall's window): loops of vertices wound the other way round from the face's outline, in
     /// the face's plane and inside it. May be shorter than `faces`: the rest have none.
     pub holes: Vec<Vec<Vec<u32>>>,
@@ -36,12 +50,12 @@ impl Mesh {
     }
 
     /// The colour face `f` is painted, if any.
-    pub fn color_of(&self, f: usize) -> Option<[u8; 3]> {
+    pub fn color_of(&self, f: usize) -> Option<Paint> {
         self.colors.get(f).copied().flatten()
     }
 
     /// Paints face `f` (None: back to the default material).
-    pub fn set_color(&mut self, f: usize, c: Option<[u8; 3]>) {
+    pub fn set_color(&mut self, f: usize, c: Option<Paint>) {
         if self.colors.len() <= f {
             if c.is_none() {
                 return;

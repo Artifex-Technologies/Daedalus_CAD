@@ -393,6 +393,17 @@ impl Draw<'_> {
             Icon::Style(FaceStyle::HiddenLine) => self.cube(Hidden::None, None),
             Icon::Style(FaceStyle::Shaded) => self.cube(Hidden::None, Some(self.accent)),
             Icon::Style(FaceStyle::Monochrome) => self.cube(Hidden::None, Some(ink)),
+            Icon::Style(FaceStyle::Textured) => {
+                // a shaded cube with brick courses on its faces
+                self.cube(Hidden::None, Some(self.accent));
+                let t = self.thin();
+                for (a, b) in [((0.14, 0.45), (0.5, 0.63)), ((0.14, 0.58), (0.5, 0.76)), ((0.5, 0.63), (0.86, 0.45)), ((0.5, 0.76), (0.86, 0.58))] {
+                    self.line_with(&[a, b], t);
+                }
+                for (a, b) in [((0.32, 0.54), (0.32, 0.67)), ((0.68, 0.54), (0.68, 0.67))] {
+                    self.line_with(&[a, b], t);
+                }
+            }
             Icon::Style(FaceStyle::XRay) => {
                 self.cube(Hidden::Solid, Some(ink.gamma_multiply(0.5)));
             }

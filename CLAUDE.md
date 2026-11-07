@@ -140,6 +140,12 @@ the current state is:
   Entity Info), 3D Text in any installed font (`text3d::fonts`), component gluing (`core/src/opening.rs`: Glue to faces
   keeps a component on its face when moved; Cut opening cuts a true hole where its edges touch a face, following it when
   moved and gone when erased; `def ... component glue cut` in the file).
+- Textures (2026-11-06): a face's paint is `Paint { rgb, texture }` (`Mesh::colors`), textures live in `Scene::textures`
+  (name, image path, tile size in metres; `.daedalus` 4: `texture` lines, a texture number after a `c` line's colour).
+  Paint Bucket: "Texture from file…" (Minos), Entity Info sets the tile size. GPU: one RGBA texture array, each image
+  resized to 512 px (`render::TEXTURE_SIZE`), repeat sampler; tiles lined up with the face (level across). Style "Shaded
+  with Textures" (code 4); Shaded shows a textured face in its average colour. Monochrome drew as Hidden Line before
+  (shader); fixed.
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

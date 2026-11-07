@@ -684,8 +684,36 @@ impl Model {
         })
     }
 
+    /// The textures faces can be painted with (`Paint::texture` numbers them).
+    pub fn textures(&self) -> &[crate::scene::Texture] {
+        &self.scene.textures
+    }
+
+    /// Adds a texture (or finds the one from the same file), as one undo step; returns its number.
+    pub fn add_texture(&mut self, t: crate::scene::Texture) -> usize {
+        if let Some(i) = self.scene.textures.iter().position(|x| x.path == t.path) {
+            return i;
+        }
+        self.edit_scene(|_, s, _| {
+            s.textures.push(t);
+            Ok(s.textures.len() - 1)
+        })
+        .unwrap_or(0)
+    }
+
+    /// Entity Info on a textured face: the size of one tile of texture `i` (width, height, metres), as one undo step.
+    pub fn set_texture_size(&mut self, i: usize, size: [f64; 2]) -> Result<(), TopologyError> {
+        if !(size[0] > 0.0 && size[1] > 0.0) {
+            return Err(TopologyError::ZeroDistance);
+        }
+        self.edit_scene(|_, s, _| {
+            s.textures.get_mut(i).ok_or_else(nothing)?.size = size;
+            Ok(())
+        })
+    }
+
     /// Paint Bucket: paints `faces` with `color` (None: back to the default material), as one undo step.
-    pub fn paint(&mut self, faces: &[usize], color: Option<[u8; 3]>) -> Result<(), TopologyError> {
+    pub fn paint(&mut self, faces: &[usize], color: Option<crate::Paint>) -> Result<(), TopologyError> {
         self.edit(|m| {
             let mut mesh = m.to_mesh();
             for &f in faces {
@@ -1187,7 +1215,7 @@ mod tests {
 
     #[test]
     fn paint_stays_on_its_face_through_edits() {
-        let red = Some([200, 40, 30]);
+        let red = Some(crate::Paint::from([200, 40, 30]));
         let mut m = Model::new();
         let f = m.add_rectangle([0.0; 3], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
         m.paint(&[f], red).unwrap();

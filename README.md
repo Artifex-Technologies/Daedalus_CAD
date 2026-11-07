@@ -131,6 +131,11 @@ The choice is remembered (`~/.config/daedalus/settings.conf`). The model itself 
 
 A section plane cuts the model open to look inside; the cut is filled and outlined.
 
+![The demo house in brick with a tiled roof, in the Shaded with Textures style](docs/images/textured.png)
+
+Paint Bucket paints colours or textures (any JPEG, PNG or BMP image, tiled across the face at a size set in Entity Info);
+View > Shaded with Textures shows them.
+
 ## SketchUp files
 SketchUp models (`.skp`) open with File > Open, groups and components kept, through the `skp-convert` helper (see the
 licence notes below). Here a house modelled in SketchUp, opened in Daedalus:

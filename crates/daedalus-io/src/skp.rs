@@ -392,7 +392,7 @@ fn surface(polys: Vec<Vec<Poly>>, points: &Points) -> (Mesh, Vec<Vec<Poly>>) {
             let p = if rev { p.reversed() } else { p };
             mesh.faces.push(p.ring);
             let f = mesh.faces.len() - 1;
-            mesh.set_color(f, p.color);
+            mesh.set_color(f, p.color.map(daedalus_core::Paint::from));
             mesh.set_holes(f, p.holes);
         }
     }
@@ -457,7 +457,7 @@ fn everything(units: Vec<Vec<Poly>>, points: &Points) -> Mesh {
     for p in units.into_iter().flatten() {
         m.faces.push(p.ring);
         let f = m.faces.len() - 1;
-        m.set_color(f, p.color);
+        m.set_color(f, p.color.map(daedalus_core::Paint::from));
         m.set_holes(f, p.holes);
     }
     m
@@ -556,7 +556,7 @@ end
         assert!(model.mesh().seams.is_empty());
         assert!((0..6).any(|f| model.mesh().has_holes(f)), "the front has its window");
         // the front (with the hole) is red
-        assert!(model.mesh().colors.contains(&Some([200, 40, 40])));
+        assert!(model.mesh().colors.contains(&Some([200, 40, 40].into())));
         // the post component is placed twice, sharing one definition
         let posts: Vec<_> = s.root.instances.iter().filter(|i| s.defs[i.def].name == "Post").collect();
         assert_eq!(posts.len(), 2);

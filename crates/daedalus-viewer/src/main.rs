@@ -61,6 +61,9 @@ struct State {
     context_fresh: bool,
     /// The Entity Info panel is open.
     info_open: bool,
+    /// The texture files on the GPU (in the model's order), and each one's average colour (what Shaded shows).
+    loaded_textures: Vec<String>,
+    texture_colors: Vec<[u8; 3]>,
     /// The Outliner is open; its rows, for the model state they were read at.
     outliner_open: bool,
     outline_cache: Option<(u64, Vec<(usize, String, bool, Vec<usize>)>)>,
@@ -191,6 +194,8 @@ impl State {
             context_at: None,
             context_fresh: false,
             info_open: false,
+            loaded_textures: Vec::new(),
+            texture_colors: Vec::new(),
             outliner_open: false,
             outline_cache: None,
             info_cache: None,
@@ -435,7 +440,51 @@ impl State {
                 Ok(()) => self.message = Some(format!("Exported {}.", short(&path))),
                 Err(e) => self.message = Some(format!("Not exported: {e}.")),
             },
+            Purpose::Texture => self.add_texture_from(&path),
         }
+    }
+
+    /// A texture from an image file: added to the model (a tile 1 m square to start with; Entity Info changes it) and
+    /// taken up by Paint Bucket.
+    fn add_texture_from(&mut self, path: &Path) {
+        if self.readonly.is_some() {
+            return;
+        }
+        if image::open(path).is_err() {
+            self.message = Some(format!("{} is not an image Daedalus can read (JPEG, PNG or BMP).", short(path)));
+            return;
+        }
+        let name = path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Texture".into());
+        let i = self.model.add_texture(daedalus_core::scene::Texture { name, path: path.display().to_string(), size: [1.0, 1.0] });
+        self.sync_textures();
+        self.tools.paint_color = Some(daedalus_core::Paint { rgb: self.texture_colors.get(i).copied().unwrap_or([200, 200, 200]), texture: Some(i as u16) });
+        self.set_tool(Tool::PaintBucket);
+        self.message = Some("Texture ready: click faces to paint them with it (View > Shaded with Textures shows it).".into());
+    }
+
+    /// The model's textures onto the GPU, when they changed: each image resized to one layer (a missing file shows as a
+    /// grey check), and its average colour kept.
+    fn sync_textures(&mut self) {
+        let paths: Vec<String> = self.model.textures().iter().map(|t| t.path.clone()).collect();
+        if paths == self.loaded_textures {
+            return;
+        }
+        let side = render::TEXTURE_SIZE;
+        let mut layers = Vec::new();
+        let mut colors = Vec::new();
+        for p in &paths {
+            let img = match image::open(p) {
+                Ok(i) => i.resize_exact(side, side, image::imageops::FilterType::Triangle).to_rgba8(),
+                Err(_) => image::RgbaImage::from_fn(side, side, |x, y| if (x / 32 + y / 32) % 2 == 0 { image::Rgba([170, 170, 175, 255]) } else { image::Rgba([210, 210, 215, 255]) }),
+            };
+            let n = (side * side) as u64;
+            let sum = img.pixels().fold([0u64; 3], |s, px| [s[0] + px[0] as u64, s[1] + px[1] as u64, s[2] + px[2] as u64]);
+            colors.push(sum.map(|c| (c / n) as u8));
+            layers.push(img.into_raw());
+        }
+        self.gpu.set_textures(&layers);
+        self.texture_colors = colors;
+        self.loaded_textures = paths;
     }
 
     fn size(&self) -> (f32, f32) {
@@ -525,7 +574,9 @@ impl State {
         };
         highlight.sort_unstable();
         self.edges = self.display.visible_edges();
-        self.gpu.set_scene(&self.display, &self.tris, &highlight, &self.tools.edges, &self.flagged, (self.faded_from, self.faded_vertex));
+        self.sync_textures();
+        let tiles: Vec<[f64; 2]> = self.model.textures().iter().map(|t| t.size).collect();
+        self.gpu.set_scene(&self.display, &self.tris, &highlight, &self.tools.edges, &self.flagged, (self.faded_from, self.faded_vertex), &tiles);
         self.shown_highlight = highlight;
         self.window.request_redraw();
     }
@@ -741,7 +792,10 @@ impl State {
                 let [a, b, c] = t.map(|v| DVec3::from(mesh.positions[v as usize]));
                 (b - a).cross(c - a).length() / 2.0
             }).sum();
-            Some(ui::Info::Face { area: daedalus_core::units::format_area(area, units), holes: mesh.holes_of(f).len() })
+            let texture = mesh.color_of(f).and_then(|p| p.texture).and_then(|t| self.model.textures().get(t as usize)).map(|t| {
+                (t.name.clone(), daedalus_core::units::format(t.size[0], units), daedalus_core::units::format(t.size[1], units), key)
+            });
+            Some(ui::Info::Face { area: daedalus_core::units::format_area(area, units), holes: mesh.holes_of(f).len(), texture })
         } else if inst.len() == 1 && faces.is_empty() && edges.is_empty() {
             let def = self.model.instances().get(inst[0]).map(|i| i.def);
             def.and_then(|d| self.model.definition(d)).map(|d| ui::Info::Group { name: d.name.clone(), component: d.component, glue: d.glue, cut: d.cut })
@@ -1267,7 +1321,20 @@ impl State {
                 self.style.faces = f;
                 settings::save("style", f.key());
             }
-            UiAction::PaintColor(c) => self.tools.paint_color = c,
+            UiAction::PaintColor(c) => self.tools.paint_color = c.map(daedalus_core::Paint::from),
+            UiAction::PaintTexture(i) => {
+                self.tools.paint_color = Some(daedalus_core::Paint { rgb: self.texture_colors.get(i).copied().unwrap_or([200, 200, 200]), texture: Some(i as u16) });
+            }
+            UiAction::PickTexture => self.choose(Purpose::Texture, ""),
+            UiAction::TextureSize(w, h) => {
+                let t = self.tools.selected.first().and_then(|&f| self.model.mesh().to_mesh().color_of(f)).and_then(|p| p.texture);
+                if let Some(t) = t {
+                    if let Err(e) = self.model.set_texture_size(t as usize, [w, h]) {
+                        self.message = Some(format!("Not changed: {e}."));
+                    }
+                    self.after_edit();
+                }
+            }
             UiAction::SectionCuts => {
                 // the current plane cuts or stops (one cuts at most)
                 self.model.edit_notes(|n| {
@@ -1560,7 +1627,9 @@ impl State {
             typing: !self.typed.is_empty(),
             marker,
             style: self.style,
-            paint_color: self.tools.paint_color,
+            paint_color: self.tools.paint_color.filter(|p| p.texture.is_none()).map(|p| p.rgb),
+            paint_texture: self.tools.paint_color.and_then(|p| p.texture).map(|t| t as usize),
+            textures: self.model.textures().iter().map(|t| t.name.clone()).collect(),
             section: self.model.notes().section().map(|s| s.active),
             sections: self.model.notes().sections.iter().map(|s| s.active).collect(),
             has_selection: self.tools.has_selection(),

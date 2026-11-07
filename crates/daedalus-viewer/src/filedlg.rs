@@ -10,6 +10,8 @@ pub enum Purpose {
     SaveAs,
     Import,
     Export,
+    /// An image for a texture (Paint Bucket).
+    Texture,
 }
 
 impl Purpose {
@@ -19,6 +21,7 @@ impl Purpose {
             Purpose::SaveAs => "Save As",
             Purpose::Import => "Import",
             Purpose::Export => "Export",
+            Purpose::Texture => "Texture",
         }
     }
 
@@ -29,6 +32,7 @@ impl Purpose {
             Purpose::SaveAs => &["daedalus"],
             Purpose::Import => &["stl", "obj", "dxf", "dae", "skp", "dskp"],
             Purpose::Export => &["stl", "obj", "dxf", "dae"],
+            Purpose::Texture => &["jpg", "jpeg", "png", "bmp"],
         }
     }
 

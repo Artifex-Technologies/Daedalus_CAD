@@ -331,7 +331,7 @@ pub struct Tools {
     /// Selected edges and loose lines of the open context, as vertex pairs (lower number first), sorted.
     pub edges: Vec<[u32; 2]>,
     /// Paint Bucket's colour (None: the default material, which takes paint off).
-    pub paint_color: Option<[u8; 3]>,
+    pub paint_color: Option<daedalus_core::Paint>,
     /// Move makes a copy (Ctrl toggles it while moving, as in SketchUp).
     pub copy: bool,
     /// The last copy made by Move (what was copied and how far), so `x5` or `/5` typed right after makes an array.
@@ -359,7 +359,7 @@ impl Default for Tools {
             arc_segments: DEFAULT_ARC_SEGMENTS,
             instances: Vec::new(),
             edges: Vec::new(),
-            paint_color: Some([196, 92, 64]),
+            paint_color: Some([196, 92, 64].into()),
             copy: false,
             last_copy: None,
             hover_face: None,

@@ -130,7 +130,7 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f64) -> (Mesh, Vec<usize>) {
     }
     let mut faces: Vec<Vec<u32>> = vec![];
     let mut holes: Vec<Vec<Vec<u32>>> = vec![];
-    let mut colors: Vec<Option<[u8; 3]>> = vec![];
+    let mut colors: Vec<Option<crate::Paint>> = vec![];
     let mut map = vec![0usize; mesh.faces.len()];
     for members in groups.values() {
         // faces of different colours stay apart

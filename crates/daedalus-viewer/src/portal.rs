@@ -33,6 +33,7 @@ fn filters(purpose: Purpose) -> Vec<(&'static str, Vec<&'static str>)> {
             ("All files", vec!["*"]),
         ],
         Purpose::SaveAs => vec![("Daedalus model (.daedalus)", vec!["*.daedalus"])],
+        Purpose::Texture => vec![("Images", vec!["*.jpg", "*.jpeg", "*.png", "*.bmp"]), ("All files", vec!["*"])],
         Purpose::Export => vec![
             ("STL", vec!["*.stl"]),
             ("OBJ", vec!["*.obj"]),
@@ -48,6 +49,7 @@ fn title(purpose: Purpose) -> &'static str {
         Purpose::SaveAs => "Save the model as",
         Purpose::Import => "Import a model",
         Purpose::Export => "Export the model as",
+        Purpose::Texture => "Choose an image for the texture",
     }
 }
 

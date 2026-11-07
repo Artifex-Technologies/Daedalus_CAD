@@ -229,6 +229,17 @@ pub struct Scene {
     pub root: Context,
     pub defs: Vec<Definition>,
     pub notes: Notes,
+    /// The textures faces are painted with (`Paint::texture` numbers them), shared by every context.
+    pub textures: Vec<Texture>,
+}
+
+/// A texture (Paint Bucket's "Texture from file"): an image file, tiled across a face; one tile is `size` (width, height,
+/// metres), lined up with the face.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Texture {
+    pub name: String,
+    pub path: String,
+    pub size: [f64; 2],
 }
 
 impl Scene {
@@ -238,7 +249,7 @@ impl Scene {
 
     /// Whether this is only loose geometry (no instances, no notes): it can be written as a plain mesh.
     pub fn is_plain(&self) -> bool {
-        self.root.instances.is_empty() && self.notes.is_empty()
+        self.root.instances.is_empty() && self.notes.is_empty() && self.textures.is_empty()
     }
 
     /// The context reached by opening the instances along `path` (indices into each level's instances), from the top.

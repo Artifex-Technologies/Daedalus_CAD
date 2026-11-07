@@ -1,7 +1,7 @@
 struct Uniforms {
     view_proj: mat4x4<f32>,
     light: vec4<f32>,
-    // x: face style (0 shaded, 1 hidden line, 2 X-ray)
+    // x: face style (0 shaded, 1 hidden line, 2 X-ray, 3 monochrome, 4 shaded with textures)
     style: vec4<f32>,
     // Section Plane: xyz the normal of the side cut away, w the offset; all zero when there is none
     section: vec4<f32>,
@@ -15,12 +15,18 @@ fn cut_away(p: vec3<f32>) -> bool {
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+// the textures faces are painted with, all the same size, one layer each
+@group(0) @binding(1) var textures: texture_2d_array<f32>;
+@group(0) @binding(2) var tex_sampler: sampler;
 
 struct VertexIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) highlight: f32,
     @location(3) color: vec3<f32>,
+    // where on its texture (in tiles: it repeats), and which layer (-1: none)
+    @location(4) uv: vec2<f32>,
+    @location(5) layer: f32,
 };
 
 struct VertexOut {
@@ -29,6 +35,8 @@ struct VertexOut {
     @location(1) highlight: f32,
     @location(2) color: vec3<f32>,
     @location(3) world: vec3<f32>,
+    @location(4) uv: vec2<f32>,
+    @location(5) layer: f32,
 };
 
 @vertex
@@ -39,11 +47,15 @@ fn vs_main(in: VertexIn) -> VertexOut {
     out.highlight = in.highlight;
     out.color = in.color;
     out.world = in.position;
+    out.uv = in.uv;
+    out.layer = in.layer;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    // sampled first, while every pixel still runs (a texture lookup needs its neighbours)
+    let texel = textureSample(textures, tex_sampler, in.uv, max(i32(in.layer + 0.5), 0)).rgb;
     if (cut_away(in.world)) {
         discard;
     }
@@ -58,7 +70,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let d = abs(dot(normalize(in.normal), normalize(u.light.xyz)));
     let shade = 0.30 + 0.70 * d;
     // the face's paint, or the default material in the Monochrome style
-    let base = select(in.color, vec3<f32>(0.78, 0.80, 0.84), u.style.x > 2.5);
+    // with textures: the face's texture where it has one
+    let painted = select(in.color, texel, u.style.x > 3.5 && in.layer > -0.5);
+    let base = select(painted, vec3<f32>(0.78, 0.80, 0.84), u.style.x > 2.5 && u.style.x < 3.5);
     let selected = vec3<f32>(0.30, 0.55, 0.95);
     let flagged = vec3<f32>(0.90, 0.25, 0.22);
     let paper = vec3<f32>(0.93, 0.94, 0.96);
@@ -76,7 +90,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // X-ray: see-through
         return vec4<f32>(lit, 0.45);
     }
-    if (u.style.x > 0.5) {
+    if (u.style.x > 0.5 && u.style.x < 1.5) {
         // hidden line: faces in the background colour, unlit (a selection still shows)
         return vec4<f32>(mix(paper, tint, min(in.highlight, 1.0) * 0.5), 1.0);
     }

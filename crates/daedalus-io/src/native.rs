@@ -6,6 +6,8 @@
 //! v 0 0 0          one line per vertex: x y z (metres)
 //! f 0 1 2 3        one line per face: vertex indices, counter-clockwise seen from outside
 //! h 4 7 6 5        a hole in the face above (a window in a wall): its vertices the other way round (version 4)
+//! c 2 200 80 40 0   ... and a texture's number after the colour (version 4)
+//! texture "Brick" "/path/brick.jpg" 1.2 0.8   a texture: name, image file, a tile's width and height in metres (version 4)
 //! l 0 4            a loose line (version 2)
 //! s 0 1            a hidden seam: a face edge not drawn (version 2)
 //! c 2 200 80 40    face 2 painted red, green, blue (version 2)
@@ -24,8 +26,8 @@
 //! appear. A file is written in the oldest version that holds everything in it.
 
 use crate::{IoError, MeshExporter, MeshImporter};
-use daedalus_core::scene::{Axes, Context, Definition, Dimension, Guide, Instance, Label, Scene, Section, Xform};
-use daedalus_core::Mesh;
+use daedalus_core::scene::{Axes, Context, Definition, Dimension, Guide, Instance, Label, Scene, Section, Texture, Xform};
+use daedalus_core::{Mesh, Paint};
 
 /// Version 2 added loose lines, seams and colours; version 3 groups and components (`def`, `i`) and notes.
 pub const VERSION: u32 = 4;
@@ -177,11 +179,16 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
             }
             "c" if v2 => {
                 let v = indices(rest, "a colour is a face number and red, green, blue", n)?;
-                let [f, r, g, b] = v[..] else { return Err(IoError::Parse(format!("line {n}: a colour is a face number and red, green, blue"))) };
-                if f as usize >= mesh.faces.len() || r.max(g).max(b) > 255 {
+                // a texture's number may follow (version 4)
+                let (f, r, g, b, t) = match v[..] {
+                    [f, r, g, b] => (f, r, g, b, None),
+                    [f, r, g, b, t] if version >= 4 => (f, r, g, b, Some(t)),
+                    _ => return Err(IoError::Parse(format!("line {n}: a colour is a face number and red, green, blue"))),
+                };
+                if f as usize >= mesh.faces.len() || r.max(g).max(b) > 255 || t.is_some_and(|t| t > u16::MAX as u32) {
                     return Err(IoError::Parse(format!("line {n}: face {f} is not defined above, or a colour is over 255")));
                 }
-                mesh.set_color(f as usize, Some([r as u8, g as u8, b as u8]));
+                mesh.set_color(f as usize, Some(Paint { rgb: [r as u8, g as u8, b as u8], texture: t.map(|t| t as u16) }));
             }
             "i" if v3 => {
                 let what = "an instance is a definition number and twelve numbers";
@@ -237,6 +244,14 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
                 }
                 let c = numbers(&rest[..6], 6, what, n)?;
                 scene.notes.sections.push(Section { point: p3(&c), normal: p3(&c[3..]), active: rest[6] != "off" });
+            }
+            "texture" if version >= 4 => {
+                let what = "a texture is a name, an image file and its width and height";
+                if rest.len() != 4 {
+                    return Err(IoError::Parse(format!("line {n}: {what}")));
+                }
+                let c = numbers(&rest[2..], 2, what, n)?;
+                scene.textures.push(Texture { name: rest[0].clone(), path: rest[1].clone(), size: [c[0], c[1]] });
             }
             "axes" if v3 => {
                 let c = numbers(rest, 12, "axes are an origin and three directions", n)?;
@@ -304,8 +319,11 @@ fn write_mesh(s: &mut String, mesh: &Mesh) {
         s.push_str(&format!("s {a} {b}\n"));
     }
     for (f, c) in mesh.colors.iter().enumerate() {
-        if let Some([r, g, b]) = c {
-            s.push_str(&format!("c {f} {r} {g} {b}\n"));
+        if let Some(Paint { rgb: [r, g, b], texture }) = c {
+            match texture {
+                Some(t) => s.push_str(&format!("c {f} {r} {g} {b} {t}\n")),
+                None => s.push_str(&format!("c {f} {r} {g} {b}\n")),
+            }
         }
     }
 }
@@ -330,6 +348,7 @@ fn v3(p: [f64; 3]) -> String {
 pub fn write_scene(scene: &Scene) -> Vec<u8> {
     let extras = |m: &Mesh| !m.lines.is_empty() || !m.seams.is_empty() || m.colors.iter().any(|c| c.is_some());
     let holes = std::iter::once(&scene.root).chain(scene.defs.iter().map(|d| &d.ctx)).any(|c| c.mesh.holes.iter().any(|h| !h.is_empty()));
+    let holes = holes || !scene.textures.is_empty();
     let version = if holes {
         4
     } else if !scene.is_plain() || !scene.defs.is_empty() {
@@ -363,6 +382,9 @@ pub fn write_scene(scene: &Scene) -> Vec<u8> {
     }
     for sec in &n.sections {
         s.push_str(&format!("section {} {} {}\n", v3(sec.point), v3(sec.normal), if sec.active { "on" } else { "off" }));
+    }
+    for t in &scene.textures {
+        s.push_str(&format!("texture {} {} {} {}\n", quote(&t.name), quote(&t.path), t.size[0], t.size[1]));
     }
     if !n.axes.is_default() {
         let a = n.axes;
@@ -424,7 +446,7 @@ mod tests {
         m.add_vertex([5.0, 0.0, 0.0]);
         m.lines.push([0, 8]);
         m.seams.push([0, 1]);
-        m.set_color(2, Some([10, 200, 30]));
+        m.set_color(2, Some([10, 200, 30].into()));
         let bytes = Native.export(&m).unwrap();
         assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 2\n"));
         let back = Native.import(&bytes).unwrap();
@@ -462,6 +484,12 @@ mod tests {
         s.notes.axes = Axes { origin: [1.0, 1.0, 0.0], dirs: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] };
         let bytes = write_scene(&s);
         assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 3\n"));
+        assert_eq!(read_scene(&bytes).unwrap(), s);
+        // a texture, and a face painted with it: version 4
+        s.textures.push(Texture { name: "Brick \"red\"".into(), path: "/tmp/brick 1.png".into(), size: [1.2, 0.8] });
+        s.defs[0].ctx.mesh.set_color(1, Some(Paint { rgb: [150, 70, 50], texture: Some(0) }));
+        let bytes = write_scene(&s);
+        assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 4\n"));
         assert_eq!(read_scene(&bytes).unwrap(), s);
         // read as a plain mesh, the instances are put in place
         assert_eq!(Native.import(&bytes).unwrap().faces.len(), 6 * 3);

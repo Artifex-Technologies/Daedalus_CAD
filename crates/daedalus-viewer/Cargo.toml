@@ -17,6 +17,8 @@ egui-winit = "0.31.1"
 egui-wgpu = "0.31.1"
 # 3D Text: glyph outlines (ttf-parser, MIT/Apache) from the Ubuntu Light font egui already ships (Ubuntu Font Licence).
 ttf-parser = "0.25"
+# textures: images read and resized (same crate and version daedalus-io uses)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp"] }
 epaint_default_fonts = "0.31.1"
 
 # Light or dark from the desktop (the XDG desktop portal's color-scheme), followed live. Windows reports it through winit.

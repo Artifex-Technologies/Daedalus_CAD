@@ -17,6 +17,6 @@ pub mod triangulate;
 pub mod units;
 
 pub use halfedge::{HalfEdgeMesh, TopologyError};
-pub use mesh::Mesh;
+pub use mesh::{Mesh, Paint};
 pub use model::Model;
 pub use sketch::Plane;
