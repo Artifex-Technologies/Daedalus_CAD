@@ -1,4 +1,4 @@
-"""Converts Matt's SketchUp models (.skp) so they can be opened without SketchUp, using OpenSKP (MIT, reverse-engineered
+"""Converts my SketchUp models (.skp) so they can be opened without SketchUp, using OpenSKP (MIT, reverse-engineered
 reader; installed in ~/.local/share/daedalus/openskp). The .skp files are only read, never changed.
 
 For every .skp under the folder given (default: ~/3D Objects), it writes into "<folder>/Converted from SketchUp/", keeping

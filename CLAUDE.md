@@ -7,6 +7,9 @@ such as SendCutSend). Primary target is **Arch Linux**; Windows must keep buildi
 **UX rule: match SketchUp's layout, tools and controls.** Other CAD programs are references for extra
 capability only.
 
+Push every commit as you make it; don't ask me first. Before pushing, check the diff names no host name,
+network address, SSID or MAC address.
+
 ## Commands
 ```sh
 cargo test --workspace                      # no GPU needed; the main check
@@ -58,14 +61,14 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 298 tests pass (2026-11-06, 110 of them in daedalus-sheet). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 303 tests pass (2026-11-07, 110 of them in daedalus-sheet). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
   undo/redo, orbit/zoom/pan, Solid Inspector and repair on an open STL, File > Save/Open/New and the unsaved-changes question.
   Not yet: `WGPU_BACKEND=gl`, HiDPI scaling.
-- Known gaps: shapes drawn on a face overlap it instead of splitting it (no imprinting, no faces with holes);
-  touching shapes do not share edges (no vertex welding); no arcs.
+- The 2026-11-05 gaps are closed: imprinting, vertex welding and arcs (Phase 2/3 below), faces with holes and curves
+  (2026-11-06 below).
 - Toolbar (2026-11-05): icons instead of words, the name and shortcut on hover; View > Toolbar puts it across the top or
   down the left side (remembered).
 - Units (`core/src/units.rs`, 2026-11-05): the model is in metres; Units menu shows and types lengths in mm, cm, m, inches
@@ -120,8 +123,8 @@ the current state is:
 - SketchUp (2026-11-06): `.skp` opens through `tools/skp-convert` (Python, OpenSKP, MIT; installed in its own venv in
   ~/.local/share/daedalus/openskp, not part of the build), which writes `.dskp` (our text format) that
   `daedalus-io/src/skp.rs` builds into groups and components; faces that would make an edge non-manifold or clash in
-  winding go into a nested "(overlapping faces)" group. Matt's 29 models converted (OBJ checked: sizes right); the .dskp
-  path is unit-tested, not yet tried on his files. Claude Code's safety check does not let Claude run OpenSKP itself.
+  winding go into a nested "(overlapping faces)" group. My 29 models converted (OBJ checked: sizes right); the .dskp
+  path is unit-tested, not yet tried on my files. Claude Code's safety check does not let Claude run OpenSKP itself.
 - Edges in the selection (2026-11-06): a Select click within 6 px of an edge or loose line of the geometry being edited takes
   the line (blue), not the face behind it (Ctrl adds, Shift toggles; a triple-click still takes everything joined). Delete
   (`HalfEdgeMesh::erase_edges`): a loose line goes; an edge between two faces in one plane joins them (`merge::join_pair`;
@@ -171,7 +174,7 @@ the current state is:
   `.daedalus` 5 `attr` lines); built-ins X Y Z LenX LenY LenZ RotZ place and size every copy (`Model::set_attributes`);
   onClick SET/ALTER (Interact tool). Panels in the tray: Component Options (labelled attributes, Enter applies) and
   Component Attributes (rows, + Built-in, Apply). Checked on screen. Not yet: Hidden, Copies, Material, Parent!
-  references, per-copy values (copies share; Make Unique). Location skipped for now (Matt, 2026-11-06).
+  references, per-copy values (copies share; Make Unique). Location skipped for now (my call, 2026-11-06).
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").
@@ -193,8 +196,12 @@ the current state is:
   edge), Convert in the panel; a shelled solid keeps its walls' thickness; the part keeps the solid (`SolidSource`) and
   rebuilds from it. Checked on screen (an L with 2 mm walls: blank matches hand numbers). Not yet: typing in the panel
   driven on screen (no keys sent to the nested desktop), jogs and other SolidCraft features in the UI.
-- Next milestones: stress testing (own linear FEA: shells for sheet metal, voxels for solids; CalculiX only as an
-  external program), constraints, more sheet-metal features in the UI.
+- Box selection (2026-11-07, `f52ceb3`): with Select, drag a box. Left to right takes what is wholly inside;
+  right to left (dashed, crossing) takes what it touches. Ctrl adds, Shift toggles, Ctrl+Shift takes out. It takes faces,
+  edges and loose lines of the geometry being edited, and groups/components whole.
+- Next milestones (my decision, 2026-11-07): stress testing first (own linear FEA: shells for sheet metal, voxels for
+  solids; CalculiX only as an external program), then more sheet metal (jogs and the other SolidCraft features in the UI)
+  and the Dynamic Components extras (Hidden, Copies, Material, Parent!, per-copy values). Constraints are still to come too.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
   constraint solver, reuse CADCraft crates or reimplement.
 

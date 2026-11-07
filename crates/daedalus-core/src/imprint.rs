@@ -338,7 +338,7 @@ pub fn cut_hole_avoiding(m: &mut Mesh, outer: usize, inner: &[u32], avoid: &[Vec
         (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
     };
     // every pair by length, shortest first, but tested for a clear path only until enough are found: testing all of them
-    // first took 24 s on a face of 3,100 corners (a curved terrace in Matt's Dream House)
+    // first took 24 s on a face of 3,100 corners (a curved terrace in my Dream House model)
     let mut all: Vec<(f64, u32, u32)> = (0..n)
         .flat_map(|pi| (0..k).map(move |qi| (pi, qi)))
         .map(|(pi, qi)| (d2(pi, qi), pi as u32, qi as u32))

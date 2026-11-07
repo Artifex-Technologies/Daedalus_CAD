@@ -22,7 +22,7 @@ Laid out like SketchUp: menus and toolbar on top, hints and the Measurements box
 
 | Tool | Key | Use |
 |---|---|---|
-| Select | Space | click a face, an edge or a line (Ctrl adds, Shift toggles); Delete erases it |
+| Select | Space | click a face, an edge or a line (Ctrl adds, Shift toggles); drag a box: left to right takes what is wholly inside, right to left what it touches (Ctrl+Shift takes out); Delete erases it |
 | Line | L | click corners; click the start point to close the loop into a face |
 | Rectangle | R | two corners, or type `width,height` after the first |
 | Circle | C | centre, then radius (click or type); type `24s` to set segments |
@@ -88,14 +88,16 @@ Behavior targets come from the publicly documented feature set of other free mod
 (for example IngeTrazo, GPL-3.0). Daedalus is designed and written independently;
 no source from those projects is used.
 
-1. Drawing: line, rectangle, circle, polygon, arc; edge splitting of faces; inference and axis locks
-2. Value-box entry of exact lengths; repeat-last-command
-3. Modify: move, rotate, scale, offset, follow-me, eraser, hide
-4. Groups and components (shared definitions), layers, scenes
-5. Materials and styles, edge rendering, section planes
-6. Solid operations (union, subtract, intersect) and a watertightness guard
-7. Native save format, then SKP read via the SDK, glTF export
-8. Sheet layout with vector PDF/DXF output
+1. Drawing: line, rectangle, circle, polygon, arc; edge splitting of faces; inference and axis locks (done)
+2. Value-box entry of exact lengths; repeat-last-command (done)
+3. Modify: move, rotate, scale, offset, follow-me, eraser (done); hide (not yet)
+4. Groups and components (shared definitions) (done); layers, scenes (not yet)
+5. Materials and styles, edge rendering, section planes (done)
+6. Solid operations (union, subtract, intersect) and a watertightness guard (done: Solid Tools, Solid Inspector)
+7. Native save format (done), SKP read (done, through `skp-convert` instead of the SDK), glTF export (not yet)
+8. Sheet layout with vector PDF/DXF output (not yet; sheet-metal flat patterns already go to DXF)
+9. Sheet metal in the model and STEP export (done)
+10. Stress testing (FEA), next
 
 ## Format status
 | Format | Status | Notes |
@@ -107,9 +109,11 @@ no source from those projects is used.
 | PSD | load | flattened composite only (`psd` crate) |
 | PDF | todo | `pdfium-render` needs the pdfium library at runtime |
 | FBX | todo | `fbxcel` |
-| SKP | todo | Trimble SketchUp C SDK (check Linux binaries), feature-gated |
+| Daedalus (`.daedalus`) | open + save | native: plain text, versioned (version 6 holds sheet-metal parts) |
+| SKP | import | through `tools/skp-convert` (OpenSKP, installed apart), which writes `.dskp` for Daedalus to read |
+| STEP | export | sheet-metal parts exact; other closed groups and components as flat-faced solids |
 | DWG | todo | LibreDWG is GPLv3, so isolate in an optional crate |
-| F3D/F3Z/CAM360 | blocked | no public spec; support STEP instead |
+| F3D/F3Z/CAM360 | blocked | no public spec; use STEP instead |
 | RBZ | later | needs a reimplementation of the public SketchUp Ruby API |
 
 ## Coplanar faces
@@ -155,7 +159,7 @@ The demo models in these pictures are drawn by `cargo run -p daedalus-io --examp
 calls the tools make.
 
 ## Next
-Solid Tools (union, subtract, intersect on groups), then the Sandbox (terrain) tools.
+Stress testing (FEA) first, then more sheet metal (jogs) and the Dynamic Components extras.
 
 ## License
 
