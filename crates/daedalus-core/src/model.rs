@@ -557,6 +557,27 @@ impl Model {
         Ok(made)
     }
 
+    /// Offset outward: a ring face round face `face`, its outline `outline` (the face's outline moved outward, same way
+    /// round) and its hole the face's own outline, so the two share those edges. One undo step; returns the ring's index.
+    /// Fails when the face's edges already border other faces (the ring would make them shared three ways).
+    pub fn offset_outward(&mut self, face: usize, outline: &[[f64; 3]]) -> Result<usize, TopologyError> {
+        if face >= self.mesh.face_count() {
+            return Err(TopologyError::FaceOutOfRange(face));
+        }
+        self.edit(|m| {
+            let mut mesh = m.to_mesh();
+            let inner: Vec<u32> = mesh.faces[face].iter().rev().copied().collect();
+            let ring: Vec<u32> = outline.iter().map(|&p| mesh.add_vertex(p)).collect();
+            mesh.faces.push(ring);
+            let f = mesh.faces.len() - 1;
+            mesh.set_holes(f, vec![inner]);
+            let c = mesh.color_of(face);
+            mesh.set_color(f, c);
+            *m = HalfEdgeMesh::from_mesh(&mesh)?;
+            Ok(f)
+        })
+    }
+
     /// Paint Bucket: paints `faces` with `color` (None: back to the default material), as one undo step.
     pub fn paint(&mut self, faces: &[usize], color: Option<[u8; 3]>) -> Result<(), TopologyError> {
         self.edit(|m| {
@@ -599,9 +620,9 @@ impl Model {
                 return Err(TopologyError::DegenerateFace(profile));
             }
             let color = mesh.color_of(profile);
-            let mut ring = mesh.remove_face(profile);
-            // the profile wound counter-clockwise about the way the path sets off
-            let pts: Vec<[f64; 3]> = ring.iter().map(|&v| mesh.positions[v as usize]).collect();
+            let (outline, holes) = mesh.remove_face_loops(profile);
+            // the profile wound counter-clockwise about the way the path sets off (its holes the other way)
+            let pts: Vec<[f64; 3]> = outline.iter().map(|&v| mesh.positions[v as usize]).collect();
             let mut nrm = [0.0f64; 3];
             for i in 0..pts.len() {
                 let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
@@ -609,9 +630,18 @@ impl Model {
                 nrm[1] += (p[2] - q[2]) * (p[0] + q[0]);
                 nrm[2] += (p[0] - q[0]) * (p[1] + q[1]);
             }
+            let mut loops: Vec<Vec<u32>> = std::iter::once(outline).chain(holes).collect();
             if dot(nrm, dirs[0]) < 0.0 {
-                ring.reverse();
+                for l in &mut loops {
+                    l.reverse();
+                }
             }
+            // a point carried along direction `d` onto the plane through `at` with normal `mitre`
+            let carry = |mesh: &mut Mesh, v: u32, at: [f64; 3], d: [f64; 3], mitre: [f64; 3], denom: f64| {
+                let p = mesh.positions[v as usize];
+                let t = dot(sub(at, p), mitre) / denom;
+                mesh.add_vertex([p[0] + d[0] * t, p[1] + d[1] * t, p[2] + d[2] * t])
+            };
             // a closed path has a corner at its start too: the profile is carried onto that corner's mitre plane first
             if closed {
                 let d0 = dirs[0];
@@ -621,17 +651,12 @@ impl Model {
                 if denom.abs() < 1e-6 {
                     return Err(TopologyError::DegenerateNormal);
                 }
-                ring = ring
-                    .iter()
-                    .map(|&v| {
-                        let p = mesh.positions[v as usize];
-                        let t = dot(sub(path[0], p), mitre) / denom;
-                        mesh.add_vertex([p[0] + d0[0] * t, p[1] + d0[1] * t, p[2] + d0[2] * t])
-                    })
-                    .collect();
+                for l in &mut loops {
+                    *l = l.iter().map(|&v| carry(&mut mesh, v, path[0], d0, mitre, denom)).collect();
+                }
             }
             // each next cross-section: the last one carried along the piece onto the mitre plane at the next corner
-            let mut sections: Vec<Vec<u32>> = vec![ring.clone()];
+            let mut sections: Vec<Vec<Vec<u32>>> = vec![loops.clone()];
             let corners = if closed { n } else { n - 1 };
             for i in 1..=corners {
                 let at = path[i % n];
@@ -641,18 +666,11 @@ impl Model {
                 if denom.abs() < 1e-6 {
                     return Err(TopologyError::DegenerateNormal); // a bend that turns right back
                 }
-                let prev = sections.last().expect("one at least").clone();
                 if closed && i == n {
                     break; // the ring closes onto the first section
                 }
-                let next: Vec<u32> = prev
-                    .iter()
-                    .map(|&v| {
-                        let p = mesh.positions[v as usize];
-                        let t = dot(sub(at, p), mitre) / denom;
-                        mesh.add_vertex([p[0] + d_in[0] * t, p[1] + d_in[1] * t, p[2] + d_in[2] * t])
-                    })
-                    .collect();
+                let prev = sections.last().expect("one at least").clone();
+                let next: Vec<Vec<u32>> = prev.iter().map(|l| l.iter().map(|&v| carry(&mut mesh, v, at, d_in, mitre, denom)).collect()).collect();
                 sections.push(next);
             }
             if closed {
@@ -660,21 +678,27 @@ impl Model {
                 let first = sections[0].clone();
                 sections.push(first);
             }
-            let k = ring.len();
+            // walls along every loop: round the outside, and inside each hole (its loop runs the other way, so they face in)
             for w in sections.windows(2) {
-                let (s0, s1) = (&w[0], &w[1]);
-                for j in 0..k {
-                    let (a, b) = (s0[j], s0[(j + 1) % k]);
-                    let (a2, b2) = (s1[j], s1[(j + 1) % k]);
-                    mesh.faces.push(vec![a, b, b2, a2]);
+                for (l0, l1) in w[0].iter().zip(&w[1]) {
+                    let k = l0.len();
+                    for j in 0..k {
+                        let (a, b) = (l0[j], l0[(j + 1) % k]);
+                        let (a2, b2) = (l1[j], l1[(j + 1) % k]);
+                        mesh.faces.push(vec![a, b, b2, a2]);
+                    }
                 }
             }
             if !closed {
-                // caps: the start faces back along the path, the end forward
-                mesh.faces.push(sections[0].iter().rev().copied().collect());
-                mesh.set_color(mesh.faces.len() - 1, color);
-                mesh.faces.push(sections.last().expect("two at least").clone());
-                mesh.set_color(mesh.faces.len() - 1, color);
+                // caps, with their holes: the start faces back along the path, the end forward
+                let rev = |ls: &Vec<Vec<u32>>| -> Vec<Vec<u32>> { ls.iter().map(|l| l.iter().rev().copied().collect()).collect() };
+                for mut cap in [rev(&sections[0]), sections.last().expect("two at least").clone()] {
+                    let outline = cap.remove(0);
+                    mesh.faces.push(outline);
+                    let f = mesh.faces.len() - 1;
+                    mesh.set_color(f, color);
+                    mesh.set_holes(f, cap);
+                }
             }
             *m = HalfEdgeMesh::from_mesh(&mesh)?;
             Ok(m.face_count() - 1)
@@ -1008,6 +1032,20 @@ mod tests {
         m.push_pull(inner, -1.0).unwrap();
         assert!(m.mesh().is_closed());
         assert!((m.mesh().signed_volume() - 28.0).abs() < 1e-3, "{}", m.mesh().signed_volume());
+    }
+
+    #[test]
+    fn follow_me_sweeps_a_profile_with_a_hole_into_a_tube() {
+        let mut m = Model::new();
+        // a 2 x 2 square standing in the x = 0 plane, a 1 x 1 hole in it
+        m.add_rectangle([0.0; 3], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]).unwrap();
+        let inner = m.add_outline(&[[0.0, 0.5, 0.5], [0.0, 1.5, 0.5], [0.0, 1.5, 1.5], [0.0, 0.5, 1.5]]).unwrap().expect("a hole");
+        m.erase_face(inner).unwrap();
+        let ring = (0..m.mesh().face_count()).find(|&f| m.mesh().has_holes(f)).expect("the ring");
+        m.follow_me(ring, &[[0.0, 1.0, 1.0], [3.0, 1.0, 1.0]], false).unwrap();
+        assert!(m.mesh().is_closed(), "a closed tube");
+        assert!((m.mesh().signed_volume().abs() - 9.0).abs() < 1e-9, "{}", m.mesh().signed_volume());
+        assert_eq!(m.mesh().euler_characteristic(), 0, "a tube: one hole right through");
     }
 
     #[test]

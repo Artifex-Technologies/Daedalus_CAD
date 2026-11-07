@@ -286,7 +286,7 @@ enum Op {
     /// 3 Point Arc: the start, a point the arc passes through (once set), then the end at the cursor.
     Arc3 { plane: Plane, a: [f64; 3], m: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// Offset: the face's outline (counter-clockwise about `normal`) and how far in to copy it.
-    Offset { ring: Vec<[f64; 3]>, normal: [f64; 3], d: f64 },
+    Offset { face: usize, ring: Vec<[f64; 3]>, normal: [f64; 3], d: f64 },
     /// Dimensions: the two points measured (the second once set), then where the dimension line sits.
     Dim { a: [f64; 3], b: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// Follow Me: the profile face chosen; next, a line of the path.
@@ -777,7 +777,7 @@ impl Tools {
                     *distance = d;
                 }
             }
-            Op::Offset { ring, normal, d } => {
+            Op::Offset { ring, normal, d, .. } => {
                 // how far the mouse is inside the outline (negative outside), in the face's plane
                 if let Some(p) = Plane::from_point_normal(ring[0], *normal).and_then(|pl| pl.intersect_ray(c.origin, c.dir)) {
                     *d = inside_distance(ring, *normal, p);
@@ -858,11 +858,11 @@ impl Tools {
                 let ring: Vec<[f64; 3]> = model.mesh().face_vertices(face).iter().map(|&v| model.mesh().positions[v as usize]).collect();
                 let normal = model.mesh().face_normal(face);
                 if normal != [0.0; 3] {
-                    self.op = Op::Offset { ring, normal, d: 0.0 };
+                    self.op = Op::Offset { face, ring, normal, d: 0.0 };
                     self.hover(c);
                 }
             }
-            (Tool::Offset, Op::Offset { ring, normal, d }) => self.offset(model, &ring, normal, d)?,
+            (Tool::Offset, Op::Offset { face, ring, normal, d }) => self.offset(model, face, &ring, normal, d)?,
             (Tool::TwoPointArc, Op::Idle) => {
                 if let Some(h) = c.hit {
                     self.op = Op::Arc2 { plane: Plane { origin: h.point, ..h.plane }, a: h.point, b: None, cursor: None };
@@ -1125,9 +1125,9 @@ impl Tools {
                 self.arc_segments = n;
                 self.op = op;
             }
-            (Entry::Value(d), Op::Offset { ring, normal, d: shown }) => {
+            (Entry::Value(d), Op::Offset { face, ring, normal, d: shown }) => {
                 // typed: in or out as the mouse is
-                self.offset(model, &ring, normal, d.abs() * if shown < 0.0 { -1.0 } else { 1.0 })?
+                self.offset(model, face, &ring, normal, d.abs() * if shown < 0.0 { -1.0 } else { 1.0 })?
             }
             (Entry::Value(d), Op::Idle) if self.tool == Tool::SectionPlane && model.notes().section.is_some() => {
                 // typed: the plane moves that far into the model
@@ -1213,13 +1213,14 @@ impl Tools {
     }
 
     /// Offset: the face's outline copied `d` inside it, as lines (so the face gets an inner face and a ring around it).
-    fn offset(&mut self, model: &mut Model, ring: &[[f64; 3]], normal: [f64; 3], d: f64) -> Result<(), String> {
+    fn offset(&mut self, model: &mut Model, face: usize, ring: &[[f64; 3]], normal: [f64; 3], d: f64) -> Result<(), String> {
+        self.op = Op::Idle;
         if d < 0.0 {
-            self.op = Op::Idle;
-            return Err("offsetting outward is not built yet; move the mouse inside the face".into());
+            // outward: a ring face round the face, its hole the face's outline
+            let r = sketch::offset_ring(ring, normal, d).ok_or("that offset does not fit round this face")?;
+            return model.offset_outward(face, &r).map(|_| ()).map_err(|e| e.to_string());
         }
         let r = sketch::offset_ring(ring, normal, d).ok_or("that is too far in for this face")?;
-        self.op = Op::Idle;
         self.commit(model, Some(r))
     }
 
@@ -1386,7 +1387,7 @@ impl Tools {
                 None => out.push((*a, *c, PUSH_GUIDE)),
                 Some(b) => out.extend(dim_lines(*a, *b, dim_offset(*a, *b, *c), PUSH_GUIDE)),
             },
-            Op::Offset { ring, normal, d } => {
+            Op::Offset { ring, normal, d, .. } => {
                 if let Some(r) = sketch::offset_ring(ring, *normal, *d) {
                     ring_lines(&r, &mut out);
                 }
@@ -2342,6 +2343,28 @@ mod tests {
         t.freehand_release(&mut m).unwrap();
         assert!(m.mesh().lines.len() > 10, "a stroke of many short lines: {}", m.mesh().lines.len());
         assert!(!t.is_busy());
+    }
+
+    #[test]
+    fn offset_outward_puts_a_ring_round_the_face() {
+        let mut m = Model::new();
+        m.add_rectangle([0.0; 3], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0]).unwrap();
+        let mut t = Tools::default();
+        t.set_tool(Tool::Offset);
+        let mut c = at(2.0, 2.0);
+        c.hit.as_mut().unwrap().face = Some(0);
+        t.click(&mut m, &c).unwrap();
+        // the mouse 1 m outside the left side
+        t.hover(&at(-1.0, 2.0));
+        t.click(&mut m, &at(-1.0, 2.0)).unwrap();
+        let mesh = m.mesh().to_mesh();
+        assert_eq!(mesh.faces.len(), 2);
+        let ring = (0..2).find(|&f| !mesh.holes_of(f).is_empty()).expect("a ring with the square as its hole");
+        let area: f64 = mesh.triangulate_face(ring).iter().map(|tri| {
+            let [a, b, c] = tri.map(|v| mesh.positions[v as usize]);
+            ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.0
+        }).sum();
+        assert!((area - 20.0).abs() < 1e-9, "{area}");
     }
 
     #[test]
