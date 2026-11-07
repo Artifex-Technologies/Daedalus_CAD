@@ -1,5 +1,6 @@
 //! Core geometry types for Daedalus CAD.
 
+pub mod csg;
 pub mod curve;
 pub mod halfedge;
 pub mod imprint;
