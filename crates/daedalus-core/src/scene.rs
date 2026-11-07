@@ -8,6 +8,7 @@
 //! Notes that are not geometry (guides, dimensions, text, the section plane, the drawing axes) live beside it in [`Notes`].
 
 use crate::Mesh;
+use std::collections::HashMap;
 
 /// An affine transform, three rows of a 4x4 matrix: `p' = M * [p, 1]`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -294,20 +295,45 @@ impl Scene {
         w
     }
 
-    /// Adds instance `inst`'s geometry (and everything nested in it), placed by `parent` then its own transform, to `out`.
+    /// Adds instance `inst`'s geometry (and everything nested in it), placed by `parent` then its own transform, to `out`, as
+    /// its Dynamic Component attributes draw it (Hidden, Copies, Material; `crate::model::dc_view`).
     pub fn flatten_instance(&self, inst: &Instance, parent: &Xform, out: &mut Mesh) {
-        self.flatten_def(inst.def, &parent.after(&inst.xf), out, 0);
+        self.place(inst, parent, out, 0, None, &HashMap::new());
     }
 
-    fn flatten_def(&self, def: usize, xf: &Xform, out: &mut Mesh, depth: usize) {
+    /// Definition `def`'s own content (its geometry and what is placed in it), in its own coordinates.
+    pub fn flatten_contents(&self, def: usize, out: &mut Mesh) {
+        self.flatten_def(def, &Xform::IDENTITY, out, 0, None, &HashMap::new());
+    }
+
+    /// One instance and the copies its attributes add, each its definition placed; `paint` is the material inherited from
+    /// around it, `parent` the values of the component it sits in.
+    fn place(&self, inst: &Instance, parent_xf: &Xform, out: &mut Mesh, depth: usize, paint: Option<crate::Paint>, parent: &HashMap<String, f64>) {
+        let Some(view) = crate::model::dc_view(self, inst, parent) else { return };
+        let paint = view.paint.or(paint);
+        for xf in &view.xfs {
+            self.flatten_def(inst.def, &parent_xf.after(xf), out, depth, paint, &view.values);
+        }
+    }
+
+    fn flatten_def(&self, def: usize, xf: &Xform, out: &mut Mesh, depth: usize, paint: Option<crate::Paint>, values: &HashMap<String, f64>) {
         // a definition cannot hold itself, but a damaged file could say so
         let Some(d) = self.defs.get(def) else { return };
         if depth > 64 {
             return;
         }
-        out.append(&d.ctx.mesh.transformed(xf));
+        let mut m = d.ctx.mesh.transformed(xf);
+        if let Some(p) = paint {
+            // a Material paints what is left unpainted, as SketchUp's default material does
+            for f in 0..m.faces.len() {
+                if m.color_of(f).is_none() {
+                    m.set_color(f, Some(p));
+                }
+            }
+        }
+        out.append(&m);
         for i in &d.ctx.instances {
-            self.flatten_def(i.def, &xf.after(&i.xf), out, depth + 1);
+            self.place(i, xf, out, depth + 1, paint, values);
         }
     }
 
@@ -326,14 +352,17 @@ impl Scene {
         let mut outside = Mesh::new();
         let mut c = &self.root;
         let mut w = Xform::IDENTITY;
+        // the values of the component each level sits in, for its instances' Parent! references
+        let mut values = HashMap::new();
         for &step in path {
             outside.append(&c.mesh.transformed(&w));
             for (i, inst) in c.instances.iter().enumerate() {
                 if i != step {
-                    self.flatten_instance(inst, &w, &mut outside);
+                    self.place(inst, &w, &mut outside, 0, None, &values);
                 }
             }
             let Some(inst) = c.instances.get(step) else { break };
+            values = crate::model::dc_view(self, inst, &values).map(|v| v.values).unwrap_or_default();
             w = w.after(&inst.xf);
             c = &self.defs[inst.def].ctx;
         }
@@ -343,7 +372,7 @@ impl Scene {
             .enumerate()
             .map(|(i, inst)| {
                 let mut m = Mesh::new();
-                self.flatten_instance(inst, &w, &mut m);
+                self.place(inst, &w, &mut m, 0, None, &values);
                 (i, m)
             })
             .collect();

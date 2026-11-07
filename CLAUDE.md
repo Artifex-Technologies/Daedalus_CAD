@@ -65,7 +65,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 321 tests pass (2026-11-07, 114 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 323 tests pass (2026-11-07, 114 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -177,8 +177,10 @@ the current state is:
 - Phase 6, Dynamic Components (2026-11-06, `core/src/dynamic.rs`): attributes on a definition (values or formulas;
   `.daedalus` 5 `attr` lines); built-ins X Y Z LenX LenY LenZ RotZ place and size every copy (`Model::set_attributes`);
   onClick SET/ALTER (Interact tool). Panels in the tray: Component Options (labelled attributes, Enter applies) and
-  Component Attributes (rows, + Built-in, Apply). Checked on screen. Not yet: Hidden, Copies, Material, Parent!
-  references, per-copy values (copies share; Make Unique). Location skipped for now (my call, 2026-11-06).
+  Component Attributes (rows, + Built-in, Apply). Checked on screen. Since 2026-11-07 also Hidden, Copies (with COPY in
+  formulas), Material and `Parent!` references (`model::dc_view`, applied wherever the scene is flattened: drawing, export,
+  picking, the stress test). Not yet: per-copy values (copies share; Make Unique), because an instance is only a definition and
+  a transform. Location skipped for now (my call, 2026-11-06).
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").
@@ -223,8 +225,7 @@ the current state is:
   the flat leg: 27 600 cubes of 1 mm, 10 s, 57.8 MPa (hand 58.5), 0.47 mm, 0.217 kg (0.220). Not built: shell elements
   (voxels already bend right at two cubes across a sheet), several load cases, results saved in the file.
 - Next milestones (my decision, 2026-11-07: stress testing first, now built): more sheet metal (folds, jogs and reliefs
-  done; still: path flanges, holes and cut-outs on bent panels, K-factor tables) and the Dynamic Components extras (Hidden, Copies, Material, Parent!, per-copy values). Constraints are
-  still to come too.
+  done; still: path flanges, holes and cut-outs on bent panels, K-factor tables) and per-copy values for Dynamic Components. Constraints are still to come too.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
   constraint solver, reuse CADCraft crates or reimplement.
 

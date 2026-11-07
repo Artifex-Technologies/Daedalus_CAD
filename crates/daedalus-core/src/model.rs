@@ -1,5 +1,5 @@
 use crate::scene::{Context, Definition, Instance, Notes, Scene, Xform};
-use crate::{HalfEdgeMesh, Mesh, TopologyError};
+use crate::{HalfEdgeMesh, Mesh, Paint, TopologyError};
 
 /// Merges coplanar faces of `m` in place; returns where `face` went (or `face` when nothing could be rebuilt).
 fn merge_in_place(m: &mut HalfEdgeMesh, face: usize) -> usize {
@@ -43,8 +43,9 @@ pub enum SolidTool {
 
 /// Definition `def`'s size along its own axes (its geometry and what is placed in it), and its lowest corner.
 fn def_box(scene: &Scene, def: usize) -> ([f64; 3], [f64; 3]) {
+    // its own content, not a copy of it: a copy's Copies would count, and placing those asks for this size
     let mut m = Mesh::new();
-    scene.flatten_instance(&Instance { def, xf: Xform::IDENTITY }, &Xform::IDENTITY, &mut m);
+    scene.flatten_contents(def, &mut m);
     match m.bounds() {
         Some((lo, hi)) => ([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], lo),
         None => ([0.0; 3], [0.0; 3]),
@@ -72,50 +73,130 @@ fn placed(scene: &Scene, inst: &Instance) -> std::collections::HashMap<String, f
     .collect()
 }
 
+/// The placement attributes X, Y, Z, LenX, LenY, LenZ, RotZ worked out (`v`) made into a copy's transform: what they set
+/// replaces where it is (`inst`) and how big; what they leave alone stays. `size` is its definition's size.
+fn dynamic_xf(size: [f64; 3], attrs: &[crate::dynamic::Attribute], inst: &Instance, given: &std::collections::HashMap<String, f64>, v: &std::collections::HashMap<String, crate::dynamic::Value>) -> Xform {
+    let sets = |n: &str| attrs.iter().any(|a| a.name.eq_ignore_ascii_case(n));
+    let num = |n: &str| v.get(n).map(|x| x.num()).unwrap_or_else(|| given.get(n).copied().unwrap_or(0.0));
+    let m = &inst.xf.0;
+    let col = |c: usize| [m[0][c], m[1][c], m[2][c]];
+    let len = |a: [f64; 3]| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    // its axes: turned to RotZ when that is set, else as they are
+    let axes: [[f64; 3]; 3] = if sets("rotz") {
+        let t = num("rotz").to_radians();
+        [[t.cos(), t.sin(), 0.0], [-t.sin(), t.cos(), 0.0], [0.0, 0.0, 1.0]]
+    } else {
+        std::array::from_fn(|c| {
+            let a = col(c);
+            let l = len(a).max(1e-12);
+            a.map(|x| x / l)
+        })
+    };
+    // its scale along each axis: from LenX/LenY/LenZ when set (a size of nothing stays at 1), else as it is
+    let scale: [f64; 3] = std::array::from_fn(|c| {
+        let name = ["lenx", "leny", "lenz"][c];
+        if sets(name) && size[c] > 1e-12 {
+            (num(name) / size[c]).max(1e-9)
+        } else {
+            len(col(c))
+        }
+    });
+    let o = [num("x"), num("y"), num("z")];
+    let mut xf = [[0.0; 4]; 3];
+    for r in 0..3 {
+        for c in 0..3 {
+            xf[r][c] = axes[c][r] * scale[c];
+        }
+        xf[r][3] = o[r];
+    }
+    Xform(xf)
+}
+
+/// A copy's built-ins where it is, with the values of the component it sits in under `parent!<name>` (for `Parent!LenX` in
+/// a formula) and COPY = `copy` (0: the copy itself; 1, 2, ...: the copies its Copies attribute adds).
+fn given_for(scene: &Scene, inst: &Instance, parent: &std::collections::HashMap<String, f64>, copy: usize) -> std::collections::HashMap<String, f64> {
+    let mut given = placed(scene, inst);
+    for (k, v) in parent {
+        given.insert(format!("parent!{k}"), *v);
+    }
+    given.insert("copy".into(), copy as f64);
+    given
+}
+
+/// How a copy is drawn, from its Dynamic Component attributes (SketchUp's names): not at all when Hidden is true; the copy
+/// itself and, with Copies = n, n more placed by the same formulas with COPY = 1 .. n; Material (a colour name, `#rrggbb` or
+/// `r,g,b`) on every face left unpainted. A formula that goes wrong draws the copy as it is.
+pub(crate) struct DcView {
+    pub xfs: Vec<Xform>,
+    pub paint: Option<Paint>,
+    /// Its own values (built-ins and number attributes, lower-case), for the components inside it (`Parent!`).
+    pub values: std::collections::HashMap<String, f64>,
+}
+
+pub(crate) fn dc_view(scene: &Scene, inst: &Instance, parent: &std::collections::HashMap<String, f64>) -> Option<DcView> {
+    use crate::dynamic::{evaluate, Value};
+    let plain = || DcView { xfs: vec![inst.xf], paint: None, values: std::collections::HashMap::new() };
+    let Some(d) = scene.defs.get(inst.def) else { return Some(plain()) };
+    if d.attributes.is_empty() {
+        return Some(plain());
+    }
+    let attrs = &d.attributes;
+    let given = given_for(scene, inst, parent, 0);
+    let Ok(v) = evaluate(attrs, &given) else { return Some(plain()) };
+    let truthy = |n: &str| match v.get(n) {
+        Some(Value::Num(x)) => *x != 0.0,
+        Some(Value::Text(t)) => matches!(t.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1"),
+        None => false,
+    };
+    if truthy("hidden") {
+        return None;
+    }
+    let paint = v.get("material").and_then(|m| crate::dynamic::parse_color(&m.text())).map(|rgb| Paint { rgb, texture: None });
+    let copies = v.get("copies").map(|c| c.num().round().clamp(0.0, crate::dynamic::MAX_COPIES as f64) as usize).unwrap_or(0);
+    let mut xfs = vec![inst.xf];
+    if copies > 0 {
+        let (size, _) = def_box(scene, inst.def);
+        for k in 1..=copies {
+            let g = given_for(scene, inst, parent, k);
+            if let Ok(vk) = evaluate(attrs, &g) {
+                xfs.push(dynamic_xf(size, attrs, inst, &g, &vk));
+            }
+        }
+    }
+    let mut values: std::collections::HashMap<String, f64> = given.into_iter().filter(|(k, _)| !k.starts_with("parent!")).collect();
+    for (k, x) in &v {
+        if let Value::Num(n) = x {
+            values.insert(k.clone(), *n);
+        }
+    }
+    Some(DcView { xfs, paint, values })
+}
+
+/// The values of the component whose inside is open at `open` (none at the top level), for `Parent!` in its copies' formulas.
+fn owner_values(scene: &Scene, open: &[usize]) -> std::collections::HashMap<String, f64> {
+    let mut vals = std::collections::HashMap::new();
+    let mut c = &scene.root;
+    for &step in open {
+        let Some(inst) = c.instances.get(step) else { break };
+        vals = dc_view(scene, inst, &vals).map(|v| v.values).unwrap_or_default();
+        c = &scene.defs[inst.def].ctx;
+    }
+    vals
+}
+
 /// Every copy of `def` in the context at `open` placed and sized by its attributes: the built-ins it sets (X, Y, Z, LenX,
 /// LenY, LenZ, RotZ) replace where it is and how big; the rest stay as they were.
 fn apply_dynamic(scene: &mut Scene, open: &[usize], def: usize) -> Result<(), String> {
     let (size, _) = def_box(scene, def);
     let attrs = scene.defs[def].attributes.clone();
-    let sets = |n: &str| attrs.iter().any(|a| a.name.eq_ignore_ascii_case(n));
+    let parent = owner_values(scene, open);
     let copies: Vec<usize> = scene.ctx(open).map(|c| (0..c.instances.len()).filter(|&i| c.instances[i].def == def).collect()).unwrap_or_default();
     for i in copies {
         let inst = scene.ctx(open).expect("there").instances[i];
-        let given = placed(scene, &inst);
+        let given = given_for(scene, &inst, &parent, 0);
         let v = crate::dynamic::evaluate(&attrs, &given)?;
-        let num = |n: &str| v.get(n).map(|x| x.num()).unwrap_or(given[n]);
-        let m = &inst.xf.0;
-        let col = |c: usize| [m[0][c], m[1][c], m[2][c]];
-        let len = |a: [f64; 3]| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-        // its axes: turned to RotZ when that is set, else as they are
-        let axes: [[f64; 3]; 3] = if sets("rotz") {
-            let t = num("rotz").to_radians();
-            [[t.cos(), t.sin(), 0.0], [-t.sin(), t.cos(), 0.0], [0.0, 0.0, 1.0]]
-        } else {
-            std::array::from_fn(|c| {
-                let a = col(c);
-                let l = len(a).max(1e-12);
-                a.map(|x| x / l)
-            })
-        };
-        // its scale along each axis: from LenX/LenY/LenZ when set (a size of nothing stays at 1), else as it is
-        let scale: [f64; 3] = std::array::from_fn(|c| {
-            let name = ["lenx", "leny", "lenz"][c];
-            if sets(name) && size[c] > 1e-12 {
-                (num(name) / size[c]).max(1e-9)
-            } else {
-                len(col(c))
-            }
-        });
-        let o = [num("x"), num("y"), num("z")];
-        let mut xf = [[0.0; 4]; 3];
-        for r in 0..3 {
-            for c in 0..3 {
-                xf[r][c] = axes[c][r] * scale[c];
-            }
-            xf[r][3] = o[r];
-        }
-        scene.ctx_mut(open).expect("there").instances[i].xf = Xform(xf);
+        let xf = dynamic_xf(size, &attrs, &inst, &given, &v);
+        scene.ctx_mut(open).expect("there").instances[i].xf = xf;
     }
     Ok(())
 }
@@ -600,7 +681,7 @@ impl Model {
     /// The values of copy `i` (of the open context)'s attributes, the built-ins included (from where it is).
     pub fn attribute_values(&self, i: usize) -> Result<std::collections::HashMap<String, crate::dynamic::Value>, String> {
         let inst = *self.instances().get(i).ok_or("that is not a component here")?;
-        let given = placed(&self.scene, &inst);
+        let given = given_for(&self.scene, &inst, &owner_values(&self.scene, &self.open), 0);
         crate::dynamic::evaluate(&self.scene.defs[inst.def].attributes, &given)
     }
 
@@ -625,7 +706,7 @@ impl Model {
     pub fn interact(&mut self, i: usize) -> Result<bool, String> {
         let inst = *self.instances().get(i).ok_or("click a dynamic component")?;
         let mut attrs = self.scene.defs[inst.def].attributes.clone();
-        let given = placed(&self.scene, &inst);
+        let given = given_for(&self.scene, &inst, &owner_values(&self.scene, &self.open), 0);
         if !crate::dynamic::on_click(&mut attrs, &given)? {
             return Ok(false);
         }
@@ -1656,6 +1737,77 @@ mod tests {
         assert!(m.set_attributes(def, vec![a("LenX", "=Nope*2")]).is_err());
         assert!((size(&m).0[0] - 3.0).abs() < 1e-9);
         assert_eq!(m.attribute_values(i).unwrap()["width"].num(), 3.0);
+    }
+
+    /// A 1 m cube made a component; returns the model, its instance and its definition.
+    fn cube_component() -> (Model, usize, usize) {
+        let mut m = Model::new();
+        m.add_rectangle([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+        m.push_pull(0, 1.0).unwrap();
+        let all: Vec<usize> = (0..m.mesh().face_count()).collect();
+        let i = m.make_group(&all, &[], true).unwrap();
+        let def = m.instances()[i].def;
+        (m, i, def)
+    }
+
+    #[test]
+    fn hidden_copies_and_material_as_a_dynamic_component_draws_them() {
+        use crate::dynamic::Attribute;
+        let a = |n: &str, f: &str| Attribute { name: n.into(), formula: f.into(), label: None };
+        let (mut m, i, def) = cube_component();
+        let drawn = |m: &Model| {
+            let mut mesh = Mesh::new();
+            m.scene.flatten_instance(&m.instances()[i], &Xform::IDENTITY, &mut mesh);
+            mesh
+        };
+        // Hidden follows its formula
+        m.set_attributes(def, vec![a("Width", "1"), a("Hidden", "=Width>2")]).unwrap();
+        assert_eq!(drawn(&m).faces.len(), 6);
+        m.set_attributes(def, vec![a("Width", "3"), a("Hidden", "=Width>2")]).unwrap();
+        assert_eq!(drawn(&m).faces.len(), 0, "hidden");
+        assert_eq!(m.scene.flatten().faces.len(), 0, "and not exported either");
+        // Copies: two more, each placed by X with COPY = 1, 2
+        m.set_attributes(def, vec![a("Copies", "2"), a("X", "=COPY*1.5")]).unwrap();
+        let mesh = drawn(&m);
+        assert_eq!(mesh.faces.len(), 18, "the copy and two more");
+        let (lo, hi) = mesh.bounds().unwrap();
+        assert!(lo[0].abs() < 1e-9 && (hi[0] - 4.0).abs() < 1e-9, "at x = 0, 1.5 and 3: {lo:?} {hi:?}");
+        assert_eq!(m.instances()[i].xf.origin()[0], 0.0, "the copy itself is where COPY = 0 puts it");
+        // Material paints what is unpainted; a painted face keeps its paint
+        m.set_attributes(def, vec![a("Material", "red")]).unwrap();
+        let mesh = drawn(&m);
+        let red = crate::dynamic::parse_color("red").unwrap();
+        assert!((0..mesh.faces.len()).all(|f| mesh.color_of(f).map(|p| p.rgb) == Some(red)));
+        m.set_attributes(def, vec![a("Material", "#00ff00"), a("Copies", "=-3")]).unwrap();
+        let mesh = drawn(&m);
+        assert_eq!(mesh.faces.len(), 6, "fewer than none is none");
+        assert_eq!(mesh.color_of(0).map(|p| p.rgb), Some([0, 255, 0]));
+        // a formula that goes wrong is refused, and the component stays as it was
+        assert!(m.set_attributes(def, vec![a("Hidden", "=Nope")]).is_err());
+        assert_eq!(drawn(&m).faces.len(), 6);
+    }
+
+    #[test]
+    fn a_component_inside_another_reads_its_parent() {
+        use crate::dynamic::Attribute;
+        let a = |n: &str, f: &str| Attribute { name: n.into(), formula: f.into(), label: None };
+        let (mut m, inner_i, inner) = cube_component();
+        let outer_i = m.make_group(&[], &[inner_i], true).unwrap();
+        let outer = m.instances()[outer_i].def;
+        m.set_attributes(outer, vec![a("Width", "3")]).unwrap();
+        m.open(outer_i).unwrap();
+        m.set_attributes(inner, vec![a("LenX", "=Parent!Width"), a("Copies", "=Parent!Width-2"), a("X", "=COPY*4")]).unwrap();
+        assert_eq!(m.attribute_values(0).unwrap()["lenx"].num(), 3.0, "the parent's Width");
+        m.close();
+        let mut mesh = Mesh::new();
+        m.scene.flatten_instance(&m.instances()[outer_i], &Xform::IDENTITY, &mut mesh);
+        assert_eq!(mesh.faces.len(), 12, "Width 3: one copy more");
+        let (lo, hi) = mesh.bounds().unwrap();
+        assert!((hi[0] - lo[0] - 7.0).abs() < 1e-9, "3 m wide, the copy 4 m on: {lo:?} {hi:?}");
+        assert_eq!(crate::dynamic::parse_color("12, 200, 7"), Some([12, 200, 7]));
+        assert_eq!(crate::dynamic::parse_color("rgb(1,2,3)"), Some([1, 2, 3]));
+        assert_eq!(crate::dynamic::parse_color("#abc"), Some([170, 187, 204]));
+        assert_eq!(crate::dynamic::parse_color("no colour"), None);
     }
 
     #[test]

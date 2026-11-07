@@ -440,7 +440,7 @@ fn component_attributes(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiActio
             rows.push((String::new(), String::new(), String::new()));
         }
         ui.menu_button("+ Built-in", |ui| {
-            for b in daedalus_core::dynamic::BUILT_INS.iter().chain(&["onClick"]) {
+            for b in daedalus_core::dynamic::BUILT_INS.iter().chain(daedalus_core::dynamic::DRAWING.iter()).chain(&["onClick"]) {
                 if ui.button(*b).clicked() {
                     rows.push((b.to_string(), String::new(), String::new()));
                     ui.close_menu();

@@ -3,6 +3,11 @@
 //! `LenZ` (its size along its own axes), `RotZ` (its turn about its blue axis, degrees). `onClick` (the Interact tool) holds
 //! actions: `SET("name", value)`, `ALTER("name", a, b, ...)` (the next of those values), separated by `;`.
 //!
+//! How a copy is drawn (`model::dc_view`, used by drawing, export and picking): `Hidden` (true: not drawn), `Copies` (that
+//! many more, at most `MAX_COPIES`, each placed by the same formulas with `COPY` = 1, 2, ...; the copy itself has COPY = 0)
+//! and `Material` (a colour for its unpainted faces, as SketchUp's default material: `#rrggbb`, `r,g,b` or a name). A
+//! formula may read the component a copy sits in: `Parent!LenX`, `Parent!Width`.
+//!
 //! Lengths are metres; a plain value may carry a unit (`300mm`, `2'6"`). Formulas: numbers, "text", `+ - * / ^`, `&` (joins
 //! text), comparisons `= <> < > <= >=` (1 or 0), brackets, attribute names (any case), and IF, AND, OR, NOT, MIN, MAX, ABS,
 //! SQRT, ROUND, FLOOR, CEILING, INT, SIN, COS, TAN, ASIN, ACOS, ATAN (degrees), PI.
@@ -45,6 +50,44 @@ impl Value {
 
 /// The names that place and size a copy.
 pub const BUILT_INS: [&str; 7] = ["X", "Y", "Z", "LenX", "LenY", "LenZ", "RotZ"];
+
+/// The names that say how a copy is drawn: Hidden (true: not drawn), Copies (that many more, placed with COPY = 1, 2, ...)
+/// and Material (a colour for its unpainted faces).
+pub const DRAWING: [&str; 3] = ["Hidden", "Copies", "Material"];
+
+/// The most copies one component's Copies attribute makes.
+pub const MAX_COPIES: usize = 500;
+
+/// A Material value as a colour: `#rrggbb`, `#rgb`, `r,g,b` (0-255, also inside `rgb(...)`) or a common colour name.
+pub fn parse_color(text: &str) -> Option<[u8; 3]> {
+    let t = text.trim().to_ascii_lowercase();
+    if let Some(h) = t.strip_prefix('#') {
+        let v = |s: &str| u8::from_str_radix(s, 16).ok();
+        return match h.len() {
+            6 => Some([v(&h[0..2])?, v(&h[2..4])?, v(&h[4..6])?]),
+            3 => Some([v(&h[0..1])? * 17, v(&h[1..2])? * 17, v(&h[2..3])? * 17]),
+            _ => None,
+        };
+    }
+    let inner = t.strip_prefix("rgb(").and_then(|x| x.strip_suffix(')')).unwrap_or(&t);
+    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    if parts.len() == 3 {
+        let mut rgb = [0u8; 3];
+        for (k, p) in parts.iter().enumerate() {
+            rgb[k] = p.parse::<f64>().ok().filter(|x| (0.0..=255.0).contains(x))?.round() as u8;
+        }
+        return Some(rgb);
+    }
+    const NAMES: [(&str, [u8; 3]); 24] = [
+        ("black", [0, 0, 0]), ("white", [255, 255, 255]), ("red", [220, 40, 40]), ("green", [40, 160, 60]), ("blue", [40, 90, 220]),
+        ("yellow", [240, 210, 40]), ("orange", [240, 140, 30]), ("purple", [130, 60, 180]), ("pink", [240, 150, 190]),
+        ("brown", [130, 80, 40]), ("gray", [128, 128, 128]), ("grey", [128, 128, 128]), ("silver", [192, 192, 192]),
+        ("gold", [212, 175, 55]), ("cyan", [40, 200, 220]), ("magenta", [210, 50, 180]), ("navy", [20, 30, 110]),
+        ("teal", [20, 128, 128]), ("olive", [128, 128, 0]), ("maroon", [128, 20, 30]), ("beige", [230, 220, 190]),
+        ("tan", [210, 180, 140]), ("wood", [160, 110, 60]), ("steel", [140, 150, 160]),
+    ];
+    NAMES.iter().find(|(n, _)| *n == t).map(|(_, c)| *c)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
@@ -94,6 +137,10 @@ fn lex(s: &str) -> Result<Vec<Tok>, String> {
             let start = i;
             while i < c.len() && (c[i].is_alphanumeric() || c[i] == '_') {
                 i += 1;
+                // Parent!LenX: an attribute of the component this copy sits in
+                if i + 1 < c.len() && c[i] == '!' && c[i + 1].is_alphabetic() {
+                    i += 1;
+                }
             }
             out.push(Tok::Name(c[start..i].iter().collect()));
         } else if ch == '(' {
