@@ -52,13 +52,19 @@ const ACCENT: Color32 = Color32::from_rgb(232, 120, 40);
 
 /// Draws `icon` into `rect` (a square) in `ink`. `dim` greys it out (a tool that cannot be used now, or not built yet).
 pub fn paint(p: &Painter, rect: Rect, icon: Icon, dim: bool, ink: Color32) {
-    let fade = |c: Color32| if dim { c.gamma_multiply(0.35) } else { c };
-    let d = Draw { p, rect, w: rect.width(), ink: fade(ink), accent: fade(ACCENT), dim };
-    d.icon(icon);
+    p.extend(shapes(rect, icon, dim, ink));
 }
 
-struct Draw<'a> {
-    p: &'a Painter,
+/// The shapes `icon` is drawn with, in `rect` (for the toolbar, and for the tools' mouse cursors, see cursors.rs).
+pub fn shapes(rect: Rect, icon: Icon, dim: bool, ink: Color32) -> Vec<Shape> {
+    let fade = |c: Color32| if dim { c.gamma_multiply(0.35) } else { c };
+    let d = Draw { out: std::cell::RefCell::new(Vec::new()), rect, w: rect.width(), ink: fade(ink), accent: fade(ACCENT), dim };
+    d.icon(icon);
+    d.out.into_inner()
+}
+
+struct Draw {
+    out: std::cell::RefCell<Vec<Shape>>,
     rect: Rect,
     w: f32,
     ink: Color32,
@@ -66,7 +72,11 @@ struct Draw<'a> {
     dim: bool,
 }
 
-impl Draw<'_> {
+impl Draw {
+    fn add(&self, s: Shape) {
+        self.out.borrow_mut().push(s);
+    }
+
     fn at(&self, x: f32, y: f32) -> Pos2 {
         pos2(self.rect.left() + x * self.w, self.rect.top() + y * self.w)
     }
@@ -84,27 +94,27 @@ impl Draw<'_> {
     }
 
     fn line(&self, v: &[(f32, f32)]) {
-        self.p.add(Shape::line(self.pts(v), self.stroke()));
+        self.add(Shape::line(self.pts(v), self.stroke()));
     }
 
     fn line_with(&self, v: &[(f32, f32)], s: Stroke) {
-        self.p.add(Shape::line(self.pts(v), s));
+        self.add(Shape::line(self.pts(v), s));
     }
 
     fn closed(&self, v: &[(f32, f32)]) {
-        self.p.add(Shape::closed_line(self.pts(v), self.stroke()));
+        self.add(Shape::closed_line(self.pts(v), self.stroke()));
     }
 
     fn fill(&self, v: &[(f32, f32)], c: Color32) {
-        self.p.add(Shape::convex_polygon(self.pts(v), c, Stroke::NONE));
+        self.add(Shape::convex_polygon(self.pts(v), c, Stroke::NONE));
     }
 
     fn dot(&self, x: f32, y: f32) {
-        self.p.circle_filled(self.at(x, y), self.w * 0.06, self.ink);
+        self.add(Shape::circle_filled(self.at(x, y), self.w * 0.06, self.ink));
     }
 
     fn circle(&self, x: f32, y: f32, r: f32) {
-        self.p.circle_stroke(self.at(x, y), r * self.w, self.stroke());
+        self.add(Shape::circle_stroke(self.at(x, y), r * self.w, self.stroke()));
     }
 
     /// Points on a circle from `from` to `to` degrees (counter-clockwise, 0 to the right).
@@ -383,7 +393,7 @@ impl Draw<'_> {
                         })
                         .collect();
                     self.fill(&sole, ink);
-                    self.p.circle_filled(self.at(x, y + 0.31), self.w * 0.085, ink);
+                    self.add(Shape::circle_filled(self.at(x, y + 0.31), self.w * 0.085, ink));
                 }
             }
             Icon::Top => {

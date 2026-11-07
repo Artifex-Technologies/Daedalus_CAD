@@ -157,6 +157,11 @@ the current state is:
   radius; a click on a ground group opens it), Stamp/Drape (object, then ground group), Flip Edge (click an edge). Draw >
   Sandbox and Tools > Sandbox menus, a toolbar group. Contour terrains are all soft inside; grids hide only diagonals.
   Checked on screen (From Scratch, Smoove).
+- Tool cursors (2026-11-06, `viewer/src/cursors.rs`): over the model each tool but Select has its own cursor, drawn from
+  its toolbar icon (icons.rs records shapes, `icons::shapes`; tessellated by egui and rasterised here): a crosshair at the
+  click point with the icon beside it, navigation tools the icon alone; dark ink, white rim. Made at the window's scale
+  when it opens. egui is told the arrow while a tool cursor shows, so it takes over again over the chrome. Contact sheet:
+  `CURSOR_SHEET=out.png cargo test sheet -- --ignored`. Not yet seen live (nested screenshots leave the cursor out).
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

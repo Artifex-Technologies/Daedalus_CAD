@@ -9,7 +9,7 @@ use daedalus_core::{HalfEdgeMesh, Model};
 
 pub use daedalus_core::scene::Guide;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tool {
     Select,
     Line,

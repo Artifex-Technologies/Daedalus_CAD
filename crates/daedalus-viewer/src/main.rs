@@ -1,4 +1,5 @@
 mod camera;
+mod cursors;
 mod filedlg;
 mod frame;
 #[cfg(target_os = "linux")]
@@ -58,6 +59,9 @@ struct State {
     right_press_at: (f32, f32),
     /// The right-click menu, open at this point (physical pixels).
     context_at: Option<(f32, f32)>,
+    /// Each tool's own mouse cursor (cursors.rs), and which tool's is showing now (None: the system's).
+    tool_cursors: std::collections::HashMap<Tool, winit::window::CustomCursor>,
+    cursor_shown: Option<Tool>,
     /// The menu opened since the last frame (the click that opened it must not close it).
     context_fresh: bool,
     /// The Entity Info panel is open.
@@ -193,6 +197,8 @@ impl State {
             right_down: false,
             right_press_at: (0.0, 0.0),
             context_at: None,
+            tool_cursors: std::collections::HashMap::new(),
+            cursor_shown: None,
             context_fresh: false,
             info_open: false,
             loaded_textures: Vec::new(),
@@ -1949,7 +1955,21 @@ impl State {
             }
             self.window.request_redraw();
         }
-        self.egui_state.handle_platform_output(&self.window, out.platform_output);
+        // over the model, the tool's own cursor; egui is told the arrow then, so it sets its own again when the pointer is
+        // back over the toolbar or a menu
+        let want = (self.pointer_in && !self.over_ui && resize_at.is_none() && self.context_at.is_none() && cursors::has_cursor(self.tools.tool) && self.tool_cursors.contains_key(&self.tools.tool)).then_some(self.tools.tool);
+        let mut platform = out.platform_output;
+        if want.is_some() {
+            platform.cursor_icon = egui::CursorIcon::Default;
+        }
+        self.egui_state.handle_platform_output(&self.window, platform);
+        if want != self.cursor_shown {
+            match want.and_then(|t| self.tool_cursors.get(&t)) {
+                Some(c) => self.window.set_cursor(c.clone()),
+                None => self.window.set_cursor(winit::window::CursorIcon::Default),
+            }
+            self.cursor_shown = want;
+        }
         let ui = UiFrame {
             primitives: ctx.tessellate(out.shapes, out.pixels_per_point),
             textures: out.textures_delta,
@@ -2096,6 +2116,16 @@ impl ApplicationHandler<AppEvent> for App {
         })
         .unwrap_or(window.theme() == Some(winit::window::Theme::Dark));
         self.state = Some(State::new(window, &self.scene, self.path.clone(), dark, self.proxy.clone()));
+        // the tools' cursors, at the window's scale
+        if let Some(s) = self.state.as_mut() {
+            let size = ((32.0 * s.window.scale_factor()).round() as u32).clamp(24, 128);
+            for t in Tool::ALL.into_iter().filter(|&t| cursors::has_cursor(t)) {
+                let img = cursors::image(t, size);
+                if let Ok(src) = winit::window::CustomCursor::from_rgba(img.rgba, size as u16, size as u16, img.hotspot.0, img.hotspot.1) {
+                    s.tool_cursors.insert(t, event_loop.create_custom_cursor(src));
+                }
+            }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
