@@ -1,3 +1,4 @@
+mod boxsel;
 mod camera;
 mod cursors;
 mod filedlg;
@@ -1554,6 +1555,24 @@ impl State {
         }
     }
 
+    /// The left button has moved far enough from where it went down to be a drag, not a click.
+    fn dragged(&self) -> bool {
+        let (dx, dy) = (self.cursor.0 - self.press_at.0, self.cursor.1 - self.press_at.1);
+        dx * dx + dy * dy >= 16.0
+    }
+
+    /// Select tool drag: left to right takes what lies wholly in the box, right to left whatever it touches (SketchUp's
+    /// window and crossing selection). Ctrl adds, Shift toggles, Ctrl+Shift takes out.
+    fn box_select(&mut self) {
+        let (w, h) = self.size();
+        let owners = &self.owners[..self.owners.len().min(self.faded_from.saturating_sub(self.active_faces))];
+        let d = boxsel::Display { mesh: &self.display, edges: &self.edges, active_faces: self.active_faces, active_vertices: self.active_vertices, owners };
+        let r = boxsel::Rect::new(self.press_at, self.cursor);
+        let picked = boxsel::pick(&d, |p| self.camera.project(DVec3::from(p), w, h), r, boxsel::is_crossing(self.press_at, self.cursor));
+        self.tools.select_box(&picked.faces, &picked.edges, &picked.instances, self.modifiers.control_key(), self.modifiers.shift_key());
+        self.refresh();
+    }
+
     fn erase_selected(&mut self) {
         if self.readonly.is_some() || !self.tools.has_selection() {
             return;
@@ -2234,6 +2253,11 @@ impl State {
         let zoom_rect = (self.left_down && self.tools.tool == Tool::ZoomWindow).then(|| {
             egui::Rect::from_two_pos(egui::pos2(self.press_at.0 / ppp, self.press_at.1 / ppp), egui::pos2(self.cursor.0 / ppp, self.cursor.1 / ppp))
         });
+        // Select: the box being dragged (dashed when it goes right to left: a crossing box)
+        let select_rect = (self.left_down && self.tools.tool == Tool::Select && self.dragged()).then(|| {
+            let r = egui::Rect::from_two_pos(egui::pos2(self.press_at.0 / ppp, self.press_at.1 / ppp), egui::pos2(self.cursor.0 / ppp, self.cursor.1 / ppp));
+            (r, boxsel::is_crossing(self.press_at, self.cursor))
+        });
         let raw = self.egui_state.take_egui_input(&self.window);
         let mut actions = Vec::new();
         // the file dialog and the "save changes?" question are drawn over the chrome; taken out while drawn
@@ -2274,6 +2298,16 @@ impl State {
                     egui::Stroke::new(1.0_f32, egui::Color32::from_gray(40)),
                     egui::StrokeKind::Inside,
                 );
+            }
+            if let Some((r, crossing)) = select_rect {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("select-box")));
+                let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_gray(40));
+                if crossing {
+                    let c = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+                    painter.extend(egui::Shape::dashed_line(&c, stroke, 5.0, 4.0));
+                } else {
+                    painter.rect_stroke(r, 0.0, stroke, egui::StrokeKind::Inside);
+                }
             }
             if view.own_frame && !view.maximized {
                 // a hairline around the window, so its edge shows without a system frame
@@ -2645,6 +2679,8 @@ impl ApplicationHandler<AppEvent> for App {
                             let (dx, dy) = (s.cursor.0 - s.press_at.0, s.cursor.1 - s.press_at.1);
                             if dx * dx + dy * dy < 16.0 && !s.tools.tool.navigates() {
                                 s.click();
+                            } else if s.tools.tool == Tool::Select {
+                                s.box_select();
                             }
                         }
                     }
@@ -2691,7 +2727,7 @@ impl ApplicationHandler<AppEvent> for App {
                     s.camera.pan(dx, dy);
                 } else if s.left_down && tool == Tool::Zoom {
                     s.camera.zoom(-dy * 0.05, None);
-                } else if s.left_down && tool == Tool::ZoomWindow {
+                } else if s.left_down && (tool == Tool::ZoomWindow || tool == Tool::Select) {
                     // the rectangle is drawn in render()
                 } else if s.left_down && tool == Tool::LookAround {
                     s.camera.look_around(-dx, dy);

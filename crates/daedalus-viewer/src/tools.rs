@@ -587,6 +587,38 @@ impl Tools {
         self.selected.dedup();
     }
 
+    /// Select tool drag box: what it took replaces the selection; with `add` (Ctrl) it is added, with `toggle` (Shift)
+    /// each item goes in or out, with both (Ctrl+Shift) it is taken out, as in SketchUp.
+    pub fn select_box(&mut self, faces: &[usize], edges: &[[u32; 2]], instances: &[usize], add: bool, toggle: bool) {
+        fn merge<T: Ord + Copy>(set: &mut Vec<T>, items: &[T], add: bool, toggle: bool) {
+            match (add, toggle) {
+                (true, true) => set.retain(|x| !items.contains(x)),
+                (false, true) => {
+                    for &x in items {
+                        match set.binary_search(&x) {
+                            Ok(k) => {
+                                set.remove(k);
+                            }
+                            Err(k) => set.insert(k, x),
+                        }
+                    }
+                }
+                (add, false) => {
+                    if !add {
+                        set.clear();
+                    }
+                    set.extend_from_slice(items);
+                    set.sort_unstable();
+                    set.dedup();
+                }
+            }
+        }
+        let edges: Vec<[u32; 2]> = edges.iter().map(|&[a, b]| [a.min(b), a.max(b)]).collect();
+        merge(&mut self.selected, faces, add, toggle);
+        merge(&mut self.edges, &edges, add, toggle);
+        merge(&mut self.instances, instances, add, toggle);
+    }
+
     /// Ctrl+A.
     pub fn select_all(&mut self, model: &Model) {
         self.selected = (0..model.mesh().face_count()).collect();
@@ -1612,7 +1644,7 @@ impl Tools {
     /// SketchUp-style hint for the status bar.
     pub fn status(&self) -> &'static str {
         match (self.tool, &self.op) {
-            (Tool::Select, _) => "Click to select. Ctrl adds, Shift toggles, a triple-click takes everything joined. Double-click a group to edit it.",
+            (Tool::Select, _) => "Click or drag to select (left to right: wholly inside; right to left: touching). Ctrl adds, Shift toggles, a triple-click takes everything joined. Double-click a group to edit it.",
             (Tool::RotatedRectangle, Op::Idle) => "Select first corner.",
             (Tool::RotatedRectangle, Op::RotRect { b: None, .. }) => "Select second corner, or type a length. The first side may point any way.",
             (Tool::RotatedRectangle, _) => "Select the height, or type it.",
@@ -2171,6 +2203,25 @@ mod tests {
             Some(Entry::Value(v)) => assert!((v - 54.0 * 0.0254).abs() < 1e-6),
             e => panic!("{e:?}"),
         }
+    }
+
+    #[test]
+    fn a_drag_box_replaces_adds_toggles_or_takes_out() {
+        let mut t = Tools::default();
+        t.select_box(&[3, 1], &[[5, 2]], &[0], false, false);
+        assert_eq!((t.selected.clone(), t.edges.clone(), t.instances.clone()), (vec![1, 3], vec![[2, 5]], vec![0]));
+        // Ctrl adds
+        t.select_box(&[2], &[], &[], true, false);
+        assert_eq!(t.selected, vec![1, 2, 3]);
+        // Shift: 3 goes out, 4 comes in
+        t.select_box(&[3, 4], &[], &[], false, true);
+        assert_eq!(t.selected, vec![1, 2, 4]);
+        // Ctrl+Shift takes out, and does not put in
+        t.select_box(&[1, 9], &[[2, 5]], &[], true, true);
+        assert_eq!((t.selected.clone(), t.edges.clone(), t.instances.clone()), (vec![2, 4], vec![], vec![0]));
+        // plain replaces, an empty box clears
+        t.select_box(&[], &[], &[], false, false);
+        assert!(!t.has_selection());
     }
 
     #[test]
