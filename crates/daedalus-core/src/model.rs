@@ -372,6 +372,47 @@ impl Model {
         })
     }
 
+    /// An exact part (sheet metal): a new component in the open context standing for `text` (the part's own description,
+    /// see `Definition::part`), its faces `faces` in the part's coordinates (metres), put at `place` (model coordinates).
+    /// `from_face`: a face of the geometry being edited that the part is made from; it goes, as it would into a component.
+    /// One undo step; returns the new instance.
+    pub fn place_part(&mut self, stem: &str, text: String, faces: &Mesh, place: &Xform, from_face: Option<usize>) -> Result<usize, TopologyError> {
+        if faces.faces.is_empty() {
+            return Err(nothing());
+        }
+        self.edit_scene(|m, s, open| {
+            let back = s.world(open).inverse().ok_or(TopologyError::DegenerateNormal)?;
+            if let Some(f) = from_face {
+                let mesh = m.to_mesh();
+                if f >= mesh.faces.len() {
+                    return Err(TopologyError::FaceOutOfRange(f));
+                }
+                let (rest, _) = mesh.extract(&[f]);
+                *m = HalfEdgeMesh::from_mesh(&rest)?;
+            }
+            let n = s.defs.iter().filter_map(|d| d.name.strip_prefix(stem)?.strip_prefix('#')?.parse::<u32>().ok()).max().unwrap_or(0);
+            let name = format!("{stem}#{}", n + 1);
+            s.defs.push(Definition { name, component: true, glue: false, cut: false, attributes: Vec::new(), part: Some(text), ctx: Context { mesh: faces.clone(), instances: Vec::new() } });
+            let def = s.defs.len() - 1;
+            let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
+            ctx.instances.push(Instance { def, xf: back.after(place) });
+            Ok(ctx.instances.len() - 1)
+        })
+    }
+
+    /// A part's new description and faces (every copy of it changes), as one undo step.
+    pub fn set_part(&mut self, def: usize, text: String, faces: Mesh) -> Result<(), TopologyError> {
+        self.edit_scene(|_, s, _| {
+            let d = s.defs.get_mut(def).ok_or_else(nothing)?;
+            if d.part.is_none() {
+                return Err(nothing());
+            }
+            d.part = Some(text);
+            d.ctx.mesh = faces;
+            Ok(())
+        })
+    }
+
     /// Solid Tools on instances `first` and `second` of the open context (both must be closed solids), as SketchUp's: Union
     /// and Outer Shell join them; Intersect keeps what they share; Subtract takes `first` away from `second` (and `first`
     /// goes); Trim does the same but keeps `first`; Split leaves the three parts (each alone, and the shared part). The
@@ -1773,5 +1814,36 @@ mod tests {
         m.copy_faces(&[f], &Xform::translation([1.0, 0.0, 0.0])).unwrap();
         assert_eq!(m.mesh().face_count(), 2);
         assert_eq!(m.mesh().vertex_count(), 6, "the copy shares the edge it touches");
+    }
+
+    #[test]
+    fn a_part_takes_the_face_it_is_made_from_and_changes_as_one_step() {
+        let mut m = Model::new();
+        let f = m.add_rectangle([0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.0, 0.05, 0.0]).unwrap();
+        let faces_before = m.mesh().to_mesh().faces.len();
+        let mut part_faces = Mesh::new();
+        for p in [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.1, 0.05, 0.0]] {
+            part_faces.add_vertex(p);
+        }
+        part_faces.add_face(vec![0, 1, 2]);
+        let place = Xform::translation([1.0, 2.0, 0.0]);
+        let i = m.place_part("Sheet Part", "{part}".into(), &part_faces, &place, Some(f)).unwrap();
+        assert_eq!(m.mesh().to_mesh().faces.len(), faces_before - 1, "the face went into the part");
+        let inst = m.instances()[i];
+        assert_eq!(inst.xf, place);
+        let d = m.definition(inst.def).unwrap();
+        assert_eq!((d.name.as_str(), d.part.as_deref(), d.component), ("Sheet Part#1", Some("{part}"), true));
+        // a new description and faces, then undo brings the old ones back
+        let mut bigger = part_faces.clone();
+        bigger.positions[1] = [0.2, 0.0, 0.0];
+        m.set_part(inst.def, "{part 2}".into(), bigger.clone()).unwrap();
+        assert_eq!(m.definition(inst.def).unwrap().ctx.mesh, bigger);
+        m.undo();
+        assert_eq!(m.definition(inst.def).unwrap().part.as_deref(), Some("{part}"));
+        m.undo();
+        assert_eq!(m.mesh().to_mesh().faces.len(), faces_before);
+        assert!(m.instances().is_empty());
+        // a definition that is no part is not given one
+        assert!(m.set_part(99, "x".into(), Mesh::new()).is_err());
     }
 }

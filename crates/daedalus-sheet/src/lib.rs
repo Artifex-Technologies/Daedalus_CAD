@@ -4,6 +4,7 @@
 
 pub use solidcraft_kernel as kernel;
 
+pub mod export;
 pub mod part;
 #[allow(dead_code)] // SolidCraft helpers its other features used; kept so updates stay easy to compare
 pub mod sheet;
