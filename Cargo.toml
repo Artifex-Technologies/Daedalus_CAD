@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/daedalus-core", "crates/daedalus-io", "crates/daedalus-app", "crates/daedalus-viewer"]
+members = ["crates/daedalus-core", "crates/daedalus-io", "crates/daedalus-app", "crates/daedalus-viewer", "crates/daedalus-sheet"]
 
 [workspace.package]
 version = "0.1.0"
