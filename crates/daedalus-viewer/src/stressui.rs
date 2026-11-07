@@ -133,11 +133,12 @@ fn longest(part: &Part) -> f64 {
     (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max)
 }
 
-/// Cubes along the longest side: enough for two across a sheet's thickness (as many as allowed), else 60.
+/// Cubes along the longest side: enough for two across a sheet's thickness (as many as allowed), else 0 (the solver chooses:
+/// the coarsest grid that fills the part's volume).
 fn suggested_divisions(longest_m: f64, thickness_mm: Option<f64>) -> usize {
     match thickness_mm {
         Some(t) if t > 0.0 => ((longest_m * 1000.0 / (t / 2.0)).ceil() as usize).clamp(40, 300),
-        _ => 60,
+        _ => 0,
     }
 }
 
@@ -423,10 +424,13 @@ pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
     ui.add_space(4.0);
     ui.label("Clicks on the part mark");
     ui.horizontal(|ui| {
-        if ui.selectable_label(s.hold, RichText::new("■ Supports").color(Color32::from_rgb(SUPPORT[0], SUPPORT[1], SUPPORT[2]))).on_hover_text("Faces held in place: bolted, welded or clamped").clicked() {
+        ui.label(RichText::new("■").color(Color32::from_rgb(SUPPORT[0], SUPPORT[1], SUPPORT[2])));
+        if ui.selectable_label(s.hold, "Supports").on_hover_text("Faces held in place: bolted, welded or clamped").clicked() {
             actions.push(UiAction::StressPick(true));
         }
-        if ui.selectable_label(!s.hold, RichText::new("■ Loads").color(Color32::from_rgb(LOAD[0], LOAD[1], LOAD[2]))).on_hover_text("Faces the force pushes on (spread evenly over them)").clicked() {
+        ui.add_space(8.0);
+        ui.label(RichText::new("■").color(Color32::from_rgb(LOAD[0], LOAD[1], LOAD[2])));
+        if ui.selectable_label(!s.hold, "Loads").on_hover_text("Faces the force pushes on (spread evenly over them)").clicked() {
             actions.push(UiAction::StressPick(false));
         }
     });
@@ -475,16 +479,22 @@ pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
             ));
         }
     });
-    ui.horizontal(|ui| {
-        ui.label("Cubes along the longest side");
-        ui.add(egui::DragValue::new(&mut set.divisions).range(10..=400));
-    });
-    let cube = s.longest_mm / set.divisions.max(1) as f64;
-    ui.label(RichText::new(match s.thickness_mm {
-        Some(t) if cube > t / 2.0 + 1e-9 => format!("Cubes of {cube:.2} mm: fewer than two across the {t} mm sheet; raise the number for a true result"),
-        Some(t) => format!("Cubes of {cube:.2} mm ({:.1} across the {t} mm sheet)", t / cube),
-        None => format!("Cubes of {cube:.2} mm; walls want two or more across"),
-    }).weak().small());
+    let mut auto = set.divisions == 0;
+    if ui.checkbox(&mut auto, "Choose the cube size for me").on_hover_text("The coarsest cubes that fill the part to within 3% of its volume, so thin walls keep their thickness").changed() {
+        set.divisions = if auto { 0 } else { 60 };
+    }
+    if !auto {
+        ui.horizontal(|ui| {
+            ui.label("Cubes along the longest side");
+            ui.add(egui::DragValue::new(&mut set.divisions).range(10..=400));
+        });
+        let cube = s.longest_mm / set.divisions.max(1) as f64;
+        ui.label(RichText::new(match s.thickness_mm {
+            Some(t) if cube > t / 2.0 + 1e-9 => format!("Cubes of {cube:.2} mm: fewer than two across the {t} mm sheet; raise the number for a true result"),
+            Some(t) => format!("Cubes of {cube:.2} mm ({:.1} across the {t} mm sheet)", t / cube),
+            None => format!("Cubes of {cube:.2} mm; walls want two or more across"),
+        }).weak().small());
+    }
     if set != s.settings {
         actions.push(UiAction::StressSet(set));
     }
@@ -635,7 +645,7 @@ mod tests {
     fn a_sheet_gets_two_cubes_across() {
         // 200 mm long, 2 mm sheet: 1 mm cubes = 200 along it
         assert_eq!(suggested_divisions(0.2, Some(2.0)), 200);
-        assert_eq!(suggested_divisions(0.2, None), 60);
+        assert_eq!(suggested_divisions(0.2, None), 0, "chosen by the solver");
         assert_eq!(suggested_divisions(2.0, Some(1.0)), 300, "capped");
     }
 }

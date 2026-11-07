@@ -44,7 +44,7 @@ pub struct Study {
     pub loads: Vec<Load>,
     /// Gravity (m/s², e.g. [0, 0, -9.81]) for the part's own weight, or none.
     pub gravity: Option<[f64; 3]>,
-    /// Cubes along the part's longest side (the cube size follows).
+    /// Cubes along the part's longest side (the cube size follows); 0: chosen here (`AUTO`).
     pub divisions: usize,
 }
 
@@ -68,6 +68,8 @@ pub struct SurfaceQuad {
 #[derive(Clone, Debug)]
 pub struct Report {
     pub cubes: usize,
+    /// Cubes along the longest side (as given, or as chosen).
+    pub divisions: usize,
     /// Cube side, m.
     pub cube_size: f64,
     /// Highest von Mises stress, Pa, and the grid point where it is.
@@ -90,6 +92,11 @@ pub struct Report {
     /// Things to know about this result (thin walls, a mesh not closed, ...).
     pub notes: Vec<String>,
 }
+
+/// The cube counts along the longest side tried when the study leaves it to `run` (divisions 0), coarsest first, and the most
+/// cubes a chosen grid may have (a finer one would take minutes).
+pub const AUTO: [usize; 11] = [40, 60, 80, 100, 120, 150, 180, 220, 260, 320, 400];
+pub const AUTO_MAX_CUBES: usize = 300_000;
 
 /// Outward normals and the cube corners (hex8 order) on each side: -x, +x, -y, +y, -z, +z.
 const SIDES: [([i8; 3], [usize; 4]); 6] = [
@@ -247,10 +254,30 @@ pub fn run(part: &Part, study: &Study, progress: &mut dyn FnMut(f32, &str)) -> R
     if !(longest > 0.0) {
         return Err("the part has no size".into());
     }
-    let divisions = study.divisions.clamp(4, 400);
-    let h = longest / divisions as f64;
+    let true_volume = voxel::mesh_volume(&part.triangles).abs();
+    let error_of = |g: &Grid| if true_volume > 0.0 { (g.volume() - true_volume) / true_volume } else { 0.0 };
     progress(0.02, "filling the part with cubes");
-    let grid = voxel::voxelize(&part.triangles, h);
+    let (grid, divisions) = if study.divisions == 0 {
+        // the coarsest grid that fills the part to within 3% of its volume (so thin walls get their thickness), as long as it
+        // stays under the cube limit
+        let mut chosen = None;
+        for div in AUTO {
+            let g = voxel::voxelize(&part.triangles, longest / div as f64);
+            if chosen.is_some() && g.solid_count() > AUTO_MAX_CUBES {
+                break;
+            }
+            let good = error_of(&g).abs() < 0.03;
+            chosen = Some((g, div));
+            if good {
+                break;
+            }
+        }
+        chosen.expect("AUTO is not empty")
+    } else {
+        let d = study.divisions.clamp(4, 400);
+        (voxel::voxelize(&part.triangles, longest / d as f64), d)
+    };
+    let h = grid.h;
     let cubes = grid.solid_count();
     if cubes == 0 {
         return Err("the part is too thin for this many cubes: raise the number of cubes".into());
@@ -262,8 +289,7 @@ pub fn run(part: &Part, study: &Study, progress: &mut dyn FnMut(f32, &str)) -> R
     if grid.odd_rows > 0 {
         notes.push(format!("the part's surface is not closed everywhere ({} rows of cubes crossed it an odd number of times)", grid.odd_rows));
     }
-    let true_volume = voxel::mesh_volume(&part.triangles).abs();
-    let volume_error = if true_volume > 0.0 { (grid.volume() - true_volume) / true_volume } else { 0.0 };
+    let volume_error = error_of(&grid);
     if volume_error.abs() > 0.05 {
         notes.push(format!(
             "the cubes' volume differs from the part's by {:.0}%: walls are thin for this cube size; more cubes give a truer result",
@@ -388,6 +414,7 @@ pub fn run(part: &Part, study: &Study, progress: &mut dyn FnMut(f32, &str)) -> R
     progress(1.0, "done");
     Ok(Report {
         cubes,
+        divisions,
         cube_size: h,
         max_stress,
         max_stress_at,
@@ -524,6 +551,19 @@ mod tests {
         let inward = Part { triangles: part.triangles.iter().map(|t| [t[0], t[2], t[1]]).collect(), face_of: part.face_of.clone() };
         let (a, b) = (run(&part, &study, &mut |_, _| {}).unwrap(), run(&inward, &study, &mut |_, _| {}).unwrap());
         assert!((a.max_displacement - b.max_displacement).abs() < 1e-15);
+    }
+
+    #[test]
+    fn the_cube_size_chosen_fills_a_thin_wall() {
+        // a 100 x 60 mm plate, 2 mm thick, held at one end
+        let (triangles, face_of) = boxed([0.0, 0.0, 0.0], [0.1, 0.06, 0.002]);
+        let mut s = Study::new(steel());
+        s.fixed = vec![0];
+        s.loads = vec![Load { faces: vec![5], force: [0.0, 0.0, -10.0] }];
+        s.divisions = 0;
+        let r = run(&Part { triangles, face_of }, &s, &mut |_, _| {}).unwrap();
+        assert!(r.volume_error.abs() < 0.03, "{}", r.volume_error);
+        assert!(r.divisions >= 100, "at least two cubes across 2 mm: {} along 100 mm", r.divisions);
     }
 
     #[test]
