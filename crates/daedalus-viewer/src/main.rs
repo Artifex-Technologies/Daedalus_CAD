@@ -53,6 +53,10 @@ struct State {
     left_down: bool,
     middle_down: bool,
     right_down: bool,
+    /// Where the right button went down (a release near it opens the right-click menu; a drag pans).
+    right_press_at: (f32, f32),
+    /// The right-click menu, open at this point (physical pixels).
+    context_at: Option<(f32, f32)>,
     press_at: (f32, f32),
     modifiers: ModifiersState,
     model: Model,
@@ -172,6 +176,8 @@ impl State {
             left_down: false,
             middle_down: false,
             right_down: false,
+            right_press_at: (0.0, 0.0),
+            context_at: None,
             press_at: (0.0, 0.0),
             modifiers: ModifiersState::empty(),
             model,
@@ -676,6 +682,28 @@ impl State {
         best.map(|(e, _)| e)
     }
 
+    /// Right-click: what is under the mouse is selected first if it is not already (as in SketchUp), then the menu opens.
+    fn open_context_menu(&mut self) {
+        if self.tools.tool.edits() || self.tools.tool == Tool::Select {
+            if let Some(e) = self.edge_at() {
+                if self.tools.edges.binary_search(&e).is_err() {
+                    self.tools.select_edge(e, false, false);
+                }
+            } else {
+                let c = self.resolve_cursor();
+                let (face, instance) = (c.hit.and_then(|h| h.face), c.hit.and_then(|h| h.instance));
+                let selected = face.is_some_and(|f| self.tools.selected.binary_search(&f).is_ok())
+                    || instance.is_some_and(|i| self.tools.instances.binary_search(&i).is_ok());
+                if !selected && (face.is_some() || instance.is_some()) {
+                    self.tools.select(&self.model, face, instance, false, false, false);
+                }
+            }
+            self.refresh();
+        }
+        self.context_at = Some(self.cursor);
+        self.window.request_redraw();
+    }
+
     /// Starts typing into text `i`.
     fn edit_label(&mut self, i: usize) {
         if let Some(l) = self.model.notes().labels.get(i) {
@@ -786,6 +814,19 @@ impl State {
         if self.tools.tool == Tool::Select && count == 2 && self.readonly.is_none() {
             if let Some(i) = c.hit.and_then(|h| h.instance) {
                 self.open_group(i);
+                return;
+            }
+        }
+        // Eraser near an edge or loose line: it goes (and the faces on it, or two faces in one plane become one), as in SketchUp
+        if self.tools.tool == Tool::Eraser && self.readonly.is_none() {
+            if let Some(e) = self.edge_at() {
+                match self.model.erase_all(&[], &[e], &[]) {
+                    Ok(0) => {}
+                    Ok(_) => self.message = Some("The edge was kept: the faces either side would not make one simple face.".into()),
+                    Err(e) => self.message = Some(e.to_string()),
+                }
+                self.tools.model_changed();
+                self.after_edit();
                 return;
             }
         }
@@ -1094,6 +1135,7 @@ impl State {
             }
             UiAction::DeleteDimensions => self.model.edit_notes(|n| n.dims.clear()),
             UiAction::MakeGroup => self.make_group(false),
+            UiAction::Erase => self.erase_selected(),
             UiAction::MakeComponent => self.make_group(true),
             UiAction::EditGroup => {
                 if let Some(i) = self.one_instance() {
@@ -1152,6 +1194,14 @@ impl State {
 
     fn key(&mut self, key: &Key) {
         let ctrl = self.modifiers.control_key();
+        if self.context_at.is_some() {
+            // the right-click menu takes Esc (it closes); other keys close it and go on as usual
+            self.context_at = None;
+            self.window.request_redraw();
+            if *key == Key::Named(NamedKey::Escape) {
+                return;
+            }
+        }
         match key {
             Key::Named(NamedKey::Escape) => {
                 if !self.typed.is_empty() {
@@ -1381,8 +1431,15 @@ impl State {
         let ask = self.ask;
         let mut answer: Option<&'static str> = None;
         let doc_name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
+        let context_at = self.context_at;
+        let mut context_open = context_at.is_some();
         let out = ctx.run(raw, |ctx| {
             actions = ui::draw(ctx, &view);
+            if let Some((x, y)) = context_at {
+                let (picked, open) = ui::context_menu(ctx, egui::pos2(x / ppp, y / ppp), &view);
+                actions.extend(picked);
+                context_open = open;
+            }
             if let Some(d) = resize_at {
                 ctx.set_cursor_icon(frame::cursor(d));
             }
@@ -1507,6 +1564,10 @@ impl State {
         self.gpu.render(self.camera.view_proj(w / h), eye, self.style, line_width, section, &axes, &overlay, ui);
 
         if out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay.is_zero()) {
+            self.window.request_redraw();
+        }
+        if !context_open && self.context_at.is_some() {
+            self.context_at = None;
             self.window.request_redraw();
         }
         for a in actions {
@@ -1681,6 +1742,12 @@ impl ApplicationHandler<AppEvent> for App {
                 if down && (button == MouseButton::Middle || button == MouseButton::Right || s.tools.tool.navigates()) {
                     s.remember_view();
                 }
+                // a press outside the open right-click menu closes it and does nothing else
+                if down && s.context_at.is_some() {
+                    s.context_at = None;
+                    s.window.request_redraw();
+                    return;
+                }
                 match button {
                     MouseButton::Left => {
                         if down {
@@ -1711,7 +1778,17 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                     }
                     MouseButton::Middle => s.middle_down = down,
-                    MouseButton::Right => s.right_down = down,
+                    MouseButton::Right => {
+                        if down {
+                            s.right_press_at = s.cursor;
+                        } else if s.right_down {
+                            let (dx, dy) = (s.cursor.0 - s.right_press_at.0, s.cursor.1 - s.right_press_at.1);
+                            if dx * dx + dy * dy < 16.0 {
+                                s.open_context_menu();
+                            }
+                        }
+                        s.right_down = down;
+                    }
                     _ => {}
                 }
             }
@@ -1734,7 +1811,7 @@ impl ApplicationHandler<AppEvent> for App {
                 s.over_ui = s.egui_ctx.is_pointer_over_area();
                 let tool = s.tools.tool;
                 // Middle-drag orbits and Shift+middle-drag pans, as in SketchUp;
-                // right-drag pans until there is a context menu.
+                // right-drag pans (a right-click without a drag opens the menu).
                 let orbit = (s.middle_down && !s.modifiers.shift_key()) || (s.left_down && tool == Tool::Orbit);
                 let pan = (s.middle_down && s.modifiers.shift_key()) || s.right_down || (s.left_down && tool == Tool::Pan);
                 if orbit {

@@ -38,6 +38,8 @@ pub enum UiAction {
     /// explode it back into loose geometry, give a component copy its own definition.
     MakeGroup,
     MakeComponent,
+    /// Erase the selection (Delete; the right-click menu's Erase).
+    Erase,
     EditGroup,
     CloseGroup,
     Explode,
@@ -104,6 +106,43 @@ pub struct UiView<'a> {
     pub maximized: bool,
     /// The window title, shown in the menu bar's empty part when the window draws its own frame.
     pub title: &'a str,
+}
+
+/// The right-click menu at `at` (points), as SketchUp's context menu: what can be done with the selection. Returns the
+/// actions picked and whether the menu stays open (it closes on a pick, a click elsewhere or Esc).
+pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView) -> (Vec<UiAction>, bool) {
+    let mut actions = Vec::new();
+    let mut open = true;
+    let area = egui::Area::new(egui::Id::new("context-menu")).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
+        egui::Frame::menu(ui.style()).show(ui, |ui| {
+            ui.set_min_width(170.0);
+            let mut item = |ui: &mut egui::Ui, enabled: bool, label: &str, shortcut: &str, action: UiAction| {
+                if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(shortcut)).clicked() {
+                    actions.push(action);
+                    open = false;
+                }
+            };
+            item(ui, v.editable && v.has_selection, "Erase", "Delete", UiAction::Erase);
+            ui.separator();
+            let kind = if v.one_instance == Some(true) { "Component" } else { "Group" };
+            item(ui, v.one_instance.is_some(), &format!("Edit {kind}"), "", UiAction::EditGroup);
+            item(ui, v.one_instance.is_some(), "Explode", "", UiAction::Explode);
+            item(ui, v.one_instance == Some(true), "Make Unique", "", UiAction::MakeUnique);
+            item(ui, v.editable && v.has_selection, "Make Group", "", UiAction::MakeGroup);
+            item(ui, v.editable && v.has_selection, "Make Component", "G", UiAction::MakeComponent);
+            if v.editing.is_some() {
+                item(ui, true, "Close Group/Component", "Esc", UiAction::CloseGroup);
+            }
+            ui.separator();
+            item(ui, true, "Select All", "Ctrl+A", UiAction::SelectAll);
+            item(ui, true, "Zoom Extents", "Shift+Z", UiAction::ZoomExtents);
+        });
+    });
+    let clicked_away = ctx.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer();
+    if clicked_away || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        open = false;
+    }
+    (actions, open)
 }
 
 pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {

@@ -1481,7 +1481,7 @@ impl Tools {
             (Tool::Circle | Tool::Polygon, _) => "Select radius point, or type a radius.",
             (Tool::PushPull, Op::Idle) => "Pick a face to push or pull.",
             (Tool::PushPull, _) => "Move to set the distance; click or type a value.",
-            (Tool::Eraser, _) => "Click a face, line or group to erase it.",
+            (Tool::Eraser, _) => "Click an edge, line, face or group to erase it. Near an edge, the edge goes.",
             (Tool::Orbit, _) => "Drag to orbit.",
             (Tool::Pan, _) => "Drag to pan.",
             (Tool::Zoom, _) => "Drag up or down to zoom.",
