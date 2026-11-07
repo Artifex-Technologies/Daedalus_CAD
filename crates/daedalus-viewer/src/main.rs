@@ -142,6 +142,8 @@ struct Text3dForm {
     height: String,
     extruded: bool,
     depth: String,
+    /// The font's file (None: the built-in one), remembered between runs.
+    font: Option<PathBuf>,
 }
 
 /// Something that replaces the document or ends the program, held while the person is asked about unsaved changes.
@@ -242,6 +244,7 @@ impl State {
                 height: daedalus_core::units::format(0.3, settings::load_units()),
                 extruded: true,
                 depth: daedalus_core::units::format(0.05, settings::load_units()),
+                font: settings::load("text3d-font").map(PathBuf::from).filter(|p| p.is_file()),
             },
         };
         s.refresh();
@@ -1644,7 +1647,15 @@ impl State {
                         ui.add_enabled(f.extruded, egui::TextEdit::singleline(&mut f.depth).desired_width(120.0));
                         ui.end_row();
                     });
-                    ui.label(egui::RichText::new("Ubuntu Light. Lengths in any unit (300mm, 1').").small());
+                    // the font, from those on the system (the list is read once, the first time it is opened)
+                    let fonts = text3d::fonts();
+                    let now = fonts.iter().find(|x| x.path == f.font).map_or("Ubuntu Light (built in)", |x| x.name.as_str());
+                    egui::ComboBox::from_label("Font").selected_text(now).width(220.0).height(320.0).show_ui(ui, |ui| {
+                        for x in fonts {
+                            ui.selectable_value(&mut f.font, x.path.clone(), &x.name);
+                        }
+                    });
+                    ui.label(egui::RichText::new("Lengths in any unit (300mm, 1').").small());
                     ui.horizontal(|ui| {
                         if ui.button("Place").clicked() {
                             form_answer = Some(true);
@@ -1706,7 +1717,10 @@ impl State {
                     let height = daedalus_core::units::parse(&f.height, units);
                     let depth = if f.extruded { daedalus_core::units::parse(&f.depth, units).map(Some) } else { Some(None) };
                     let r = match (height, depth) {
-                        (Some(h), Some(d)) => self.tools.begin_text3d(&f.text.clone(), h, d),
+                        (Some(h), Some(d)) => {
+                            settings::save("text3d-font", &f.font.as_ref().map(|p| p.display().to_string()).unwrap_or_default());
+                            self.tools.begin_text3d(&f.text.clone(), h, d, f.font.clone().as_deref())
+                        }
                         _ => Err("cannot read the height or the depth".into()),
                     };
                     self.message = r.err();

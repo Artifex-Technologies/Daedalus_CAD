@@ -313,7 +313,7 @@ enum Op {
     Axes { origin: [f64; 3], red: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// 3D Text being placed: the words, how tall, how deep (None: flat), their outlines (for the preview), and where they
     /// would go now (on the plane under the mouse).
-    Place3D { text: String, height: f64, depth: Option<f64>, letters: Vec<Vec<Vec<[f64; 2]>>>, at: Option<Plane> },
+    Place3D { text: String, height: f64, depth: Option<f64>, font: Option<std::path::PathBuf>, letters: Vec<Vec<Vec<[f64; 2]>>>, at: Option<Plane> },
 }
 
 pub struct Tools {
@@ -539,16 +539,16 @@ impl Tools {
     }
 
     /// 3D Text: the words chosen in its window; the mouse now places them.
-    pub fn begin_text3d(&mut self, text: &str, height: f64, depth: Option<f64>) -> Result<(), String> {
+    pub fn begin_text3d(&mut self, text: &str, height: f64, depth: Option<f64>, font: Option<&std::path::Path>) -> Result<(), String> {
         if !(height > 0.0) {
             return Err("the letters need a height".into());
         }
-        let letters = crate::text3d::outlines(text, height).ok_or("the built-in font could not be read")?;
+        let letters = crate::text3d::outlines(text, height, font).ok_or("that font could not be read")?;
         if letters.is_empty() {
             return Err("there are no letters to make".into());
         }
         self.set_tool(Tool::Text3D);
-        self.op = Op::Place3D { text: text.to_string(), height, depth, letters, at: None };
+        self.op = Op::Place3D { text: text.to_string(), height, depth, font: font.map(|f| f.to_path_buf()), letters, at: None };
         Ok(())
     }
 
@@ -979,12 +979,12 @@ impl Tools {
                 (Some(st), _) => self.add_protractor_guide(model, &plane, center, st, angle),
                 (start, _) => self.op = Op::Protract { plane, center, start, angle },
             },
-            (Tool::Text3D, Op::Place3D { text, height, depth, letters, at }) => {
+            (Tool::Text3D, Op::Place3D { text, height, depth, font, letters, at }) => {
                 let Some(plane) = at else {
-                    self.op = Op::Place3D { text, height, depth, letters, at };
+                    self.op = Op::Place3D { text, height, depth, font, letters, at };
                     return Err("click a face or the ground to place the text".into());
                 };
-                let mesh = crate::text3d::geometry(&text, height, depth, &plane)?;
+                let mesh = crate::text3d::geometry(&text, height, depth, &plane, font.as_deref())?;
                 let i = model.place_group(&mesh, false).map_err(|e| e.to_string())?;
                 self.set_tool(Tool::Select);
                 self.model_changed();
@@ -2600,7 +2600,7 @@ mod tests {
     fn three_d_text_is_placed_as_a_solid_group() {
         let mut m = Model::new();
         let mut t = Tools::default();
-        t.begin_text3d("Hi", 0.3, Some(0.05)).unwrap();
+        t.begin_text3d("Hi", 0.3, Some(0.05), None).unwrap();
         t.hover(&ground_hit([1.0, 1.0, 0.0], Snap::Ground));
         assert!(!t.preview_lines().is_empty(), "the outlines follow the mouse");
         t.click(&mut m, &ground_hit([1.0, 1.0, 0.0], Snap::Ground)).unwrap();
@@ -2611,7 +2611,7 @@ mod tests {
         assert!((lo[2] - 0.0).abs() < 1e-5 && (hi[2] - 0.05).abs() < 1e-5, "{lo:?} {hi:?}");
         assert!(lo[0] >= 0.99 && lo[1] >= 0.99, "it starts at the point clicked");
         assert!(daedalus_core::HalfEdgeMesh::from_mesh(&flat).unwrap().is_closed());
-        assert!(t.begin_text3d("   ", 0.3, None).is_err());
+        assert!(t.begin_text3d("   ", 0.3, None, None).is_err());
     }
 
     #[test]

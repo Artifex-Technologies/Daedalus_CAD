@@ -1,7 +1,71 @@
-//! 3D Text: words turned into flat outlines (then faces, then a solid; core `profile`). The letters come from Ubuntu Light,
-//! the font egui already carries (Ubuntu Font Licence), read with ttf-parser; curves become short straight pieces.
+//! 3D Text: words turned into flat outlines (then faces, then a solid; core `profile`). The letters come from a font on the
+//! system (TrueType or OpenType, found in the usual font folders), or Ubuntu Light, the font egui already carries (Ubuntu
+//! Font Licence); read with ttf-parser; curves become short straight pieces.
 
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use ttf_parser::{Face, OutlineBuilder};
+
+/// A font 3D Text can use: its name, and its file (None: the built-in Ubuntu Light).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Font {
+    pub name: String,
+    pub path: Option<PathBuf>,
+}
+
+/// The built-in font first, then every TrueType or OpenType font found on the system, by name (read once).
+pub fn fonts() -> &'static [Font] {
+    static ALL: OnceLock<Vec<Font>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut dirs: Vec<PathBuf> = vec!["/usr/share/fonts".into(), "/usr/local/share/fonts".into()];
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            dirs.push(home.join(".local/share/fonts"));
+            dirs.push(home.join(".fonts"));
+        }
+        if let Some(win) = std::env::var_os("WINDIR").map(PathBuf::from) {
+            dirs.push(win.join("Fonts"));
+        }
+        let mut found: Vec<Font> = Vec::new();
+        let mut todo = dirs;
+        while let Some(d) = todo.pop() {
+            let Ok(entries) = std::fs::read_dir(&d) else { continue };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    todo.push(path);
+                    continue;
+                }
+                let ext = path.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase);
+                if !matches!(ext.as_deref(), Some("ttf" | "otf")) {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(&path) else { continue };
+                let Ok(face) = Face::parse(&bytes, 0) else { continue };
+                if let Some(name) = full_name(&face) {
+                    found.push(Font { name, path: Some(path) });
+                }
+            }
+        }
+        found.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        found.dedup_by(|a, b| a.name == b.name);
+        std::iter::once(Font { name: "Ubuntu Light (built in)".into(), path: None }).chain(found).collect()
+    })
+}
+
+/// A font's full name ("DejaVu Sans Bold"), from its name table.
+fn full_name(face: &Face) -> Option<String> {
+    let names = face.names();
+    let get = |id: u16| names.into_iter().filter(|n| n.name_id == id).find_map(|n| n.to_string()).filter(|s| !s.trim().is_empty());
+    get(ttf_parser::name_id::FULL_NAME).or_else(|| get(ttf_parser::name_id::FAMILY))
+}
+
+/// The font's bytes: the file, or the built-in font.
+fn font_bytes(path: Option<&Path>) -> Option<std::borrow::Cow<'static, [u8]>> {
+    match path {
+        None => Some(std::borrow::Cow::Borrowed(epaint_default_fonts::UBUNTU_LIGHT)),
+        Some(p) => std::fs::read(p).ok().map(std::borrow::Cow::Owned),
+    }
+}
 
 /// Pieces per curve in a letter: enough to look round at the sizes text is drawn.
 const CURVE_STEPS: usize = 5;
@@ -72,9 +136,10 @@ impl OutlineBuilder for Outline {
 }
 
 /// The outlines of `text`, one list per letter, capital letters `height` tall, the first line's baseline along x from the
-/// origin and further lines below it. None when the font cannot be read (it is built in, so never expected).
-pub fn outlines(text: &str, height: f64) -> Option<Vec<Vec<Vec<[f64; 2]>>>> {
-    let face = Face::parse(epaint_default_fonts::UBUNTU_LIGHT, 0).ok()?;
+/// origin and further lines below it, in the font at `font` (None: the built-in one). None when the font cannot be read.
+pub fn outlines(text: &str, height: f64, font: Option<&Path>) -> Option<Vec<Vec<Vec<[f64; 2]>>>> {
+    let bytes = font_bytes(font)?;
+    let face = Face::parse(&bytes, 0).ok()?;
     let cap = face.capital_height().filter(|&c| c > 0).unwrap_or(face.ascender()) as f64;
     let scale = height / cap;
     let line = (face.ascender() - face.descender() + face.line_gap()) as f64 * scale;
@@ -100,8 +165,8 @@ pub fn outlines(text: &str, height: f64) -> Option<Vec<Vec<Vec<[f64; 2]>>>> {
 
 /// The solid (or, with no depth, flat) geometry of `text` laid on `plane`: each letter built on its own (letters do not
 /// touch, and it keeps the work small), then put together.
-pub fn geometry(text: &str, height: f64, depth: Option<f64>, plane: &daedalus_core::Plane) -> Result<daedalus_core::Mesh, String> {
-    let letters = outlines(text, height).ok_or("the built-in font could not be read")?;
+pub fn geometry(text: &str, height: f64, depth: Option<f64>, plane: &daedalus_core::Plane, font: Option<&Path>) -> Result<daedalus_core::Mesh, String> {
+    let letters = outlines(text, height, font).ok_or("the font could not be read")?;
     let mut all = daedalus_core::Mesh::new();
     for rings in &letters {
         let cap = daedalus_core::profile::faces(rings, plane).map_err(|e| e.to_string())?;
@@ -123,23 +188,33 @@ mod tests {
 
     #[test]
     fn letters_have_their_holes() {
-        let o = outlines("O", 1.0).unwrap().concat();
+        let o = outlines("O", 1.0, None).unwrap().concat();
         assert_eq!(o.len(), 2, "an O is an outside and a hole");
         let top = o.iter().flatten().map(|p| p[1]).fold(f64::MIN, f64::max);
         assert!(top > 0.95 && top < 1.1, "a capital about the height asked for ({top})");
-        assert_eq!(outlines("B", 1.0).unwrap().concat().len(), 3);
-        assert_eq!(outlines("il", 1.0).unwrap().concat().len(), 3, "the dot of the i is its own outline");
-        assert!(outlines(" ", 1.0).unwrap().is_empty());
+        assert_eq!(outlines("B", 1.0, None).unwrap().concat().len(), 3);
+        assert_eq!(outlines("il", 1.0, None).unwrap().concat().len(), 3, "the dot of the i is its own outline");
+        assert!(outlines(" ", 1.0, None).unwrap().is_empty());
         // a second line sits below the first
-        let two = outlines("I\nI", 1.0).unwrap().concat();
+        let two = outlines("I\nI", 1.0, None).unwrap().concat();
         assert!(two[1].iter().all(|p| p[1] < 0.0));
     }
 
     #[test]
     fn words_become_a_closed_solid() {
-        let solid = geometry("Daedalus 3D", 0.2, Some(0.05), &daedalus_core::Plane::ground()).unwrap();
+        let solid = geometry("Daedalus 3D", 0.2, Some(0.05), &daedalus_core::Plane::ground(), None).unwrap();
         let h = daedalus_core::HalfEdgeMesh::from_mesh(&solid).unwrap();
         assert!(h.is_closed());
         assert!(h.signed_volume() > 0.0);
+    }
+
+    #[test]
+    fn system_fonts_are_listed_after_the_built_in_one() {
+        let all = fonts();
+        assert_eq!(all[0].path, None);
+        // any system font found can be read and makes letters
+        if let Some(f) = all.get(1) {
+            assert!(outlines("A", 1.0, f.path.as_deref()).is_some(), "{}", f.name);
+        }
     }
 }
