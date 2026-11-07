@@ -501,7 +501,7 @@ impl State {
             self.faded_vertex = self.display.positions.len() as u32;
         }
         // the section cut: black lines round it, a hair on the kept side so the cut does not hide them
-        self.cut_lines = match self.model.notes().section.filter(|s| s.active) {
+        self.cut_lines = match self.model.notes().cutting() {
             Some(s) => {
                 let back = DVec3::from(s.normal) * -1e-4;
                 daedalus_core::section::cut_lines(&self.display, s.point, s.normal)
@@ -1204,15 +1204,25 @@ impl State {
             }
             UiAction::PaintColor(c) => self.tools.paint_color = c,
             UiAction::SectionCuts => {
+                // the current plane cuts or stops (one cuts at most)
                 self.model.edit_notes(|n| {
-                    if let Some(s) = n.section.as_mut() {
-                        s.active = !s.active;
+                    if let Some(i) = n.current_section() {
+                        let on = !n.sections[i].active;
+                        n.activate_section(on.then_some(i));
                     }
                 });
                 self.refresh();
             }
+            UiAction::ActiveSection(i) => {
+                self.model.edit_notes(|n| n.activate_section(i));
+                self.refresh();
+            }
             UiAction::DeleteSection => {
-                self.model.edit_notes(|n| n.section = None);
+                self.model.edit_notes(|n| {
+                    if let Some(i) = n.current_section() {
+                        n.sections.remove(i);
+                    }
+                });
                 self.refresh();
             }
             UiAction::DeleteDimensions => self.model.edit_notes(|n| n.dims.clear()),
@@ -1472,7 +1482,8 @@ impl State {
             marker,
             style: self.style,
             paint_color: self.tools.paint_color,
-            section: self.model.notes().section.map(|s| s.active),
+            section: self.model.notes().section().map(|s| s.active),
+            sections: self.model.notes().sections.iter().map(|s| s.active).collect(),
             has_selection: self.tools.has_selection(),
             info_open: self.info_open,
             info,
@@ -1644,7 +1655,7 @@ impl State {
         let (axes, overlay) = (self.axes(), self.overlay());
         // edges about 1.5 points wide, like SketchUp's default
         let line_width = 1.4 * self.window.scale_factor() as f32;
-        let section = self.model.notes().section.filter(|s| s.active).map(|s: Section| (render::gpu(s.point), render::gpu(s.normal)));
+        let section = self.model.notes().cutting().map(|s: Section| (render::gpu(s.point), render::gpu(s.normal)));
         let eye = if self.camera.ortho {
             let d = (self.camera.eye() - self.camera.target).normalize_or_zero();
             [d.x as f32, d.y as f32, d.z as f32, 0.0]

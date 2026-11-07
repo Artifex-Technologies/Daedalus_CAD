@@ -13,7 +13,7 @@
 //! def "Group#1" group               a definition: its own v, f, l, s, c, i lines up to "end" (version 3)
 //! end
 //! guide line 0 0 0 1 0 0            notes (version 3): guide point x y z, guide line x y z dx dy dz,
-//! dim 0 0 0 1 0 0 0 -0.3 0          dim a b offset, text point at "words", section point normal on|off,
+//! dim 0 0 0 1 0 0 0 -0.3 0          dim a b offset, text point at "words", section point normal on|off (one line each, one on at most),
 //! axes 0 0 0 1 0 0 0 1 0 0 0 1      axes origin red green blue
 //! ```
 //!
@@ -233,7 +233,7 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
                     return Err(IoError::Parse(format!("line {n}: {what}")));
                 }
                 let c = numbers(&rest[..6], 6, what, n)?;
-                scene.notes.section = Some(Section { point: p3(&c), normal: p3(&c[3..]), active: rest[6] != "off" });
+                scene.notes.sections.push(Section { point: p3(&c), normal: p3(&c[3..]), active: rest[6] != "off" });
             }
             "axes" if v3 => {
                 let c = numbers(rest, 12, "axes are an origin and three directions", n)?;
@@ -358,7 +358,7 @@ pub fn write_scene(scene: &Scene) -> Vec<u8> {
     for l in &n.labels {
         s.push_str(&format!("text {} {} {}\n", v3(l.point), v3(l.at), quote(&l.text)));
     }
-    if let Some(sec) = n.section {
+    for sec in &n.sections {
         s.push_str(&format!("section {} {} {}\n", v3(sec.point), v3(sec.normal), if sec.active { "on" } else { "off" }));
     }
     if !n.axes.is_default() {
@@ -454,7 +454,8 @@ mod tests {
         s.notes.guides = vec![Guide::Point([1.0, 2.0, 3.0]), Guide::Line([0.0; 3], [0.0, 1.0, 0.0])];
         s.notes.dims.push(Dimension { a: [0.0; 3], b: [1.0, 0.0, 0.0], offset: [0.0, -0.3, 0.0] });
         s.notes.labels.push(Label { point: [1.0; 3], at: [1.5, 1.5, 2.0], text: "Area # 1\nsecond \\ line".into() });
-        s.notes.section = Some(Section { point: [0.5, 0.0, 0.0], normal: [1.0, 0.0, 0.0], active: false });
+        s.notes.sections.push(Section { point: [0.5, 0.0, 0.0], normal: [1.0, 0.0, 0.0], active: false });
+        s.notes.sections.push(Section { point: [0.0, 0.0, 1.0], normal: [0.0, 0.0, 1.0], active: true });
         s.notes.axes = Axes { origin: [1.0, 1.0, 0.0], dirs: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] };
         let bytes = write_scene(&s);
         assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 3\n"));

@@ -173,13 +173,48 @@ pub struct Notes {
     pub guides: Vec<Guide>,
     pub dims: Vec<Dimension>,
     pub labels: Vec<Label>,
-    pub section: Option<Section>,
+    /// Section planes, in the order they were placed; at most one cuts (`active`), as in SketchUp.
+    pub sections: Vec<Section>,
     pub axes: Axes,
 }
 
 impl Notes {
     pub fn is_empty(&self) -> bool {
-        self.guides.is_empty() && self.dims.is_empty() && self.labels.is_empty() && self.section.is_none() && self.axes.is_default()
+        self.guides.is_empty() && self.dims.is_empty() && self.labels.is_empty() && self.sections.is_empty() && self.axes.is_default()
+    }
+
+    /// Which section plane is current: the one cutting, else the last placed.
+    pub fn current_section(&self) -> Option<usize> {
+        self.sections.iter().position(|s| s.active).or(self.sections.len().checked_sub(1))
+    }
+
+    /// The current section plane (see [`Notes::current_section`]).
+    pub fn section(&self) -> Option<Section> {
+        self.current_section().map(|i| self.sections[i])
+    }
+
+    pub fn section_mut(&mut self) -> Option<&mut Section> {
+        self.current_section().map(|i| &mut self.sections[i])
+    }
+
+    /// The section plane that cuts, if one does.
+    pub fn cutting(&self) -> Option<Section> {
+        self.sections.iter().copied().find(|s| s.active)
+    }
+
+    /// A new section plane, cutting (the others stop).
+    pub fn add_section(&mut self, point: [f64; 3], normal: [f64; 3]) {
+        for s in &mut self.sections {
+            s.active = false;
+        }
+        self.sections.push(Section { point, normal, active: true });
+    }
+
+    /// Section plane `i` cuts and the others not (None: none cuts).
+    pub fn activate_section(&mut self, i: Option<usize>) {
+        for (k, s) in self.sections.iter_mut().enumerate() {
+            s.active = Some(k) == i;
+        }
     }
 }
 

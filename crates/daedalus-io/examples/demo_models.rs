@@ -6,7 +6,7 @@
 //! writes `house.daedalus` and `house-section.daedalus` (the same house with a section plane cutting through it).
 
 use daedalus_core::model::Model;
-use daedalus_core::scene::{Dimension, Label, Section};
+use daedalus_core::scene::{Dimension, Label};
 use std::path::Path;
 
 const WALL: [u8; 3] = [232, 222, 198];
@@ -99,7 +99,7 @@ fn main() {
     m.edit_notes(|n| {
         n.labels.clear();
         n.dims.clear();
-        n.section = Some(Section { point: [0.0, 2.6, 0.0], normal: [0.0, -1.0, 0.0], active: true });
+        n.add_section([0.0, 2.6, 0.0], [0.0, -1.0, 0.0]);
     });
     daedalus_io::save_scene(&m.document(), &out.join("house-section.daedalus")).unwrap();
     println!("written to {}", out.display());

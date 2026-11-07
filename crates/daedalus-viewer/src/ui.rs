@@ -29,6 +29,8 @@ pub enum UiAction {
     /// View > Section Cuts on or off; Edit > Delete Section Plane.
     SectionCuts,
     DeleteSection,
+    /// View > Section Planes: plane `i` cuts (None: none).
+    ActiveSection(Option<usize>),
     DeleteDimensions,
     /// Paint Bucket's colour (None: the default material).
     PaintColor(Option<[u8; 3]>),
@@ -102,6 +104,8 @@ pub struct UiView<'a> {
     pub texts: Vec<(Pos2, String)>,
     /// A section plane is placed, and whether it cuts.
     pub section: Option<bool>,
+    /// Every section plane: whether it cuts.
+    pub sections: Vec<bool>,
     /// Camera > Previous has a view to go back to.
     pub can_go_back: bool,
     /// Something is selected (faces or groups).
@@ -388,6 +392,20 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 if ui.checkbox(&mut back, "Back Edges").clicked() {
                     actions.push(UiAction::BackEdges);
                     ui.close_menu();
+                }
+                if v.sections.len() > 1 {
+                    ui.menu_button("Section Planes", |ui| {
+                        if ui.radio(!v.sections.contains(&true), "None cuts").clicked() {
+                            actions.push(UiAction::ActiveSection(None));
+                            ui.close_menu();
+                        }
+                        for (i, &on) in v.sections.iter().enumerate() {
+                            if ui.radio(on, format!("Section {}", i + 1)).clicked() {
+                                actions.push(UiAction::ActiveSection(Some(i)));
+                                ui.close_menu();
+                            }
+                        }
+                    });
                 }
                 let mut cuts = v.section == Some(true);
                 if ui.add_enabled(v.section.is_some(), egui::Checkbox::new(&mut cuts, "Section Cuts")).clicked() {

@@ -614,16 +614,20 @@ impl Tools {
         }
     }
 
-    /// The section plane's outline, drawn while it is placed: a square in its plane around its point, `size` across.
+    /// The section planes' outlines: a square in each plane around its point, `size` across, with an arrow the way it
+    /// looks; the current one orange, the others grey.
     pub fn section_outline(&self, model: &Model, size: f64) -> Vec<([f64; 3], [f64; 3], [f32; 4])> {
-        let Some(Section { point: o, normal: n, .. }) = model.notes().section else { return Vec::new() };
-        let Some(p) = Plane::from_point_normal(o, n) else { return Vec::new() };
-        let h = size / 2.0;
-        let corners = [p.to_world(-h, -h), p.to_world(h, -h), p.to_world(h, h), p.to_world(-h, h)];
-        let orange = [0.9, 0.5, 0.15, 1.0];
-        let mut out: Vec<_> = (0..4).map(|i| (corners[i], corners[(i + 1) % 4], orange)).collect();
-        // an arrow the way it looks (into what is kept)
-        out.push((o, sub(o, scale(n, h * 0.4)), orange));
+        let notes = model.notes();
+        let current = notes.current_section();
+        let mut out = Vec::new();
+        for (i, &Section { point: o, normal: n, .. }) in notes.sections.iter().enumerate() {
+            let Some(p) = Plane::from_point_normal(o, n) else { continue };
+            let h = size / 2.0;
+            let corners = [p.to_world(-h, -h), p.to_world(h, -h), p.to_world(h, h), p.to_world(-h, h)];
+            let color = if Some(i) == current { [0.9, 0.5, 0.15, 1.0] } else { [0.6, 0.6, 0.65, 1.0] };
+            out.extend((0..4).map(|k| (corners[k], corners[(k + 1) % 4], color)));
+            out.push((o, sub(o, scale(n, h * 0.4)), color));
+        }
         out
     }
 
@@ -843,7 +847,7 @@ impl Tools {
                 let face = c.hit.and_then(|h| h.face).ok_or("click a face to place the section plane on it")?;
                 let n = model.mesh().face_normal(face);
                 if let (Some(h), true) = (c.hit, n != [0.0; 3]) {
-                    model.edit_notes(|notes| notes.section = Some(Section { point: h.point, normal: n, active: true }));
+                    model.edit_notes(|notes| notes.add_section(h.point, n));
                 }
             }
             (Tool::PaintBucket, _) => {
@@ -1129,10 +1133,10 @@ impl Tools {
                 // typed: in or out as the mouse is
                 self.offset(model, face, &ring, normal, d.abs() * if shown < 0.0 { -1.0 } else { 1.0 })?
             }
-            (Entry::Value(d), Op::Idle) if self.tool == Tool::SectionPlane && model.notes().section.is_some() => {
-                // typed: the plane moves that far into the model
+            (Entry::Value(d), Op::Idle) if self.tool == Tool::SectionPlane && model.notes().section().is_some() => {
+                // typed: the current plane moves that far into the model
                 model.edit_notes(|n| {
-                    if let Some(s) = n.section.as_mut() {
+                    if let Some(s) = n.section_mut() {
                         s.point = sub(s.point, scale(s.normal, d));
                     }
                 });
@@ -2428,11 +2432,11 @@ mod tests {
         let mut t = Tools::default();
         t.set_tool(Tool::SectionPlane);
         t.click(&mut m, &top).unwrap();
-        let (o, n) = { let s = m.notes().section.unwrap(); (s.point, s.normal) };
+        let (o, n) = { let s = m.notes().section().unwrap(); (s.point, s.normal) };
         assert_eq!(n, [0.0, 0.0, 1.0], "it cuts away what is above the top");
         assert!((o[2] - 2.0).abs() < 1e-6);
         t.type_entry(&mut m, "0.5").unwrap();
-        assert!((m.notes().section.unwrap().point[2] - 1.5).abs() < 1e-6, "half a metre down into the box");
+        assert!((m.notes().section().unwrap().point[2] - 1.5).abs() < 1e-6, "half a metre down into the box");
         assert_eq!(t.section_outline(&m, 1.0).len(), 5);
         assert_eq!(m.mesh().face_count(), 6, "the model is not changed");
     }
