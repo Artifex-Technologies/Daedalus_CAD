@@ -6,6 +6,7 @@ pub mod imprint;
 pub mod inspect;
 pub mod merge;
 pub mod mesh;
+pub mod opening;
 pub mod profile;
 pub mod scene;
 pub mod section;

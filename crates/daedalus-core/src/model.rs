@@ -15,6 +15,21 @@ fn merge_in_place(m: &mut HalfEdgeMesh, face: usize) -> usize {
     }
 }
 
+/// The openings the instances `ids` of the open context cut, taken away (they are being erased).
+fn uncut_openings(m: &mut HalfEdgeMesh, s: &Scene, open: &[usize], ids: &[usize]) -> Result<(), TopologyError> {
+    let Some(ctx) = s.ctx(open) else { return Ok(()) };
+    if !ids.iter().filter_map(|&i| ctx.instances.get(i)).any(|inst| s.defs.get(inst.def).is_some_and(|d| d.cut)) {
+        return Ok(());
+    }
+    let mut mesh = m.to_mesh();
+    let outlines: Vec<Vec<[f64; 3]>> = ids.iter().filter_map(|&i| ctx.instances.get(i)).filter_map(|inst| crate::opening::footprint(s, open, inst, &mesh)).collect();
+    for o in &outlines {
+        crate::opening::uncut(&mut mesh, o);
+    }
+    *m = HalfEdgeMesh::from_mesh(&mesh)?;
+    Ok(())
+}
+
 /// The editable document: the geometry being edited, the rest of the scene (groups, components, notes), and an undo/redo
 /// history.
 ///
@@ -232,7 +247,7 @@ impl Model {
             let un = xf.inverse().ok_or(TopologyError::DegenerateNormal)?;
             let inner: Vec<Instance> = taken.iter().map(|&i| Instance { def: ctx.instances[i].def, xf: un.after(&ctx.instances[i].xf) }).collect();
             let name = s.new_name(component);
-            s.defs.push(Definition { name, component, ctx: Context { mesh: part.transformed(&to_def), instances: inner } });
+            s.defs.push(Definition { name, component, glue: false, cut: false, ctx: Context { mesh: part.transformed(&to_def), instances: inner } });
             let def = s.defs.len() - 1;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             for &i in taken.iter().rev() {
@@ -259,7 +274,7 @@ impl Model {
             let xf = Xform::translation(back.apply(lo));
             let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
             let name = s.new_name(component);
-            s.defs.push(Definition { name, component, ctx: Context { mesh: mesh.transformed(&to_def), instances: Vec::new() } });
+            s.defs.push(Definition { name, component, glue: false, cut: false, ctx: Context { mesh: mesh.transformed(&to_def), instances: Vec::new() } });
             let def = s.defs.len() - 1;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             ctx.instances.push(Instance { def, xf });
@@ -358,8 +373,24 @@ impl Model {
     /// both, as one undo step.
     pub fn transform_all(&mut self, vertices: &[u32], instances: &[usize], t: &Xform) -> Result<(), TopologyError> {
         self.edit_scene(|m, s, open| {
+            // components that cut an opening take it with them: their old holes go before the move, new ones are cut after
+            let cuts = |s: &Scene| s.ctx(open).is_some_and(|c| instances.iter().filter_map(|&i| c.instances.get(i)).any(|inst| s.defs.get(inst.def).is_some_and(|d| d.cut)));
+            let cutting = |s: &Scene, host: &Mesh| -> Vec<Vec<[f64; 3]>> {
+                let Some(ctx) = s.ctx(open) else { return Vec::new() };
+                instances.iter().filter_map(|&i| ctx.instances.get(i)).filter_map(|inst| crate::opening::footprint(s, open, inst, host)).collect()
+            };
+            let mut mesh = cuts(s).then(|| m.to_mesh());
+            if let Some(mesh) = mesh.as_mut() {
+                for o in cutting(s, mesh) {
+                    crate::opening::uncut(mesh, &o);
+                }
+            }
             for &v in vertices {
-                if let Some(p) = m.positions.get_mut(v as usize) {
+                let p = match mesh.as_mut() {
+                    Some(mesh) => mesh.positions.get_mut(v as usize),
+                    None => m.positions.get_mut(v as usize),
+                };
+                if let Some(p) = p {
                     *p = t.apply(*p);
                 }
             }
@@ -370,6 +401,47 @@ impl Model {
                 let inst = ctx.instances.get_mut(i).ok_or_else(nothing)?;
                 inst.xf = local.after(&inst.xf);
             }
+            if let Some(mut mesh) = mesh {
+                for o in cutting(s, &mesh) {
+                    crate::opening::cut(&mut mesh, &o);
+                }
+                *m = HalfEdgeMesh::from_mesh(&mesh)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The plane a glued instance `i` of the open context slides in (its face's normal), if it is glued and sits on one.
+    pub fn glue_normal(&self, i: usize) -> Option<[f64; 3]> {
+        let inst = self.instances().get(i)?;
+        crate::opening::glue_normal(&self.scene, &self.open, inst, &self.mesh.to_mesh())
+    }
+
+    /// Entity Info on a component: glued to faces, and cutting an opening in the face it is on. The openings of its copies
+    /// in the open context are cut or taken away to match, as one undo step.
+    pub fn set_glue_cut(&mut self, def: usize, glue: bool, cut: bool) -> Result<(), TopologyError> {
+        self.edit_scene(|m, s, open| {
+            let d = s.defs.get(def).ok_or_else(nothing)?;
+            let was = d.cut;
+            let copies: Vec<Instance> = s.ctx(open).map(|c| c.instances.iter().copied().filter(|i| i.def == def).collect()).unwrap_or_default();
+            let mut mesh = m.to_mesh();
+            if was {
+                for inst in &copies {
+                    if let Some(o) = crate::opening::footprint(s, open, inst, &mesh.clone()) {
+                        crate::opening::uncut(&mut mesh, &o);
+                    }
+                }
+            }
+            s.defs[def].glue = glue || cut;
+            s.defs[def].cut = cut;
+            if cut {
+                for inst in &copies {
+                    if let Some(o) = crate::opening::footprint(s, open, inst, &mesh.clone()) {
+                        crate::opening::cut(&mut mesh, &o);
+                    }
+                }
+            }
+            *m = HalfEdgeMesh::from_mesh(&mesh)?;
             Ok(())
         })
     }
@@ -409,8 +481,16 @@ impl Model {
                         s.defs.push(d);
                         s.defs.len() - 1
                     };
+                    let copy = Instance { def, xf: local.after(&inst.xf) };
+                    // a copy of a component that cuts an opening cuts its own
+                    let mut mesh = m.to_mesh();
+                    if let Some(o) = crate::opening::footprint(s, open, &copy, &mesh) {
+                        if crate::opening::cut(&mut mesh, &o) {
+                            *m = HalfEdgeMesh::from_mesh(&mesh)?;
+                        }
+                    }
                     let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
-                    ctx.instances.push(Instance { def, xf: local.after(&inst.xf) });
+                    ctx.instances.push(copy);
                     made.1.push(ctx.instances.len() - 1);
                 }
             }
@@ -430,6 +510,7 @@ impl Model {
         self.edit_scene(|m, s, open| {
             faces.iter().try_for_each(|&f| m.erase_face(f))?;
             let kept = if edges.is_empty() { 0 } else { m.erase_edges(edges)? };
+            uncut_openings(m, s, open, &ids)?;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             for &i in &ids {
                 if i >= ctx.instances.len() {
@@ -455,7 +536,8 @@ impl Model {
         let mut ids = ids.to_vec();
         ids.sort_unstable_by(|a, b| b.cmp(a));
         ids.dedup();
-        self.edit_scene(|_, s, open| {
+        self.edit_scene(|m, s, open| {
+            uncut_openings(m, s, open, &ids)?;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             for &i in &ids {
                 if i >= ctx.instances.len() {
@@ -1070,6 +1152,37 @@ mod tests {
         assert!(m.mesh().is_closed(), "a closed tube");
         assert!((m.mesh().signed_volume().abs() - 9.0).abs() < 1e-9, "{}", m.mesh().signed_volume());
         assert_eq!(m.mesh().euler_characteristic(), 0, "a tube: one hole right through");
+    }
+
+    #[test]
+    fn a_window_component_takes_its_opening_along() {
+        let mut m = Model::new();
+        // a 6 x 3 wall standing in the x-z plane
+        m.add_rectangle([0.0; 3], [6.0, 0.0, 0.0], [0.0, 0.0, 3.0]).unwrap();
+        // a window drawn on it (a hole and the pane), the pane pushed out 0.1 into a frame
+        let pane = m.add_outline(&[[1.0, 0.0, 1.0], [2.0, 0.0, 1.0], [2.0, 0.0, 2.0], [1.0, 0.0, 2.0]]).unwrap().unwrap();
+        m.push_pull(pane, 0.1).unwrap();
+        let wall = (0..m.mesh().face_count()).find(|&f| m.mesh().has_holes(f)).unwrap();
+        let window: Vec<usize> = (0..m.mesh().face_count()).filter(|&f| f != wall).collect();
+        let inst = m.make_group(&window, &[], true).unwrap();
+        let def = m.instances()[inst].def;
+        m.set_glue_cut(def, true, true).unwrap();
+        assert!(m.definition(def).unwrap().glue);
+        let hole_x = |m: &Model| -> Vec<f64> {
+            let mesh = m.mesh().to_mesh();
+            let mut xs: Vec<f64> = mesh.holes.iter().flatten().flatten().map(|&v| mesh.positions[v as usize][0]).collect();
+            xs.sort_by(f64::total_cmp);
+            xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+            xs
+        };
+        assert_eq!(hole_x(&m), vec![1.0, 2.0], "the opening where it was drawn");
+        // moved 2 m along the wall: the opening goes with it
+        m.transform_all(&[], &[inst], &Xform::translation([2.0, 0.0, 0.0])).unwrap();
+        assert_eq!(hole_x(&m), vec![3.0, 4.0]);
+        assert_eq!(m.mesh().to_mesh().holes.iter().map(Vec::len).sum::<usize>(), 1, "one opening, not two");
+        // erased: the wall is whole again
+        m.erase_instances(&[inst]).unwrap();
+        assert!(m.mesh().to_mesh().holes.iter().all(|h| h.is_empty()));
     }
 
     #[test]

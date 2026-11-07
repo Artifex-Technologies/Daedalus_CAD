@@ -10,7 +10,8 @@
 //! s 0 1            a hidden seam: a face edge not drawn (version 2)
 //! c 2 200 80 40    face 2 painted red, green, blue (version 2)
 //! i 0 1 0 0 2  0 1 0 0  0 0 1 0     an instance of definition 0: three rows of its transform (version 3)
-//! def "Group#1" group               a definition: its own v, f, l, s, c, i lines up to "end" (version 3)
+//! def "Group#1" group               a definition: its own v, f, l, s, c, i lines up to "end" (version 3); a component
+//!                                   may add "glue" and "cut" (glued to faces, cutting an opening in the one it is on)
 //! end
 //! guide line 0 0 0 1 0 0            notes (version 3): guide point x y z, guide line x y z dx dy dz,
 //! dim 0 0 0 1 0 0 0 -0.3 0          dim a b offset, text point at "words", section point normal on|off (one line each, one on at most),
@@ -199,7 +200,9 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
                     Some("group") | None => false,
                     Some(o) => return Err(IoError::Parse(format!("line {n}: a definition is a group or a component, not {o:?}"))),
                 };
-                scene.defs.push(Definition { name, component, ctx: Context::default() });
+                // after the kind: "glue" and "cut" (a component glued to faces, cutting an opening in the one it is on)
+                let flag = |f: &str| rest.iter().skip(2).any(|w| w == f);
+                scene.defs.push(Definition { name, component, glue: flag("glue"), cut: flag("cut"), ctx: Context::default() });
                 block = Some(scene.defs.len() - 1);
             }
             "end" if v3 => {
@@ -340,7 +343,7 @@ pub fn write_scene(scene: &Scene) -> Vec<u8> {
     write_mesh(&mut s, &scene.root.mesh);
     write_instances(&mut s, &scene.root.instances);
     for d in &scene.defs {
-        s.push_str(&format!("def {} {}\n", quote(&d.name), if d.component { "component" } else { "group" }));
+        s.push_str(&format!("def {} {}{}{}\n", quote(&d.name), if d.component { "component" } else { "group" }, if d.glue { " glue" } else { "" }, if d.cut { " cut" } else { "" }));
         write_mesh(&mut s, &d.ctx.mesh);
         write_instances(&mut s, &d.ctx.instances);
         s.push_str("end\n");
@@ -446,9 +449,9 @@ mod tests {
     #[test]
     fn groups_components_and_notes_come_back() {
         let mut s = Scene::from_mesh(cube());
-        s.defs.push(Definition { name: "Shelf \"A\"".into(), component: true, ctx: Context { mesh: cube(), instances: vec![] } });
+        s.defs.push(Definition { name: "Shelf \"A\"".into(), component: true, glue: true, cut: true, ctx: Context { mesh: cube(), instances: vec![] } });
         let turn = Xform::from_fn(|p| [-p[1] + 2.0, p[0], p[2] + 0.5]);
-        s.defs.push(Definition { name: "Group#1".into(), component: false, ctx: Context { mesh: Mesh::new(), instances: vec![Instance { def: 0, xf: turn }] } });
+        s.defs.push(Definition { name: "Group#1".into(), component: false, glue: false, cut: false, ctx: Context { mesh: Mesh::new(), instances: vec![Instance { def: 0, xf: turn }] } });
         s.root.instances.push(Instance { def: 1, xf: Xform::translation([3.0, 0.0, 0.0]) });
         s.root.instances.push(Instance { def: 0, xf: Xform::IDENTITY });
         s.notes.guides = vec![Guide::Point([1.0, 2.0, 3.0]), Guide::Line([0.0; 3], [0.0, 1.0, 0.0])];

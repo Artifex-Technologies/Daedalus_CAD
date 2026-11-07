@@ -298,7 +298,7 @@ enum Op {
     /// Pie: the centre, the start of the arc (once set, it gives the radius), then the angle.
     Pie { plane: Plane, center: [f64; 3], start: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// Move: these vertices go from `base` to the cursor.
-    Move { t: Target, base: [f64; 3], cursor: Option<[f64; 3]>, axis: Option<u8> },
+    Move { t: Target, base: [f64; 3], cursor: Option<[f64; 3]>, axis: Option<u8>, glue: Option<[f64; 3]> },
     /// Rotate: about the plane's normal through `center`, from the `start` direction (once set) by `angle` radians.
     Rotate { t: Target, plane: Plane, center: [f64; 3], start: Option<[f64; 3]>, angle: f64 },
     /// Scale: uniformly about `anchor` (the corner of the bounding box opposite the grip), `start` being the grip.
@@ -753,8 +753,15 @@ impl Tools {
                     }
                 }
             }
-            Op::Move { cursor, axis, .. } => {
-                *cursor = marker.map(|m| m.0);
+            Op::Move { cursor, axis, base, glue, .. } => {
+                // a glued component slides in its face's plane
+                *cursor = marker.map(|m| match glue {
+                    Some(n) => {
+                        let d = sub(m.0, *base);
+                        sub(m.0, scale(*n, dot(d, *n)))
+                    }
+                    None => m.0,
+                });
                 *axis = match marker {
                     Some((_, Snap::OnAxis(a))) => Some(a),
                     _ => None,
@@ -919,15 +926,18 @@ impl Tools {
             (Tool::Move, Op::Idle) => {
                 let t = self.target(model, c).ok_or("select something to move, or point at a face or group")?;
                 if let Some(h) = c.hit {
-                    self.op = Op::Move { t, base: h.point, cursor: None, axis: None };
+                    // one glued component on its own: it stays on its face
+                    let glue = if t.faces.is_empty() && t.verts.is_empty() && t.inst.len() == 1 { model.glue_normal(t.inst[0]) } else { None };
+                    self.op = Op::Move { t, base: h.point, cursor: None, axis: None, glue };
                 }
             }
-            (Tool::Move, Op::Move { t, base, cursor, axis }) => match marker {
+            (Tool::Move, Op::Move { t, base, cursor, axis, glue }) => match marker {
                 Some((p, _)) => {
-                    let d = sub(p, base);
+                    let to = if glue.is_some() { cursor.unwrap_or(p) } else { p };
+                    let d = sub(to, base);
                     self.transform(model, &t, |q| add(q, d))?;
                 }
-                None => self.op = Op::Move { t, base, cursor, axis },
+                None => self.op = Op::Move { t, base, cursor, axis, glue },
             },
             (Tool::Rotate, Op::Idle) => {
                 let t = self.target(model, c).ok_or("select something to rotate, or point at a face or group")?;

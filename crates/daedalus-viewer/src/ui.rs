@@ -50,6 +50,8 @@ pub enum UiAction {
     OutlinerPick(usize),
     /// Entity Info on an arc or circle: its number of segments, or its radius (metres).
     CurveSegments(usize),
+    /// Entity Info on a component: glue to faces, cut opening.
+    GlueCut(bool, bool),
     CurveRadius(f64),
     EditGroup,
     CloseGroup,
@@ -87,7 +89,8 @@ pub enum Info {
     Curve { arc: bool, segments: usize, radius: String, length: String, editable: bool, key: u64 },
     Edge { length: String },
     Face { area: String, holes: usize },
-    Group { name: String, component: bool },
+    /// A group or component: its name, and for a component whether it glues to faces and cuts an opening.
+    Group { name: String, component: bool, glue: bool, cut: bool },
     /// Several things: how many.
     Many(usize),
 }
@@ -268,9 +271,19 @@ fn entity_info(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
                     row(ui, "Holes", &holes.to_string());
                 }
             }
-            Some(Info::Group { name, component }) => {
+            Some(Info::Group { name, component, glue, cut }) => {
                 ui.label(if *component { "Component" } else { "Group" });
                 row(ui, "Name", name);
+                if *component {
+                    let (mut g, mut c) = (*glue, *cut);
+                    let a = ui.checkbox(&mut g, "Glue to faces").on_hover_text("Moved, it stays on the face it sits on").clicked();
+                    let b = ui.checkbox(&mut c, "Cut opening").on_hover_text("Cuts a hole in that face where it touches it, as a window in a wall").clicked();
+                    if a || b {
+                        // cutting needs gluing; no glue, no cut
+                        let (g, c) = if b { (g || c, c) } else { (g, c && g) };
+                        actions.push(UiAction::GlueCut(g, c));
+                    }
+                }
             }
             Some(Info::Curve { arc, segments, radius, length, editable, key }) => {
                 ui.label(if *arc { "Arc" } else { "Circle" });

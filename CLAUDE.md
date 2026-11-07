@@ -135,6 +135,11 @@ the current state is:
   A Select click on a segment takes the whole curve. Entity Info (right-click menu or View menu; a panel on the right)
   shows a curve's radius, segments (both editable until it is pushed/pulled into walls, as in SketchUp) and length; an
   edge's length; a face's area and holes; a group's name. Right-click menu checked on screen 2026-11-06.
+- Loose ends done 2026-11-06: Offset outward (a ring face round the face), Follow Me with holes (tubes), several section
+  planes (one cuts; View > Section Planes), Scale grips per axis (corner / edge middle / face middle), Outliner (tray with
+  Entity Info), 3D Text in any installed font (`text3d::fonts`), component gluing (`core/src/opening.rs`: Glue to faces
+  keeps a component on its face when moved; Cut opening cuts a true hole where its edges touch a face, following it when
+  moved and gone when erased; `def ... component glue cut` in the file).
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

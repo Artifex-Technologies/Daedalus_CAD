@@ -743,7 +743,8 @@ impl State {
             }).sum();
             Some(ui::Info::Face { area: daedalus_core::units::format_area(area, units), holes: mesh.holes_of(f).len() })
         } else if inst.len() == 1 && faces.is_empty() && edges.is_empty() {
-            self.model.definition(inst[0]).map(|d| ui::Info::Group { name: d.name.clone(), component: d.component })
+            let def = self.model.instances().get(inst[0]).map(|i| i.def);
+            def.and_then(|d| self.model.definition(d)).map(|d| ui::Info::Group { name: d.name.clone(), component: d.component, glue: d.glue, cut: d.cut })
         } else if self.tools.has_selection() {
             Some(ui::Info::Many(faces.len() + edges.len() + inst.len()))
         } else {
@@ -1303,6 +1304,14 @@ impl State {
             }
             UiAction::CurveSegments(n) => self.reshape_curve(Some(n), None),
             UiAction::CurveRadius(r) => self.reshape_curve(None, Some(r)),
+            UiAction::GlueCut(glue, cut) => {
+                if let Some(def) = self.one_instance().and_then(|i| self.model.instances().get(i)).map(|i| i.def) {
+                    if let Err(e) = self.model.set_glue_cut(def, glue, cut) {
+                        self.message = Some(format!("Not changed: {e}."));
+                    }
+                    self.after_edit();
+                }
+            }
             UiAction::MakeComponent => self.make_group(true),
             UiAction::EditGroup => {
                 if let Some(i) = self.one_instance() {
