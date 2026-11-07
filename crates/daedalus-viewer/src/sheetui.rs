@@ -135,37 +135,50 @@ fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<U
         ui.label(RichText::new("None yet: the Flange tool (3D tab) adds one on an edge.").weak());
         return;
     }
-    egui::Grid::new(("sheet-flanges", s.key)).num_columns(5).spacing([4.0, 3.0]).show(ui, |ui| {
+    egui::Grid::new(("sheet-flanges", s.key)).num_columns(6).spacing([4.0, 3.0]).show(ui, |ui| {
         ui.label(RichText::new("#").weak().small());
         ui.label(RichText::new("Height").weak().small());
         ui.label(RichText::new("Angle").weak().small());
         ui.label(RichText::new("Position").weak().small());
+        ui.label(RichText::new("Bent").weak().small());
         ui.end_row();
-        for (i, &(h, a, pos)) in s.flanges.iter().enumerate() {
+        for (i, &(h, a, pos, down, hem)) in s.flanges.iter().enumerate() {
             let id = egui::Id::new(("sheet-flange", s.key, i));
-            let (mut th, mut ta, mut tp) = ui.data_mut(|d| d.get_temp::<(String, String, usize)>(id)).unwrap_or_else(|| (fmt(h), fmt(a), pos));
+            let (mut th, mut ta, mut tp, mut td) = ui.data_mut(|d| d.get_temp::<(String, String, usize, bool)>(id)).unwrap_or_else(|| (fmt(h), fmt(a), pos, down));
             ui.label(format!("{}", i + 1));
-            let r1 = ui.add(egui::TextEdit::singleline(&mut th).desired_width(60.0)).on_hover_text("Height from the outside of the bend, mm");
-            let r2 = ui.add(egui::TextEdit::singleline(&mut ta).desired_width(44.0)).on_hover_text("Bend angle, degrees (90: square)");
-            let mut changed_pos = false;
-            egui::ComboBox::from_id_salt((id, "pos")).selected_text(position_short(tp)).width(70.0).show_ui(ui, |ui| {
-                for (k, p) in FlangePosition::ALL.iter().enumerate() {
-                    if ui.selectable_label(tp == k, p.label()).clicked() {
-                        tp = k;
-                        changed_pos = true;
+            let r1 = ui.add(egui::TextEdit::singleline(&mut th).desired_width(56.0)).on_hover_text(if hem { "Hem length to its outer face, mm" } else { "Height from the outside of the bend, mm" });
+            let mut changed = false;
+            let mut r2 = None;
+            if hem {
+                ui.label(RichText::new("hem").weak());
+                ui.label("");
+            } else {
+                r2 = Some(ui.add(egui::TextEdit::singleline(&mut ta).desired_width(40.0)).on_hover_text("Bend angle, degrees (90: square)"));
+                egui::ComboBox::from_id_salt((id, "pos")).selected_text(position_short(tp)).width(64.0).show_ui(ui, |ui| {
+                    for (k, p) in FlangePosition::ALL.iter().enumerate() {
+                        if ui.selectable_label(tp == k, p.label()).clicked() {
+                            tp = k;
+                            changed = true;
+                        }
                     }
-                }
-            });
-            if ui.small_button("×").on_hover_text("Take the flange away").clicked() {
+                });
+            }
+            if ui.selectable_label(td, if td { "down" } else { "up" }).on_hover_text("Click to bend it the other way").clicked() {
+                td = !td;
+                changed = true;
+            }
+            if ui.small_button("×").on_hover_text("Take it away").clicked() {
                 actions.push(UiAction::SheetRemoveFlange(i));
             }
-            let enter = (r1.lost_focus() || r2.lost_focus()) && ui.input(|k| k.key_pressed(egui::Key::Enter));
-            if enter || changed_pos {
-                if let (Some(h), Some(a)) = (mm(&th), num(&ta)) {
-                    actions.push(UiAction::SheetFlange(i, h, a, tp));
+            let enter = (r1.lost_focus() || r2.as_ref().is_some_and(|r| r.lost_focus())) && ui.input(|k| k.key_pressed(egui::Key::Enter));
+            if enter || changed {
+                // a hem keeps its 180 degrees
+                let a = if hem { Some(180.0) } else { num(&ta) };
+                if let (Some(h), Some(a)) = (mm(&th), a) {
+                    actions.push(UiAction::SheetFlange(i, h, a, tp, td));
                 }
             }
-            ui.data_mut(|d| d.insert_temp(id, (th, ta, tp)));
+            ui.data_mut(|d| d.insert_temp(id, (th, ta, tp, td)));
             ui.end_row();
         }
     });
@@ -200,25 +213,44 @@ fn model_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiA
     });
     ui.label(RichText::new("New flanges:").weak());
     let id = egui::Id::new("flange-defaults");
-    let (h0, a0, p0) = v.flange_defaults;
-    let (mut th, mut ta, mut tp) = ui.data_mut(|d| d.get_temp::<(String, String, usize)>(id)).unwrap_or_else(|| (fmt(h0), fmt(a0), p0));
-    let mut changed = field(ui, "Height", &mut th, "From the outside of the bend, mm (Enter sets it)");
-    changed |= field(ui, "Angle", &mut ta, "Bend angle, degrees, 90 is square (Enter sets it)");
+    let (h0, a0, p0, d0, hem0) = v.flange_defaults;
+    let (mut th, mut ta, mut tp, mut td, mut thm) = ui.data_mut(|d| d.get_temp::<(String, String, usize, bool, bool)>(id)).unwrap_or_else(|| (fmt(h0), fmt(a0), p0, d0, hem0));
+    let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Position").weak());
-        for (k, p) in FlangePosition::ALL.iter().enumerate() {
-            if ui.selectable_label(tp == k, position_short(k)).on_hover_text(p.label()).clicked() {
-                tp = k;
+        ui.label(RichText::new("Kind").weak());
+        for (hem, name) in [(false, "Flange"), (true, "Hem")] {
+            if ui.selectable_label(thm == hem, name).on_hover_text(if hem { "Folded right back onto the sheet" } else { "Bent up to the angle" }).clicked() {
+                thm = hem;
+                changed = true;
+            }
+        }
+        ui.label(RichText::new("  Bent").weak());
+        for (down, name) in [(false, "Up"), (true, "Down")] {
+            if ui.selectable_label(td == down, name).on_hover_text("Up: toward the face the part was made from").clicked() {
+                td = down;
                 changed = true;
             }
         }
     });
+    changed |= field(ui, if thm { "Length" } else { "Height" }, &mut th, "From the outside of the bend, mm (Enter sets it)");
+    if !thm {
+        changed |= field(ui, "Angle", &mut ta, "Bend angle, degrees, 90 is square (Enter sets it)");
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Position").weak());
+            for (k, p) in FlangePosition::ALL.iter().enumerate() {
+                if ui.selectable_label(tp == k, position_short(k)).on_hover_text(p.label()).clicked() {
+                    tp = k;
+                    changed = true;
+                }
+            }
+        });
+    }
     if let (Some(h), Some(a)) = (mm(&th), num(&ta)) {
-        if changed && (h, a, tp) != (h0, a0, p0) && h > 0.0 && a > 0.0 && a <= 180.0 {
-            actions.push(UiAction::FlangeDefaults(h, a, tp));
+        if changed && (h, a, tp, td, thm) != (h0, a0, p0, d0, hem0) && h > 0.0 && a > 0.0 && a <= 180.0 {
+            actions.push(UiAction::FlangeDefaults(h, a, tp, td, thm));
         }
     }
-    ui.data_mut(|d| d.insert_temp(id, (th, ta, tp)));
+    ui.data_mut(|d| d.insert_temp(id, (th, ta, tp, td, thm)));
     ui.add_space(8.0);
     if ui.button("Export part as STEP…").on_hover_text("The bent part as an exact solid, for the fabricator or another CAD program").clicked() {
         actions.push(UiAction::ExportPartStep);
@@ -248,6 +280,16 @@ fn flat_tab(ui: &mut egui::Ui, s: &SheetView, actions: &mut Vec<UiAction>) {
             }
         });
     }
+    ui.add_space(6.0);
+    ui.strong("Shop checks");
+    if s.checks.is_empty() {
+        ui.label(RichText::new("Nothing a shop would usually query.").weak());
+    } else {
+        for c in &s.checks {
+            ui.label(RichText::new(format!("⚠ {c}")).color(Color32::from_rgb(214, 140, 30)));
+        }
+    }
+    ui.label(RichText::new("Rules of thumb only: your shop's own limits decide.").weak().small());
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         if ui.button("DXF (mm)…").on_hover_text("Outline and holes on layer CUT, bend centre lines on BEND, 1:1").clicked() {

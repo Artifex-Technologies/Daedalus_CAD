@@ -58,7 +58,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 294 tests pass (2026-11-06, 106 of them in daedalus-sheet). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 296 tests pass (2026-11-06, 108 of them in daedalus-sheet). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -185,9 +185,11 @@ the current state is:
   flat in the model, Flange tool, part STEP) and Flat pattern (blank with red bend lines, size, bend table, DXF in mm or
   inches: lines and true arcs on CUT, bend centre lines on BEND). Double-clicking a part opens the panel, not the
   geometry. File > Export STEP: parts exact, other closed groups/components as exact flat-faced solids (kernel sew), the
-  rest named as left out. Checked on screen 2026-11-06 (face -> part -> two flanges -> flat; blank sizes match hand
-  numbers). Not yet: editing values by typing was not driven on screen (no keys sent to the nested desktop), bend lines
-  on the flat part in 3D, hems/jogs/other SolidCraft features in the UI, converting a solid to sheet metal.
+  rest named as left out. Flanges bend up or down; hems (180 degrees, the rule's hem gap); the flat part in 3D shows its
+  bend lines; shop checks in the Flat pattern tab (rules of thumb, not a shop's limits: hole within 2.5T + R of a bend,
+  flange under 4T, radius under T). Checked on screen 2026-11-06 (face -> part -> two flanges -> flat; a hem; blank
+  sizes match hand numbers). Not yet: typing in the panel driven on screen (no keys sent to the nested desktop), jogs and
+  other SolidCraft features in the UI, converting a solid to sheet metal.
 - Next milestones: stress testing (own linear FEA: shells for sheet metal, voxels for solids; CalculiX only as an
   external program), constraints, more sheet-metal features in the UI.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),

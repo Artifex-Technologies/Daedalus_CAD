@@ -102,14 +102,21 @@ pub struct SheetPart {
     pub sheet: SheetBody,
 }
 
-/// An edge flange as the user asked for it.
+/// An edge flange (or a hem) as the user asked for it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FlangeAsked {
     /// The point picked on the edge (part mm).
     pub pick: [f64; 3],
+    /// A flange's height, or a hem's length to its outer face (mm).
     pub height: f64,
     pub angle_deg: f64,
     pub position: String,
+    /// Bent down, away from the face the part was made from (the other way round from the default).
+    #[serde(default)]
+    pub down: bool,
+    /// A flat hem (folded right back onto the sheet; the angle and position do not apply).
+    #[serde(default)]
+    pub hem: bool,
 }
 
 /// The kind a part's text names, so `Definition::part` can hold other kinds later.
@@ -122,6 +129,18 @@ pub fn is_sheet(text: &str) -> bool {
 
 fn invalid<T>(m: impl Into<String>) -> Result<T> {
     Err(DocError::Invalid(m.into()))
+}
+
+/// A flange or hem as asked, added to `sheet`.
+fn apply(sheet: &mut SheetBody, f: &FlangeAsked, rule: &RuleValues) -> Result<()> {
+    let pick = Vec3::new(f.pick[0], f.pick[1], f.pick[2]);
+    if f.hem {
+        sheet.add_hem(pick, f.height, rule.hem_gap, f.down)?;
+    } else {
+        let position = FlangePosition::from_key(&f.position).unwrap_or(FlangePosition::Inside);
+        sheet.add_flange(pick, f.height, f.angle_deg.to_radians(), rule.bend_radius, position.key(), f.down)?;
+    }
+    Ok(())
 }
 
 fn check_flange(height: f64, angle_deg: f64) -> Result<()> {
@@ -150,10 +169,7 @@ impl SheetPart {
         let rule = self.rule.checked()?;
         let mut sheet = sheet::base_flange("Part", &self.material, &rule, Plane::XY, self.region.clone());
         for (n, f) in self.flanges.iter().enumerate() {
-            let position = FlangePosition::from_key(&f.position).unwrap_or(FlangePosition::Inside);
-            sheet
-                .add_flange(Vec3::new(f.pick[0], f.pick[1], f.pick[2]), f.height, f.angle_deg.to_radians(), rule.bend_radius, position.key(), false)
-                .map_err(|e| DocError::Invalid(format!("flange {}: {e}", n + 1)))?;
+            apply(&mut sheet, f, &rule).map_err(|e| DocError::Invalid(format!("flange {}: {e}", n + 1)))?;
         }
         sheet.solid()?;
         self.sheet = sheet;
@@ -170,12 +186,12 @@ impl SheetPart {
         Ok(())
     }
 
-    /// Flange `i` changed (its height, angle or position). The part is unchanged if it fails.
-    pub fn set_flange(&mut self, i: usize, height: f64, angle_deg: f64, position: FlangePosition) -> Result<()> {
+    /// Flange `i` changed (its height, angle, position or direction). The part is unchanged if it fails.
+    pub fn set_flange(&mut self, i: usize, height: f64, angle_deg: f64, position: FlangePosition, down: bool) -> Result<()> {
         check_flange(height, angle_deg)?;
         let mut next = self.clone();
         let Some(f) = next.flanges.get_mut(i) else { return invalid("no such flange") };
-        (f.height, f.angle_deg, f.position) = (height, angle_deg, position.key().into());
+        (f.height, f.angle_deg, f.position, f.down) = (height, angle_deg, position.key().into(), down);
         next.rebuild()?;
         *self = next;
         Ok(())
@@ -212,13 +228,24 @@ impl SheetPart {
 
     /// Adds an edge flange on the part's edge nearest `pick` (part mm): `height` from the outer virtual sharp (mm),
     /// `angle_deg` bend angle (0…180), radius from the part's rule. The part is unchanged if it fails.
-    pub fn add_flange(&mut self, pick: [f64; 3], height: f64, angle_deg: f64, position: FlangePosition) -> Result<()> {
+    pub fn add_flange(&mut self, pick: [f64; 3], height: f64, angle_deg: f64, position: FlangePosition, down: bool) -> Result<()> {
         check_flange(height, angle_deg)?;
+        self.add(FlangeAsked { pick, height, angle_deg, position: position.key().into(), down, hem: false })
+    }
+
+    /// Adds a flat hem on the part's edge nearest `pick` (part mm): folded right back onto the sheet, `length` to its outer
+    /// face, the rule's hem gap inside. The part is unchanged if it fails.
+    pub fn add_hem(&mut self, pick: [f64; 3], length: f64, down: bool) -> Result<()> {
+        check_flange(length, 180.0)?;
+        self.add(FlangeAsked { pick, height: length, angle_deg: 180.0, position: FlangePosition::Inside.key().into(), down, hem: true })
+    }
+
+    fn add(&mut self, f: FlangeAsked) -> Result<()> {
         let mut sheet = self.sheet.clone();
-        sheet.add_flange(Vec3::new(pick[0], pick[1], pick[2]), height, angle_deg.to_radians(), self.rule.bend_radius, position.key(), false)?;
+        apply(&mut sheet, &f, &self.rule)?;
         sheet.solid()?;
         self.sheet = sheet;
-        self.flanges.push(FlangeAsked { pick, height, angle_deg, position: position.key().into() });
+        self.flanges.push(f);
         Ok(())
     }
 
@@ -228,12 +255,55 @@ impl SheetPart {
         let mut sheet = self.sheet.clone();
         sheet.flat = flat;
         let body = sheet.solid()?;
-        body_faces(&body)
+        let mut mesh = body_faces(&body)?;
+        if flat {
+            // the bend centre lines drawn on both faces of the blank, as the Flat pattern tab shows them
+            for b in self.sheet.bends() {
+                for z in [0.0, self.sheet.t] {
+                    let a = mesh.add_vertex([b.start.x / MM, b.start.y / MM, z / MM]);
+                    let c = mesh.add_vertex([b.end.x / MM, b.end.y / MM, z / MM]);
+                    mesh.lines.push([a, c]);
+                }
+            }
+        }
+        Ok(mesh)
     }
 
     /// The bends as the flat pattern's bend table: (angle degrees, inside radius mm, length mm).
     pub fn bend_table(&self) -> Vec<(f64, f64, f64)> {
         self.sheet.bends().iter().map(|b| (b.angle_deg, b.radius, b.length)).collect()
+    }
+
+    /// What a bending shop would likely query, by common rules of thumb (not any shop's own limits): a hole closer to a
+    /// bend than 2.5 x thickness + radius (it stretches out of round), a flange shorter than 4 x thickness (the press brake
+    /// cannot grip it), a bend radius tighter than the thickness (some materials crack).
+    pub fn shop_checks(&self) -> Vec<String> {
+        let (t, r) = (self.sheet.t, self.rule.bend_radius);
+        let mut out = Vec::new();
+        if r < t {
+            out.push(format!("Bend radius {} mm is tighter than the {} mm thickness: some materials crack.", fmt_mm(r), fmt_mm(t)));
+        }
+        for (i, f) in self.flanges.iter().enumerate() {
+            if !f.hem && f.height < 4.0 * t {
+                out.push(format!("Flange {} is {} mm high, under 4 x thickness ({} mm): it may be too short to bend.", i + 1, fmt_mm(f.height), fmt_mm(4.0 * t)));
+            }
+        }
+        let Ok(regions) = self.sheet.flat_regions() else { return out };
+        let bends = self.sheet.bends();
+        let near = 2.5 * t + r;
+        for region in &regions {
+            for (h, hole) in region.holes.iter().enumerate() {
+                let pts = sample_loop(hole);
+                for (k, b) in bends.iter().enumerate() {
+                    // from the hole's edge to the bend zone's edge
+                    let d = pts.iter().map(|p| dist_to_segment(*p, [b.start.x, b.start.y], [b.end.x, b.end.y])).fold(f64::INFINITY, f64::min) - b.allowance / 2.0;
+                    if d < near {
+                        out.push(format!("Hole {} is {} mm from bend {}: under 2.5 x thickness + radius ({} mm), it may pull out of shape.", h + 1, fmt_mm(d.max(0.0)), k + 1, fmt_mm(near)));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// The flat blank's size (mm).
@@ -467,6 +537,18 @@ fn loop_segments(mesh: &Mesh, lp: &[u32], to2: &dyn Fn([f64; 3]) -> Vec2) -> Vec
     segs
 }
 
+fn fmt_mm(x: f64) -> String {
+    let s = format!("{x:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn dist_to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    ((p[0] - a[0] - t * dx).powi(2) + (p[1] - a[1] - t * dy).powi(2)).sqrt()
+}
+
 /// The total turn through a list of angles, each step taken the short way round.
 fn wrap_sum(angles: &[f64]) -> f64 {
     use std::f64::consts::{PI, TAU};
@@ -543,7 +625,7 @@ mod tests {
     #[test]
     fn a_flange_bends_up_and_the_flat_pattern_goes_out_with_arcs_and_a_bend_line() {
         let (mut part, _) = part_from_face(&plate_face(), 0, "Steel 2 mm", steel2()).unwrap();
-        part.add_flange([50.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Inside).unwrap();
+        part.add_flange([50.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Inside, false).unwrap();
         assert_eq!(part.flanges.len(), 1);
         let s = size(&part.faces(false).unwrap());
         assert!((s[0] - 0.1).abs() < 1e-9 && (s[1] - 0.05).abs() < 1e-9 && (s[2] - 0.03).abs() < 1e-6, "folded {s:?}");
@@ -551,8 +633,15 @@ mod tests {
         let ba = std::f64::consts::FRAC_PI_2 * (2.0 + 0.44 * 2.0);
         let (w, h) = part.flat_size().unwrap();
         assert!((w - 100.0).abs() < 1e-9 && (h - (46.0 + 26.0 + ba)).abs() < 1e-6, "{w} x {h}");
-        let flat = size(&part.faces(true).unwrap());
+        let flat_faces = part.faces(true).unwrap();
+        let flat = size(&flat_faces);
         assert!((flat[2] - 0.002).abs() < 1e-9 && (flat[1] * 1000.0 - h).abs() < 1e-6, "flat {flat:?}");
+        // the bend line on top and bottom, across the whole blank, inside it
+        assert_eq!(flat_faces.lines.len(), 2);
+        let [a, b] = flat_faces.lines[0];
+        let (pa, pb) = (flat_faces.positions[a as usize], flat_faces.positions[b as usize]);
+        // inside position: the panel edge 4 mm in (T + R), the bend's centre half the allowance past it
+        assert!(((pb[0] - pa[0]).abs() - 0.1).abs() < 1e-9 && pa[1] == pb[1] && (pa[1] * 1000.0 - (4.0 - ba / 2.0)).abs() < 1e-9, "{pa:?} {pb:?}");
         assert_eq!(part.bend_table().len(), 1);
         let dxf = part.flat_dxf(Units::Millimeters).unwrap();
         let count = |n: &str| dxf.lines().filter(|l| *l == n).count();
@@ -561,15 +650,15 @@ mod tests {
         assert_eq!(count("BEND"), 1 + 1, "the bend line and its layer");
         // a bad flange leaves the part as it was
         let before = part.clone();
-        assert!(part.add_flange([50.0, 0.0, 2.0], -5.0, 90.0, FlangePosition::Inside).is_err());
-        assert!(part.add_flange([50.0, 0.0, 2.0], 10.0, 200.0, FlangePosition::Inside).is_err());
+        assert!(part.add_flange([50.0, 0.0, 2.0], -5.0, 90.0, FlangePosition::Inside, false).is_err());
+        assert!(part.add_flange([50.0, 0.0, 2.0], 10.0, 200.0, FlangePosition::Inside, false).is_err());
         assert_eq!(part, before);
     }
 
     #[test]
     fn a_placed_part_goes_out_as_one_exact_step_solid_in_mm() {
         let (mut part, _) = part_from_face(&plate_face(), 0, "Steel 2 mm", steel2()).unwrap();
-        part.add_flange([50.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Inside).unwrap();
+        part.add_flange([50.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Inside, false).unwrap();
         // placed 1 m along X and turned a quarter about Z
         let place = Xform([[0.0, -1.0, 0.0, 1.0], [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]);
         let body = part.solid_placed(&place).unwrap();
@@ -606,13 +695,13 @@ mod tests {
     #[test]
     fn flanges_change_and_go_and_a_new_rule_keeps_them() {
         let (mut part, _) = part_from_face(&plate_face(), 0, "Steel 2 mm", steel2()).unwrap();
-        part.add_flange([50.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Inside).unwrap();
-        part.add_flange([50.0, 50.0, 2.0], 20.0, 90.0, FlangePosition::Inside).unwrap();
+        part.add_flange([50.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Inside, false).unwrap();
+        part.add_flange([50.0, 50.0, 2.0], 20.0, 90.0, FlangePosition::Inside, false).unwrap();
         let h = |p: &SheetPart| p.flat_size().unwrap().1;
         let ba = std::f64::consts::FRAC_PI_2 * (2.0 + 0.44 * 2.0);
         assert!((h(&part) - (26.0 + 42.0 + 16.0 + 2.0 * ba)).abs() < 1e-6, "{}", h(&part));
         // the first flange 40 high: 10 more in the blank
-        part.set_flange(0, 40.0, 90.0, FlangePosition::Inside).unwrap();
+        part.set_flange(0, 40.0, 90.0, FlangePosition::Inside, false).unwrap();
         assert!((h(&part) - (36.0 + 42.0 + 16.0 + 2.0 * ba)).abs() < 1e-6, "{}", h(&part));
         // a softer bend radius changes both bends, the flanges stay
         part.set_rule("Steel 2 mm R3", RuleValues { bend_radius: 3.0, ..part.rule }).unwrap();
@@ -624,11 +713,66 @@ mod tests {
         assert_eq!(part.bend_table().len(), 1);
         // bad changes leave it alone
         let before = part.clone();
-        assert!(part.set_flange(0, 0.0, 90.0, FlangePosition::Inside).is_err());
+        assert!(part.set_flange(0, 0.0, 90.0, FlangePosition::Inside, false).is_err());
         assert!(part.set_rule("x", RuleValues { k_factor: 2.0, ..part.rule }).is_err());
         assert!(part.remove_flange(5).is_err());
         assert_eq!(part, before);
         // the text round trip rebuilds the same
+        let mut back = SheetPart::from_text(&part.to_text()).unwrap();
+        back.rebuild().unwrap();
+        assert_eq!(back.sheet, part.sheet);
+    }
+
+    #[test]
+    fn shop_checks_name_a_hole_near_a_bend_a_short_flange_and_a_tight_radius() {
+        // the 20 mm hole is centred 25 mm in from the y = 0 edge: its edge 15 mm from that edge
+        let (mut part, _) = part_from_face(&plate_face(), 0, "Steel 2 mm", steel2()).unwrap();
+        assert!(part.shop_checks().is_empty(), "{:?}", part.shop_checks());
+        part.add_flange([50.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Inside, false).unwrap();
+        assert!(part.shop_checks().is_empty(), "15 mm is far enough from the bend: {:?}", part.shop_checks());
+        // a flange on the x = 0 edge: the hole's edge is 20 mm from it, minus the inside setback
+        let mut near = part.clone();
+        near.add_flange([0.0, 25.0, 2.0], 30.0, 90.0, FlangePosition::Inside, false).unwrap();
+        assert!(near.shop_checks().is_empty(), "{:?}", near.shop_checks());
+        // a 6 mm flange is under 4 x 2 mm
+        let mut short = part.clone();
+        short.add_flange([50.0, 50.0, 2.0], 6.0, 90.0, FlangePosition::Inside, false).unwrap();
+        let c = short.shop_checks();
+        assert!(c.len() == 1 && c[0].contains("Flange 2 is 6 mm high"), "{c:?}");
+        // a hole 3 mm from the plate's edge, then a flange there
+        let mut m = plate_face();
+        for p in &mut m.positions[4..] {
+            p[0] += 0.0;
+            p[1] -= 0.012; // centre at y = 13 mm: its edge 3 mm in
+        }
+        let (mut close, _) = part_from_face(&m, 0, "Steel 2 mm", steel2()).unwrap();
+        close.add_flange([50.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Outside, false).unwrap();
+        let c = close.shop_checks();
+        assert!(c.iter().any(|s| s.starts_with("Hole 1 is") && s.contains("bend 1")), "{c:?}");
+        // a radius under the thickness
+        close.set_rule("Tight", RuleValues { bend_radius: 1.0, ..close.rule }).unwrap();
+        assert!(close.shop_checks().iter().any(|s| s.starts_with("Bend radius 1 mm")), "{:?}", close.shop_checks());
+    }
+
+    #[test]
+    fn a_flange_bends_down_and_a_hem_folds_flat() {
+        let (mut part, _) = part_from_face(&plate_face(), 0, "Steel 2 mm", steel2()).unwrap();
+        part.add_flange([50.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Inside, true).unwrap();
+        let m = part.faces(false).unwrap();
+        let z: Vec<f64> = m.positions.iter().map(|p| p[2]).collect();
+        let (lo, hi) = (z.iter().cloned().fold(f64::MAX, f64::min), z.iter().cloned().fold(f64::MIN, f64::max));
+        assert!((hi - 0.002).abs() < 1e-9 && (lo + 0.028).abs() < 1e-6, "down: the flange hangs below, {lo} .. {hi}");
+        // a hem on the far edge: folded back, the part no taller than two sheets and the gap
+        part.add_hem([50.0, 50.0, 2.0], 10.0, false).unwrap();
+        assert_eq!(part.bend_table().len(), 2);
+        let m = part.faces(false).unwrap();
+        let hi = m.positions.iter().map(|p| p[2]).fold(f64::MIN, f64::max);
+        assert!(hi <= 0.004 + 0.0001 + 1e-9, "the hem lies flat on the sheet: top at {hi}");
+        // the hem changed through the same path as a flange: longer, and still a hem
+        part.set_flange(1, 12.0, 180.0, FlangePosition::Inside, false).unwrap();
+        assert!(part.flanges[1].hem && part.flanges[1].height == 12.0);
+        assert_eq!(part.bend_table().len(), 2);
+        // both survive a rebuild (as after reading the file back)
         let mut back = SheetPart::from_text(&part.to_text()).unwrap();
         back.rebuild().unwrap();
         assert_eq!(back.sheet, part.sheet);

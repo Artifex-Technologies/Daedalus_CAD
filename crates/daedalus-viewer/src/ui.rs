@@ -96,11 +96,12 @@ pub enum UiAction {
     SheetRule(f64, f64, f64, usize),
     /// The selected part shown unfolded (true) or folded.
     SheetFlat(bool),
-    /// Flange `0` of the selected part changed to height (mm), angle (degrees), position (index into FlangePosition::ALL).
-    SheetFlange(usize, f64, f64, usize),
+    /// Flange `0` of the selected part changed to height (mm), angle (degrees), position (index into FlangePosition::ALL),
+    /// bent down.
+    SheetFlange(usize, f64, f64, usize, bool),
     SheetRemoveFlange(usize),
-    /// What the Flange tool adds: height (mm), angle (degrees), position.
-    FlangeDefaults(f64, f64, usize),
+    /// What the Flange tool adds: height (mm), angle (degrees), position, bent down, a hem.
+    FlangeDefaults(f64, f64, usize, bool, bool),
     /// The selected part's flat pattern as DXF (true: inches), and the part alone as STEP.
     ExportFlatDxf(bool),
     ExportPartStep,
@@ -130,8 +131,8 @@ pub struct SheetView {
     pub k_factor: f64,
     pub bend_radius: f64,
     pub flat: bool,
-    /// Each flange: height, angle (degrees), position (index into FlangePosition::ALL).
-    pub flanges: Vec<(f64, f64, usize)>,
+    /// Each flange: height, angle (degrees), position (index into FlangePosition::ALL), bent down, a hem.
+    pub flanges: Vec<(f64, f64, usize, bool, bool)>,
     /// The base outline and holes (Drawing tab) and the flat pattern's loops and bend centre lines (Flat pattern tab).
     pub base: Vec<Vec<[f64; 2]>>,
     pub flat_loops: Vec<Vec<[f64; 2]>>,
@@ -139,6 +140,8 @@ pub struct SheetView {
     pub flat_size: Option<(f64, f64)>,
     /// The bend table: angle (degrees), inside radius, length.
     pub bends: Vec<(f64, f64, f64)>,
+    /// What a bending shop would likely query (rules of thumb).
+    pub checks: Vec<String>,
     /// Changes with the part (so half-typed values are dropped when it changes).
     pub key: u64,
 }
@@ -194,12 +197,12 @@ pub struct UiView<'a> {
     pub dc: Option<DcView>,
     pub dc_out: &'a std::cell::RefCell<Option<Vec<daedalus_core::dynamic::Attribute>>>,
     /// The Sheet Metal panel: open, its tab, the selected part (if one is), whether one face is selected (a part can be
-    /// made of it), and what the Flange tool adds (height mm, angle, position).
+    /// made of it), and what the Flange tool adds (height mm, angle, position, down, hem).
     pub sheet_open: bool,
     pub sheet_tab: usize,
     pub sheet: Option<SheetView>,
     pub face_for_part: bool,
-    pub flange_defaults: (f64, f64, usize),
+    pub flange_defaults: (f64, f64, usize, bool, bool),
     /// The Outliner is open, and its rows: depth, name, component, selected, open for editing.
     pub outliner_open: bool,
     pub outline: Vec<(usize, String, bool, bool, bool)>,

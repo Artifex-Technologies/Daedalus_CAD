@@ -117,7 +117,7 @@ mod tests {
         plate.add_face(vec![0, 1, 2, 3]);
         let rule = RuleValues { k_factor: 0.44, bend_radius: 2.0, ..RuleValues::steel(2.0) };
         let (mut p, place) = part_from_face(&plate, 0, "Steel", rule).unwrap();
-        p.add_flange([50.0, 0.0, 2.0], 20.0, 90.0, FlangePosition::Inside).unwrap();
+        p.add_flange([50.0, 0.0, 2.0], 20.0, 90.0, FlangePosition::Inside, false).unwrap();
         let mut scene = Scene::default();
         let def = |name: &str, part: Option<String>, mesh: Mesh| Definition {
             name: name.into(),

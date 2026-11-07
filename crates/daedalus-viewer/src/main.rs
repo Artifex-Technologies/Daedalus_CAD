@@ -77,7 +77,7 @@ struct State {
     /// The Sheet Metal panel is open, its tab, and what the Flange tool adds (height mm, angle degrees, position).
     sheet_open: bool,
     sheet_tab: usize,
-    flange_defaults: (f64, f64, usize),
+    flange_defaults: (f64, f64, usize, bool, bool),
     /// The selected part as the panel shows it, for the model state and selection it was made for.
     sheet_cache: Option<(u64, Option<ui::SheetView>)>,
     /// The flat pattern DXF being saved is in inches.
@@ -221,7 +221,7 @@ impl State {
             texture_colors: Vec::new(),
             sheet_open: false,
             sheet_tab: 0,
-            flange_defaults: (20.0, 90.0, 0),
+            flange_defaults: (20.0, 90.0, 0, false, false),
             sheet_cache: None,
             dxf_inches: false,
             outliner_open: false,
@@ -905,13 +905,17 @@ impl State {
                 flanges: p
                     .flanges
                     .iter()
-                    .map(|f| (f.height, f.angle_deg, daedalus_sheet::part::FlangePosition::ALL.iter().position(|q| Some(*q) == daedalus_sheet::part::FlangePosition::from_key(&f.position)).unwrap_or(0)))
+                    .map(|f| {
+                        let pos = daedalus_sheet::part::FlangePosition::ALL.iter().position(|q| Some(*q) == daedalus_sheet::part::FlangePosition::from_key(&f.position)).unwrap_or(0);
+                        (f.height, f.angle_deg, pos, f.down, f.hem)
+                    })
                     .collect(),
                 base,
                 flat_loops,
                 bend_lines,
                 flat_size: p.flat_size().ok(),
                 bends: p.bend_table(),
+                checks: p.shop_checks(),
                 key,
             }
         });
@@ -989,14 +993,18 @@ impl State {
         self.tools.instances = vec![i];
         let local = back.apply(point);
         let pick = [local[0] * 1000.0, local[1] * 1000.0, local[2] * 1000.0];
-        let (h, a, pos) = self.flange_defaults;
+        let (h, a, pos, down, hem) = self.flange_defaults;
         let position = FlangePosition::ALL[pos.min(FlangePosition::ALL.len() - 1)];
         let flat = self.sheet_part().is_some_and(|p| p.2.shown_flat);
         if flat {
             self.message = Some("Flange: show the part bent first (Sheet Metal panel, 3D tab).".into());
             return;
         }
-        self.change_part("Flange", |p| p.add_flange(pick, h, a, position));
+        if hem {
+            self.change_part("Hem", |p| p.add_hem(pick, h, down));
+        } else {
+            self.change_part("Flange", |p| p.add_flange(pick, h, a, position, down));
+        }
         self.sheet_open = true;
     }
 
@@ -1874,12 +1882,12 @@ impl State {
                 p.shown_flat = flat;
                 Ok(())
             }),
-            UiAction::SheetFlange(i, h, a, pos) => {
+            UiAction::SheetFlange(i, h, a, pos, down) => {
                 let position = daedalus_sheet::part::FlangePosition::ALL[pos.min(2)];
-                self.change_part("Flange", |p| p.set_flange(i, h, a, position));
+                self.change_part("Flange", |p| p.set_flange(i, h, a, position, down));
             }
             UiAction::SheetRemoveFlange(i) => self.change_part("Flange", |p| p.remove_flange(i)),
-            UiAction::FlangeDefaults(h, a, pos) => self.flange_defaults = (h, a, pos),
+            UiAction::FlangeDefaults(h, a, pos, down, hem) => self.flange_defaults = (h, a, pos, down, hem),
         }
         self.window.request_redraw();
     }
