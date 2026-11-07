@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# a newer push makes the run for an older one moot
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   arch:
     name: Arch Linux
@@ -13,6 +18,8 @@ jobs:
       - name: Install toolchain
         run: pacman -Syu --noconfirm base-devel git rust
       - uses: actions/checkout@v4
+      # the exact-solid kernel (daedalus-sheet) is most of the build: keep compiled dependencies between runs
+      - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace --locked
       - name: Test
@@ -23,6 +30,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace --locked
       - name: Test
