@@ -129,6 +129,7 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f64) -> (Mesh, Vec<usize>) {
         groups.entry(r).or_default().push(fi);
     }
     let mut faces: Vec<Vec<u32>> = vec![];
+    let mut holes: Vec<Vec<Vec<u32>>> = vec![];
     let mut colors: Vec<Option<[u8; 3]>> = vec![];
     let mut map = vec![0usize; mesh.faces.len()];
     for members in groups.values() {
@@ -141,12 +142,15 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f64) -> (Mesh, Vec<usize>) {
                     map[i] = faces.len();
                 }
                 faces.push(loop_);
+                // the holes of the faces joined, all in the one face now
+                holes.push(members.iter().flat_map(|&i| mesh.holes_of(i).iter().cloned()).collect());
                 colors.push(mesh.color_of(members[0]));
             }
             None => {
                 for &i in members {
                     map[i] = faces.len();
                     faces.push(mesh.faces[i].clone());
+                    holes.push(mesh.holes_of(i).to_vec());
                     colors.push(mesh.color_of(i));
                 }
             }
@@ -154,7 +158,7 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f64) -> (Mesh, Vec<usize>) {
     }
     // a point in the middle of a straight edge, used by no other edge, goes
     let mut neighbours: HashMap<u32, Vec<u32>> = HashMap::new();
-    for f in &faces {
+    for f in faces.iter().chain(holes.iter().flatten()) {
         for i in 0..f.len() {
             let (a, b) = (f[i], f[(i + 1) % f.len()]);
             neighbours.entry(a).or_default().push(b);
@@ -175,7 +179,7 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f64) -> (Mesh, Vec<usize>) {
         let (l1, l2) = (len(d1), len(d2));
         l1 > 0.0 && l2 > 0.0 && len(cross(d1, d2)) <= tol * (l1 + l2) && dot(d1, d2) > 0.0
     };
-    for f in faces.iter_mut() {
+    for f in faces.iter_mut().chain(holes.iter_mut().flatten()) {
         if f.len() > 3 {
             let keep: Vec<u32> = f.iter().copied().filter(|&v| !straight(v)).collect();
             if keep.len() >= 3 {
@@ -185,7 +189,7 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f64) -> (Mesh, Vec<usize>) {
     }
     // only the vertices still used, numbered in their old order
     let mut used = vec![false; mesh.positions.len()];
-    for f in &faces {
+    for f in faces.iter().chain(holes.iter().flatten()) {
         for &v in f {
             used[v as usize] = true;
         }
@@ -207,6 +211,7 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f64) -> (Mesh, Vec<usize>) {
     }
     out.lines = mesh.lines.iter().map(|l| l.map(|v| renumber[v as usize])).collect();
     out.colors = colors;
+    out.holes = holes.into_iter().map(|hs| hs.into_iter().map(|h| h.iter().map(|&v| renumber[v as usize]).collect()).collect()).collect();
     out.seams = mesh.seams.iter().map(|l| l.map(|v| renumber[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
     (out, map)
 }

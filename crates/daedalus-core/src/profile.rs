@@ -24,7 +24,7 @@ pub fn inside(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
 }
 
 /// Faces for the solid parts of `outlines` (closed, each listed once round, any winding), laid on `plane`, all facing the
-/// plane's normal. A face with a hole is two faces joined by hidden seams, as the Line tool makes it.
+/// plane's normal. A face with a hole (the inside of an O) is one face with that hole, as the Line tool makes it.
 pub fn faces(outlines: &[Vec<[f64; 2]>], plane: &Plane) -> Result<Mesh, TopologyError> {
     let rings: Vec<&Vec<[f64; 2]>> = outlines.iter().filter(|r| r.len() >= 3).collect();
     // how many other outlines hold each one: outsides first, then holes, then islands, so each is drawn into what holds it
@@ -42,7 +42,7 @@ pub fn faces(outlines: &[Vec<[f64; 2]>], plane: &Plane) -> Result<Mesh, Topology
     let mut m = h.to_mesh();
     let open: Vec<usize> = (0..m.faces.len())
         .filter(|&f| {
-            let tri = crate::triangulate::triangulate(&m.positions, &m.faces[f]);
+            let tri = m.triangulate_face(f);
             let Some(t) = tri.first() else { return false };
             let c = t.iter().fold([0.0f64; 3], |s, &v| {
                 let p = m.positions[v as usize];
@@ -57,10 +57,12 @@ pub fn faces(outlines: &[Vec<[f64; 2]>], plane: &Plane) -> Result<Mesh, Topology
     }
     m.lines.clear();
     // every face toward the plane's normal
-    for f in &mut m.faces {
-        let n = newell(&m.positions, f);
+    for f in 0..m.faces.len() {
+        let n = newell(&m.positions, &m.faces[f]);
         if n[0] * plane.normal[0] + n[1] * plane.normal[1] + n[2] * plane.normal[2] < 0.0 {
-            f.reverse();
+            m.faces[f].reverse();
+            let holes: Vec<Vec<u32>> = m.holes_of(f).iter().map(|h| h.iter().rev().copied().collect()).collect();
+            m.set_holes(f, holes);
         }
     }
     let edges: std::collections::HashSet<(u32, u32)> = m.edges().into_iter().collect();
@@ -92,19 +94,21 @@ pub fn extrude(cap: &Mesh, offset: [f64; 3], smooth: f64) -> Mesh {
         nn[0] * offset[0] + nn[1] * offset[1] + nn[2] * offset[2] >= 0.0
     });
     let up = up.unwrap_or(true);
-    for f in &cap.faces {
-        let moved: Vec<u32> = f.iter().map(|v| v + n).collect();
-        if up {
-            m.faces.push(f.iter().rev().copied().collect());
-            m.faces.push(moved);
-        } else {
-            m.faces.push(f.clone());
-            m.faces.push(moved.into_iter().rev().collect());
+    // the bottom and the moved top, each with its holes
+    for f in 0..cap.faces.len() {
+        let loops: Vec<Vec<u32>> = cap.loops(f).cloned().collect();
+        let moved: Vec<Vec<u32>> = loops.iter().map(|r| r.iter().map(|v| v + n).collect()).collect();
+        let rev = |rs: &[Vec<u32>]| -> Vec<Vec<u32>> { rs.iter().map(|r| r.iter().rev().copied().collect()).collect() };
+        let (bottom, top) = if up { (rev(&loops), moved) } else { (loops, rev(&moved)) };
+        for mut rings in [bottom, top] {
+            let outline = rings.remove(0);
+            m.faces.push(outline);
+            let k = m.faces.len() - 1;
+            m.set_holes(k, rings);
         }
     }
-    // the outline's edges: those only one face uses
-    let directed: std::collections::HashSet<(u32, u32)> =
-        cap.faces.iter().flat_map(|f| (0..f.len()).map(move |i| (f[i], f[(i + 1) % f.len()]))).collect();
+    // the outline's edges, round the outside and round each hole: those only one face uses
+    let directed: std::collections::HashSet<(u32, u32)> = cap.face_edges().map(|(_, a, b)| (a, b)).collect();
     let border: Vec<(u32, u32)> = directed.iter().copied().filter(|&(a, b)| !directed.contains(&(b, a))).collect();
     let mut walls: Vec<(u32, u32)> = Vec::new();
     for &(a, b) in &border {
@@ -154,10 +158,12 @@ mod tests {
         let area: f64 = cap
             .faces
             .iter()
-            .map(|f| {
+            .enumerate()
+            .map(|(i, f)| {
                 let n = newell(&cap.positions, f);
                 assert!(n[2] > 0.0, "every face looks up");
-                n[2] / 2.0
+                // its holes, wound the other way, take their area off
+                n[2] / 2.0 + cap.holes_of(i).iter().map(|h| newell(&cap.positions, h)[2] / 2.0).sum::<f64>()
             })
             .sum();
         assert!((area - (81.0 - 25.0 + 1.0)).abs() < 1e-3, "area {area}");

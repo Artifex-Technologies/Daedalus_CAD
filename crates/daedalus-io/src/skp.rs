@@ -22,7 +22,6 @@
 
 use crate::IoError;
 use daedalus_core::scene::{Context, Definition, Instance, Scene, Xform};
-use daedalus_core::sketch::Plane;
 use daedalus_core::Mesh;
 use std::collections::{HashMap, HashSet};
 
@@ -177,7 +176,25 @@ pub fn read(bytes: &[u8]) -> Result<Scene, IoError> {
 /// Polygons ready to add: vertex positions (indices into a shared list), each with its colour.
 struct Poly {
     ring: Vec<u32>,
+    /// Its openings, wound the other way round.
+    holes: Vec<Vec<u32>>,
     color: Option<[u8; 3]>,
+}
+
+impl Poly {
+    /// Its edges, outline and holes, as directed pairs (turned round with `rev`).
+    fn edges(&self, rev: bool) -> impl Iterator<Item = (u32, u32)> + '_ {
+        std::iter::once(&self.ring).chain(&self.holes).flat_map(move |r| (0..r.len()).map(move |i| if rev { (r[(i + 1) % r.len()], r[i]) } else { (r[i], r[(i + 1) % r.len()]) }))
+    }
+
+    /// Turned round: the outline and every hole.
+    fn reversed(mut self) -> Poly {
+        self.ring.reverse();
+        for h in &mut self.holes {
+            h.reverse();
+        }
+        self
+    }
 }
 
 /// Shared vertex list that joins points closer than a hundredth of a millimetre.
@@ -211,8 +228,8 @@ fn newell(positions: &[[f64; 3]], ring: &[u32]) -> [f64; 3] {
     n
 }
 
-/// One SketchUp face as Daedalus polygons (a face with holes becomes the faces that cover it, joined by hidden seams).
-fn face_polys(b: &Block, f: &FaceIn, points: &mut Points, colors: &HashMap<i64, [u8; 3]>, seams: &mut Vec<[u32; 2]>) -> Vec<Poly> {
+/// One SketchUp face as a Daedalus face (with its holes, if it has any).
+fn face_polys(b: &Block, f: &FaceIn, points: &mut Points, colors: &HashMap<i64, [u8; 3]>) -> Vec<Poly> {
     let color = colors.get(&f.material).copied();
     if f.rings.len() == 1 {
         let mut ring: Vec<u32> = f.rings[0].iter().map(|&i| points.add(b.positions[i as usize])).collect();
@@ -220,61 +237,98 @@ fn face_polys(b: &Block, f: &FaceIn, points: &mut Points, colors: &HashMap<i64, 
         while ring.len() > 1 && ring.first() == ring.last() {
             ring.pop();
         }
+        // a corner may come twice (a pinched outline), an edge may not
         let distinct: HashSet<u32> = ring.iter().copied().collect();
-        if distinct.len() < 3 || distinct.len() != ring.len() {
+        let edges: HashSet<(u32, u32)> = (0..ring.len()).map(|i| (ring[i], ring[(i + 1) % ring.len()])).collect();
+        let doubled = (0..ring.len()).any(|i| edges.contains(&(ring[(i + 1) % ring.len()], ring[i])));
+        if distinct.len() < 3 || edges.len() != ring.len() || doubled {
             return Vec::new();
         }
         let n = newell(&points.positions, &ring);
         if n[0] * f.normal[0] + n[1] * f.normal[1] + n[2] * f.normal[2] < 0.0 {
             ring.reverse();
         }
-        return vec![Poly { ring, color }];
+        return vec![Poly { ring, holes: Vec::new(), color }];
     }
-    // holes: cut one by one into the face, each pair of seams keeping clear of the holes still to come; when that cannot
-    // be done (a hole touching the outline or another hole), the outlines are covered as Daedalus covers them (core profile)
-    if let Some(polys) = cut_holes(b, f, points, color, seams) {
-        return polys;
-    }
-    let first = b.positions[f.rings[0][0] as usize];
-    let normal = if f.normal == [0.0; 3] { newell(&b.positions, &f.rings[0]) } else { f.normal };
-    let Some(plane) = Plane::from_point_normal(first, normal) else { return Vec::new() };
-    let outlines: Vec<Vec<[f64; 2]>> = f.rings.iter().map(|r| r.iter().map(|&i| plane.to_local(b.positions[i as usize])).collect()).collect();
-    let Ok(cap) = daedalus_core::profile::faces(&outlines, &plane) else { return Vec::new() };
-    let map: Vec<u32> = cap.positions.iter().map(|&p| points.add(p)).collect();
-    seams.extend(cap.seams.iter().map(|s| s.map(|v| map[v as usize])));
-    cap.faces.iter().map(|ring| Poly { ring: ring.iter().map(|&v| map[v as usize]).collect(), color }).collect()
-}
-
-/// A face with holes as the faces that cover it: the outline, a hole cut at a time (`imprint::cut_hole_avoiding`), each
-/// filling face removed again. None when a hole cannot be cut.
-fn cut_holes(b: &Block, f: &FaceIn, points: &mut Points, color: Option<[u8; 3]>, seams: &mut Vec<[u32; 2]>) -> Option<Vec<Poly>> {
-    let rings: Vec<Vec<u32>> = f.rings.iter().map(|r| {
-        let mut r: Vec<u32> = r.iter().map(|&i| points.add(b.positions[i as usize])).collect();
-        r.dedup();
-        while r.len() > 1 && r.first() == r.last() {
-            r.pop();
+    // a face with holes: the outline facing as SketchUp says, each hole wound the other way
+    let rings: Vec<Vec<u32>> = f
+        .rings
+        .iter()
+        .map(|r| {
+            let mut r: Vec<u32> = r.iter().map(|&i| points.add(b.positions[i as usize])).collect();
+            r.dedup();
+            while r.len() > 1 && r.first() == r.last() {
+                r.pop();
+            }
+            r
+        })
+        .collect();
+    let distinct = |r: &Vec<u32>| r.iter().collect::<HashSet<_>>().len() == r.len();
+    // a hole touching the outline at one corner: the outline runs into it there and back out (that corner twice), as
+    // SketchUp's own face does
+    let mut rings = rings;
+    let mut spliced = Vec::new();
+    for (k, h) in rings.iter().enumerate().skip(1) {
+        let shared: Vec<u32> = h.iter().copied().filter(|v| rings[0].contains(v)).collect();
+        if shared.len() == 1 && distinct(h) && h.len() >= 3 {
+            spliced.push((k, shared[0]));
         }
-        r
-    }).collect();
-    if rings.iter().any(|r| r.len() < 3) {
-        return None;
     }
-    let mut m = Mesh { positions: points.positions.clone(), ..Default::default() };
-    let mut outer = rings[0].clone();
-    let n = newell(&m.positions, &outer);
-    if n[0] * f.normal[0] + n[1] * f.normal[1] + n[2] * f.normal[2] < 0.0 {
-        outer.reverse();
+    for &(k, v) in spliced.iter().rev() {
+        let mut h = rings.remove(k);
+        let at = rings[0].iter().position(|&x| x == v).expect("shared");
+        let from = h.iter().position(|&x| x == v).expect("shared");
+        h.rotate_left(from);
+        // wound against the outline (a hole), so the walk round it continues the outline's way
+        let n0 = newell(&points.positions, &rings[0]);
+        let nh = newell(&points.positions, &h);
+        if n0[0] * nh[0] + n0[1] * nh[1] + n0[2] * nh[2] > 0.0 {
+            h[1..].reverse();
+        }
+        let tail = rings[0].split_off(at + 1);
+        rings[0].extend(h[1..].iter().copied());
+        rings[0].push(v);
+        rings[0].extend(tail);
     }
-    m.faces.push(outer);
-    for (h, hole) in rings.iter().enumerate().skip(1) {
-        // the face piece the hole lies in (all its corners inside it)
-        let host = (0..m.faces.len()).find(|&fi| hole.iter().all(|&v| daedalus_core::imprint::inside_face(&m, &m.faces[fi], m.positions[v as usize], 1e-4)))?;
-        let later: Vec<Vec<u32>> = rings[h + 1..].to_vec();
-        daedalus_core::imprint::cut_hole_avoiding(&mut m, host, hole, &later)?;
-        m.faces.pop(); // the face that filled the hole: it is a hole
+    // an outline may pass a corner twice (pinched, as where a hole was spliced in), but never an edge twice
+    let pinched_ok = |r: &Vec<u32>| {
+        let edges: HashSet<(u32, u32)> = (0..r.len()).map(|i| (r[i], r[(i + 1) % r.len()])).collect();
+        edges.len() == r.len() && (0..r.len()).all(|i| !edges.contains(&(r[(i + 1) % r.len()], r[i])))
+    };
+    let touching = rings[1..].iter().any(|h| h.iter().any(|v| rings[0].contains(v)));
+    if rings[0].len() < 3 || !pinched_ok(&rings[0]) || touching {
+        // an outline that touches itself or a hole: drawn as Daedalus draws such outlines (core profile), line by line
+        let first = b.positions[f.rings[0][0] as usize];
+        let normal = if f.normal == [0.0; 3] { newell(&b.positions, &f.rings[0]) } else { f.normal };
+        let Some(plane) = daedalus_core::sketch::Plane::from_point_normal(first, normal) else { return Vec::new() };
+        let outlines: Vec<Vec<[f64; 2]>> = f.rings.iter().map(|r| r.iter().map(|&i| plane.to_local(b.positions[i as usize])).collect()).collect();
+        let Ok(cap) = daedalus_core::profile::faces(&outlines, &plane) else { return Vec::new() };
+        let map: Vec<u32> = cap.positions.iter().map(|&p| points.add(p)).collect();
+        let at = |r: &Vec<u32>| r.iter().map(|&v| map[v as usize]).collect::<Vec<u32>>();
+        return (0..cap.faces.len()).map(|k| Poly { ring: at(&cap.faces[k]), holes: cap.holes_of(k).iter().map(at).collect(), color }).collect();
     }
-    seams.extend(m.seams.iter().copied());
-    Some(m.faces.into_iter().map(|ring| Poly { ring, color }).collect())
+    let mut ring = rings[0].clone();
+    let n = newell(&points.positions, &ring);
+    let normal = if f.normal == [0.0; 3] { n } else { f.normal };
+    let along = |r: &[u32]| {
+        let m = newell(&points.positions, r);
+        m[0] * normal[0] + m[1] * normal[1] + m[2] * normal[2]
+    };
+    if along(&ring) < 0.0 {
+        ring.reverse();
+    }
+    let holes: Vec<Vec<u32>> = rings[1..]
+        .iter()
+        .filter(|h| h.len() >= 3 && distinct(h) && !h.iter().any(|v| ring.contains(v)))
+        .map(|h| {
+            let mut h = h.clone();
+            if along(&h) > 0.0 {
+                h.reverse();
+            }
+            h
+        })
+        .collect();
+    vec![Poly { ring, holes, color }]
 }
 
 /// A context's geometry: the faces that make one editable surface, and the rest (to go into a group of their own).
@@ -283,10 +337,7 @@ fn surface(polys: Vec<Vec<Poly>>, points: &Points) -> (Mesh, Vec<Vec<Poly>>) {
     let mut mesh = Mesh { positions: points.positions.clone(), ..Default::default() };
     let mut rest = Vec::new();
     let edges = |unit: &[Poly], rev: bool| -> Vec<(u32, u32)> {
-        unit.iter()
-            .flat_map(|p| (0..p.ring.len()).map(move |i| (p.ring[i], p.ring[(i + 1) % p.ring.len()])))
-            .map(|(a, b)| if rev { (b, a) } else { (a, b) })
-            .collect()
+        unit.iter().flat_map(|p| p.edges(rev)).collect()
     };
     // faces in the order of a walk across their shared edges, so each one meets its neighbours already placed and takes its
     // facing from them (SketchUp lets neighbours face opposite ways; in file order two far-apart faces could be set facing
@@ -338,10 +389,11 @@ fn surface(polys: Vec<Vec<Poly>>, points: &Points) -> (Mesh, Vec<Vec<Poly>>) {
         };
         taken.extend(if rev { back } else { fwd });
         for p in unit {
-            let ring = if rev { p.ring.into_iter().rev().collect() } else { p.ring };
-            mesh.faces.push(ring);
+            let p = if rev { p.reversed() } else { p };
+            mesh.faces.push(p.ring);
             let f = mesh.faces.len() - 1;
             mesh.set_color(f, p.color);
+            mesh.set_holes(f, p.holes);
         }
     }
     (mesh, rest)
@@ -350,8 +402,7 @@ fn surface(polys: Vec<Vec<Poly>>, points: &Points) -> (Mesh, Vec<Vec<Poly>>) {
 /// Builds one context (a definition's inside or the top level): its surface, and nested groups for faces that do not fit.
 fn context(b: &Block, colors: &HashMap<i64, [u8; 3]>, scene: &mut Scene, ids: &HashMap<i64, usize>) -> Context {
     let mut points = Points::default();
-    let mut seams = Vec::new();
-    let polys: Vec<Vec<Poly>> = b.faces.iter().map(|f| face_polys(b, f, &mut points, colors, &mut seams)).filter(|u| !u.is_empty()).collect();
+    let polys: Vec<Vec<Poly>> = b.faces.iter().map(|f| face_polys(b, f, &mut points, colors)).filter(|u| !u.is_empty()).collect();
     // a face exactly on top of another (the same corners) is shown as one in SketchUp and adds nothing: kept once (Dream
     // House v3's top level had 72 such repeats, some edges under 17 faces)
     let mut seen: HashSet<Vec<u32>> = HashSet::new();
@@ -376,7 +427,7 @@ fn context(b: &Block, colors: &HashMap<i64, [u8; 3]>, scene: &mut Scene, ids: &H
         .collect();
     let (mut mesh, mut rest) = surface(polys, &points);
     mesh.lines = lines;
-    mesh.seams = seams.into_iter().chain(soft).collect();
+    mesh.seams = soft;
     // the faces that did not fit: a group (or several, nested no deeper than four) of their own, in place
     let mut depth = 0;
     let mut holder: Option<usize> = None;
@@ -407,6 +458,7 @@ fn everything(units: Vec<Vec<Poly>>, points: &Points) -> Mesh {
         m.faces.push(p.ring);
         let f = m.faces.len() - 1;
         m.set_color(f, p.color);
+        m.set_holes(f, p.holes);
     }
     m
 }
@@ -497,11 +549,12 @@ end
     #[test]
     fn a_sketchup_model_comes_in_with_its_groups_and_components() {
         let s = read(SAMPLE.as_bytes()).unwrap();
-        // the box is the top level and editable: the window face has a hole, so the front is a ring of faces
+        // the box is the top level and editable: the front has a window, one face with a hole (six sides, no seams)
         let model = Model::from_scene(s.clone()).expect("the top level is an editable surface");
-        assert!(model.mesh().face_count() >= 7, "{}", model.mesh().face_count());
+        assert_eq!(model.mesh().face_count(), 6);
         assert_eq!(model.mesh().lines.len(), 1, "the loose line");
-        assert!(!model.mesh().seams.is_empty(), "the hole's seams are hidden");
+        assert!(model.mesh().seams.is_empty());
+        assert!((0..6).any(|f| model.mesh().has_holes(f)), "the front has its window");
         // the front (with the hole) is red
         assert!(model.mesh().colors.contains(&Some([200, 40, 40])));
         // the post component is placed twice, sharing one definition
@@ -624,18 +677,28 @@ mod holes_check {
                     let rp = |r: &Vec<u32>| r.iter().map(|&i| b.positions[i as usize]).collect::<Vec<_>>();
                     let want = area(&rp(&f.rings[0])) - f.rings[1..].iter().map(|r| area(&rp(r))).sum::<f64>();
                     let mut points = Points::default();
-                    let mut seams = vec![];
-                    let polys = face_polys(&b, &f, &mut points, &HashMap::new(), &mut seams);
-                    let faces_area: f64 = polys.iter().map(|p| area(&p.ring.iter().map(|&i| points.positions[i as usize]).collect::<Vec<_>>())).sum();
-                    let tri_area: f64 = polys
-                        .iter()
-                        .flat_map(|p| daedalus_core::triangulate::triangulate(&points.positions, &p.ring))
+                    let polys = face_polys(&b, &f, &mut points, &HashMap::new());
+                    // what is drawn: each face's triangles, its holes left open
+                    let mut m = Mesh { positions: points.positions.clone(), ..Default::default() };
+                    for p in &polys {
+                        m.faces.push(p.ring.clone());
+                        m.set_holes(m.faces.len() - 1, p.holes.clone());
+                    }
+                    let tri_area: f64 = (0..m.faces.len())
+                        .flat_map(|f| m.triangulate_face(f))
                         .map(|t| area(&t.iter().map(|&i| points.positions[i as usize]).collect::<Vec<_>>()))
                         .sum();
+                    let faces_area = tri_area;
                     all += 1;
                     let off = |x: f64| (x - want).abs() > 1e-3 * want.max(1e-6);
                     if off(faces_area) || off(tri_area) {
                         bad += 1;
+                        if bad == 1 {
+                            if let Ok(out) = std::env::var("DSKP_DUMP") {
+                                let rings: Vec<Vec<[f64; 3]>> = f.rings.iter().map(|r| r.iter().map(|&i| b.positions[i as usize]).collect()).collect();
+                                std::fs::write(out, format!("{rings:?}")).unwrap();
+                            }
+                        }
                         if bad <= 6 {
                             println!("{} holes: area {want:.4}, faces {faces_area:.4} ({} faces), triangles {tri_area:.4}", f.rings.len() - 1, polys.len());
                         }

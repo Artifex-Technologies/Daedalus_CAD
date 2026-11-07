@@ -61,7 +61,8 @@ impl MeshExporter for Obj {
         for p in &mesh.positions {
             let _ = writeln!(s, "v {} {} {}", p[0], p[1], p[2]);
         }
-        for f in &mesh.faces {
+        // a face with holes goes out as its triangles (OBJ has no holes)
+        for f in &mesh.polygons().0 {
             s.push('f');
             for i in f {
                 let _ = write!(s, " {}", i + 1);

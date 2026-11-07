@@ -122,6 +122,14 @@ the current state is:
   (`HalfEdgeMesh::erase_edges`): a loose line goes; an edge between two faces in one plane joins them (`merge::join_pair`;
   kept, with a message, if they would not make one simple face); any other edge takes the faces on it, and faces seamed to
   them. Move/Rotate/Scale carry selected edges' vertices.
+- Precision (2026-11-06): positions, tools, camera and formats are f64 (the GPU gets f32 when drawing; binary STL stays
+  32-bit). Tolerances follow the model: `Mesh::tolerance()` = size x 1e-7 (lines, coplanar merge, welds; Repair x10).
+- Faces with holes (2026-11-06): `Mesh::holes` (per face, wound against the outline; `holes_of`, `loops`, `face_edges`),
+  `HalfEdgeMesh` keeps hole loops per face. A shape drawn inside a face cuts a true hole (`imprint::cut_hole`); Push/Pull
+  builds walls round each hole; splits, merges, Erase, Repair, section cuts and 3D Text carry holes; triangles by bridging
+  (`triangulate_with_holes`). `.daedalus` 4 writes `h` lines; older files' two-face rings (seams) are joined back
+  (`Mesh::join_seamed_faces`). SketchUp faces come in with their holes (pinched outlines allowed). OBJ/DAE export a face
+  with holes as triangles (`Mesh::polygons`). Not yet: Follow Me sweeps only a profile's outline.
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

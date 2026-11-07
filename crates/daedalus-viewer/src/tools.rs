@@ -2338,8 +2338,9 @@ mod tests {
         t.hover(&at(1.0, 2.0));
         assert_eq!(t.measurement(), ("Distance", "1 m".into()));
         t.click(&mut m, &at(1.0, 2.0)).unwrap();
-        assert_eq!(m.mesh().face_count(), 3, "the middle and the two faces of the ring around it");
-        let middle = (0..3).find(|&f| m.mesh().face_vertices(f).len() == 4 && {
+        assert_eq!(m.mesh().face_count(), 2, "the middle, and the ring around it (one face with a hole)");
+        assert!(m.mesh().has_holes(0) || m.mesh().has_holes(1));
+        let middle = (0..2).find(|&f| m.mesh().face_vertices(f).len() == 4 && {
             let p = m.mesh().positions[m.mesh().face_vertices(f)[0] as usize];
             (1.0..=3.0).contains(&p[0]) && (1.0..=3.0).contains(&p[1])
         });

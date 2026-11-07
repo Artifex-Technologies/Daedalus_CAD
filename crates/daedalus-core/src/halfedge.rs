@@ -56,6 +56,8 @@ pub struct HalfEdgeMesh {
     half_edges: Vec<HalfEdge>,
     /// One half-edge per face.
     faces: Vec<u32>,
+    /// Per face, one half-edge of each hole's loop (a face with openings, like a wall with a window).
+    holes: Vec<Vec<u32>>,
     /// Loose edges (lines that are no face's edge), as vertex pairs.
     pub lines: Vec<[u32; 2]>,
     /// Hidden face edges (seams around holes).
@@ -80,32 +82,32 @@ impl HalfEdgeMesh {
         he.seams = mesh.seams.iter().copied().filter(|&[a, b]| face_edges.contains(&(a.min(b), a.max(b)))).collect();
         let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
 
-        for (fi, face) in mesh.faces.iter().enumerate() {
-            if face.len() < 3 {
-                return Err(TopologyError::DegenerateFace(fi));
-            }
-            if let Some(&bad) = face.iter().find(|&&v| v as usize >= mesh.positions.len()) {
-                return Err(TopologyError::VertexOutOfRange(bad));
-            }
-            let base = he.half_edges.len() as u32;
-            let n = face.len() as u32;
-            for (k, &origin) in face.iter().enumerate() {
-                let to = face[(k + 1) % face.len()];
-                if origin == to {
+        for fi in 0..mesh.faces.len() {
+            let mut starts = Vec::new();
+            for face in mesh.loops(fi) {
+                if face.len() < 3 {
                     return Err(TopologyError::DegenerateFace(fi));
                 }
-                let id = base + k as u32;
-                if directed.insert((origin, to), id).is_some() {
-                    return Err(TopologyError::NonManifoldEdge { from: origin, to });
+                if let Some(&bad) = face.iter().find(|&&v| v as usize >= mesh.positions.len()) {
+                    return Err(TopologyError::VertexOutOfRange(bad));
                 }
-                he.half_edges.push(HalfEdge {
-                    origin,
-                    next: base + (k as u32 + 1) % n,
-                    twin: NONE,
-                    face: fi as u32,
-                });
+                let base = he.half_edges.len() as u32;
+                let n = face.len() as u32;
+                for (k, &origin) in face.iter().enumerate() {
+                    let to = face[(k + 1) % face.len()];
+                    if origin == to {
+                        return Err(TopologyError::DegenerateFace(fi));
+                    }
+                    let id = base + k as u32;
+                    if directed.insert((origin, to), id).is_some() {
+                        return Err(TopologyError::NonManifoldEdge { from: origin, to });
+                    }
+                    he.half_edges.push(HalfEdge { origin, next: base + (k as u32 + 1) % n, twin: NONE, face: fi as u32 });
+                }
+                starts.push(base);
             }
-            he.faces.push(base);
+            he.faces.push(starts[0]);
+            he.holes.push(starts[1..].to_vec());
         }
 
         for (&(a, b), &id) in &directed {
@@ -117,9 +119,10 @@ impl HalfEdgeMesh {
     }
 
     pub fn to_mesh(&self) -> Mesh {
-        let mut m = Mesh { positions: self.positions.clone(), faces: Vec::new(), lines: self.lines.clone(), seams: self.seams.clone(), colors: self.colors.clone() };
+        let mut m = Mesh { positions: self.positions.clone(), faces: Vec::new(), lines: self.lines.clone(), seams: self.seams.clone(), colors: self.colors.clone(), holes: Vec::new() };
         for f in 0..self.faces.len() {
             m.faces.push(self.face_vertices(f));
+            m.set_holes(f, self.face_holes(f));
         }
         m
     }
@@ -150,22 +153,43 @@ impl HalfEdgeMesh {
         self.boundary_edge_count() == 0
     }
 
-    /// V - E + F, counting only vertices that belong to a face.
+    /// V - E + F - H (H: holes in faces), counting only vertices that belong to a face: 2 for a closed solid without a
+    /// tunnel through it (Euler-Poincare), whatever openings its faces have.
     pub fn euler_characteristic(&self) -> i64 {
         let mut used = vec![false; self.positions.len()];
         for h in &self.half_edges {
             used[h.origin as usize] = true;
         }
         let v = used.iter().filter(|&&u| u).count() as i64;
-        v - self.edge_count() as i64 + self.face_count() as i64
+        let holes = self.holes.iter().map(Vec::len).sum::<usize>() as i64;
+        v - self.edge_count() as i64 + self.face_count() as i64 - holes
     }
 
     pub fn face_vertices(&self, face: usize) -> Vec<u32> {
         self.face_loop(face).into_iter().map(|h| self.half_edges[h as usize].origin).collect()
     }
 
+    /// The openings in `face`, as vertex loops (wound against its outline).
+    pub fn face_holes(&self, face: usize) -> Vec<Vec<u32>> {
+        self.holes.get(face).map_or(Vec::new(), |hs| hs.iter().map(|&s| self.walk(s).into_iter().map(|h| self.half_edges[h as usize].origin).collect()).collect())
+    }
+
+    /// Whether `face` has openings.
+    pub fn has_holes(&self, face: usize) -> bool {
+        self.holes.get(face).is_some_and(|h| !h.is_empty())
+    }
+
     fn face_loop(&self, face: usize) -> Vec<u32> {
-        let start = self.faces[face];
+        self.walk(self.faces[face])
+    }
+
+    /// Every loop of `face`'s half-edges: the outline, then the holes.
+    fn all_loops(&self, face: usize) -> Vec<Vec<u32>> {
+        std::iter::once(self.faces[face]).chain(self.holes.get(face).into_iter().flatten().copied()).map(|s| self.walk(s)).collect()
+    }
+
+    /// The half-edges of one loop, from `start`.
+    fn walk(&self, start: u32) -> Vec<u32> {
         let mut out = vec![start];
         let mut h = self.half_edges[start as usize].next;
         while h != start {
@@ -197,12 +221,15 @@ impl HalfEdgeMesh {
     /// Signed volume of the surface (positive when faces point outward).
     /// Only meaningful for closed meshes.
     pub fn signed_volume(&self) -> f64 {
+        // each loop's fan: a hole, wound the other way, takes its part off again
         let mut vol = 0.0;
         for f in 0..self.faces.len() {
-            let vs = self.face_vertices(f);
-            let p = |i: usize| self.positions[vs[i] as usize];
-            for i in 1..vs.len() - 1 {
-                vol += dot(p(0), cross(p(i), p(i + 1)));
+            for lp in self.all_loops(f) {
+                let vs: Vec<u32> = lp.into_iter().map(|h| self.half_edges[h as usize].origin).collect();
+                let p = |i: usize| self.positions[vs[i] as usize];
+                for i in 1..vs.len() - 1 {
+                    vol += dot(p(0), cross(p(i), p(i + 1)));
+                }
             }
         }
         vol / 6.0
@@ -232,13 +259,15 @@ impl HalfEdgeMesh {
             return Err(TopologyError::FaceOutOfRange(face));
         }
         let mut m = self.to_mesh();
-        let ring = m.remove_face(face);
+        let (ring, holes) = m.remove_face_loops(face);
         let still: std::collections::HashSet<(u32, u32)> = m.edges().into_iter().collect();
-        for i in 0..ring.len() {
-            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+        for r in std::iter::once(&ring).chain(&holes) {
+          for i in 0..r.len() {
+            let (a, b) = (r[i], r[(i + 1) % r.len()]);
             if !still.contains(&(a.min(b), a.max(b))) {
                 m.lines.push([a, b]);
             }
+          }
         }
         *self = Self::from_mesh(&m)?;
         Ok(())
@@ -294,7 +323,7 @@ impl HalfEdgeMesh {
         m.lines.retain(|&[a, b]| !gone_set.contains(&key(a, b)));
         let seams: HashSet<(u32, u32)> = m.seams.iter().map(|&[a, b]| key(a, b)).collect();
         let on_edge = |m: &Mesh, e: (u32, u32)| -> Vec<usize> {
-            (0..m.faces.len()).filter(|&f| { let r = &m.faces[f]; (0..r.len()).any(|i| key(r[i], r[(i + 1) % r.len()]) == e) }).collect()
+            (0..m.faces.len()).filter(|&f| m.loops(f).any(|r| (0..r.len()).any(|i| key(r[i], r[(i + 1) % r.len()]) == e))).collect()
         };
         let mut kept = 0;
         for &e in &gone {
@@ -306,8 +335,11 @@ impl HalfEdgeMesh {
                 let joined = crate::merge::join_pair(&m, a, b, tol);
                 if let Some(ring) = joined {
                     let (lo, hi) = (a.min(b), a.max(b));
-                    m.remove_face(hi);
+                    let (_, theirs) = m.remove_face_loops(hi);
                     m.faces[lo] = ring;
+                    let mut holes = m.holes_of(lo).to_vec();
+                    holes.extend(theirs);
+                    m.set_holes(lo, holes);
                     continue;
                 }
                 // in one plane but not one simple face (it would have a hole): left as it is, rather than lose both
@@ -336,7 +368,13 @@ impl HalfEdgeMesh {
             }
             let mut take: Vec<usize> = take.into_iter().collect();
             take.sort_unstable_by(|x, y| y.cmp(x));
-            let rings: Vec<Vec<u32>> = take.iter().map(|&f| m.remove_face(f)).collect();
+            let rings: Vec<Vec<u32>> = take
+                .iter()
+                .flat_map(|&f| {
+                    let (outline, holes) = m.remove_face_loops(f);
+                    std::iter::once(outline).chain(holes)
+                })
+                .collect();
             let still: HashSet<(u32, u32)> = m.edges().into_iter().collect();
             let mut lines: HashSet<(u32, u32)> = m.lines.iter().map(|&[a, b]| key(a, b)).collect();
             for r in rings {
@@ -427,7 +465,7 @@ impl HalfEdgeMesh {
             
             [(p0[0] + p1[0] + pl[0]) / 3.0, (p0[1] + p1[1] + pl[1]) / 3.0, (p0[2] + p1[2] + pl[2]) / 3.0]
         };
-        let host = mesh.faces.iter().position(|f| crate::imprint::inside_face(&mesh, f, probe, tol));
+        let host = (0..mesh.faces.len()).find(|&f| crate::imprint::on_face(&mesh, f, probe, tol));
 
         // which way it faces: up if it lies flat, else toward the front (-Y), else toward +X
         let want = if n[2].abs() > 0.1 { n[2] > 0.0 } else if n[1].abs() > 0.1 { n[1] < 0.0 } else { n[0] > 0.0 };
@@ -441,7 +479,7 @@ impl HalfEdgeMesh {
         }
         // drawn inside a face (a rectangle on a box's top): the face gets a hole there, filled by the new face
         if let Some(f) = host {
-            let all_inside = pts.iter().all(|&p| crate::imprint::inside_face(&mesh, &mesh.faces[f], p, tol));
+            let all_inside = pts.iter().all(|&p| crate::imprint::on_face(&mesh, f, p, tol));
             if !all_inside {
                 return None; // it overlaps the face's edge without meeting it: leave the lines
             }
@@ -487,43 +525,55 @@ impl HalfEdgeMesh {
         if n == [0.0; 3] {
             return Err(TopologyError::DegenerateNormal);
         }
-        let attached = self.face_loop(face).iter().any(|&h| self.half_edges[h as usize].twin != NONE);
-        let ring = self.face_vertices(face);
+        let attached = self.all_loops(face).iter().flatten().any(|&h| self.half_edges[h as usize].twin != NONE);
+        // the outline and the holes: each gets walls (a hole's run round the opening, facing into it)
+        let loops: Vec<Vec<u32>> = std::iter::once(self.face_vertices(face)).chain(self.face_holes(face)).collect();
 
         let mut m = self.to_mesh();
-        let top: Vec<u32> = ring
+        let tops: Vec<Vec<u32>> = loops
             .iter()
-            .map(|&v| {
-                let p = m.positions[v as usize];
-                m.add_vertex([p[0] + n[0] * distance, p[1] + n[1] * distance, p[2] + n[2] * distance])
+            .map(|ring| {
+                ring.iter()
+                    .map(|&v| {
+                        let p = m.positions[v as usize];
+                        m.add_vertex([p[0] + n[0] * distance, p[1] + n[1] * distance, p[2] + n[2] * distance])
+                    })
+                    .collect()
             })
             .collect();
 
         let reversed = |v: &[u32]| -> Vec<u32> { v.iter().rev().copied().collect() };
         // `outward` is true when the walls keep the original edge direction a->b.
         let (base, far, outward) = if attached {
-            (None, top.clone(), true)
+            (None, tops.clone(), true)
         } else if distance > 0.0 {
-            (Some(reversed(&ring)), top.clone(), true)
+            (Some(loops.iter().map(|r| reversed(r)).collect::<Vec<_>>()), tops.clone(), true)
         } else {
-            (Some(ring.clone()), reversed(&top), false)
+            (Some(loops.clone()), tops.iter().map(|r| reversed(r)).collect(), false)
         };
 
         // the pushed face keeps its colour (and so does the base it leaves behind); the new side walls start unpainted
         let color = m.color_of(face);
         m.remove_face(face);
+        let put = |m: &mut Mesh, mut rings: Vec<Vec<u32>>, color: Option<[u8; 3]>| {
+            let outline = rings.remove(0);
+            m.faces.push(outline);
+            let f = m.faces.len() - 1;
+            m.set_color(f, color);
+            m.set_holes(f, rings);
+        };
         if let Some(b) = base {
-            m.faces.push(b);
-            m.set_color(m.faces.len() - 1, color);
+            put(&mut m, b, color);
         }
-        let n_ring = ring.len();
-        for i in 0..n_ring {
-            let j = (i + 1) % n_ring;
-            let (a, b, a2, b2) = (ring[i], ring[j], top[i], top[j]);
-            m.faces.push(if outward { vec![a, b, b2, a2] } else { vec![b, a, a2, b2] });
+        for (ring, top) in loops.iter().zip(&tops) {
+            let n_ring = ring.len();
+            for i in 0..n_ring {
+                let j = (i + 1) % n_ring;
+                let (a, b, a2, b2) = (ring[i], ring[j], top[i], top[j]);
+                m.faces.push(if outward { vec![a, b, b2, a2] } else { vec![b, a, a2, b2] });
+            }
         }
-        m.faces.push(far);
-        m.set_color(m.faces.len() - 1, color);
+        put(&mut m, far, color);
 
         *self = Self::from_mesh(&m)?;
         Ok(self.face_count() - 1)
@@ -573,6 +623,21 @@ impl HalfEdgeMesh {
         }
         self.faces[face] = he_a;
         self.faces.push(he_b);
+        self.holes.push(Vec::new());
+        // each hole goes with the half it lies in
+        let holes = std::mem::take(&mut self.holes[face]);
+        if !holes.is_empty() {
+            let normal = self.face_normal(face);
+            let outline_new: Vec<[f64; 3]> = self.face_vertices(new_face as usize).iter().map(|&v| self.positions[v as usize]).collect();
+            for start in holes {
+                let p = self.positions[self.half_edges[start as usize].origin as usize];
+                let owner = if point_in_ring(&outline_new, p, normal) { new_face } else { face as u32 };
+                for h in self.walk(start) {
+                    self.half_edges[h as usize].face = owner;
+                }
+                self.holes[owner as usize].push(start);
+            }
+        }
         // the new half keeps the face's colour
         if let Some(&c @ Some(_)) = self.colors.get(face) {
             self.colors.resize(new_face as usize + 1, None);
@@ -580,6 +645,20 @@ impl HalfEdgeMesh {
         }
         Ok(new_face as usize)
     }
+}
+
+/// Whether `p` lies inside the polygon `ring` (in the plane with this normal), seen along the normal's main axis.
+fn point_in_ring(ring: &[[f64; 3]], p: [f64; 3], normal: [f64; 3]) -> bool {
+    let a = normal.map(f64::abs);
+    let (x, y) = if a[0] >= a[1] && a[0] >= a[2] { (1, 2) } else if a[1] >= a[2] { (2, 0) } else { (0, 1) };
+    let mut inside = false;
+    for i in 0..ring.len() {
+        let (u, v) = (ring[i], ring[(i + 1) % ring.len()]);
+        if (u[y] > p[y]) != (v[y] > p[y]) && p[x] < u[x] + (p[y] - u[y]) * (v[x] - u[x]) / (v[y] - u[y]) {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {

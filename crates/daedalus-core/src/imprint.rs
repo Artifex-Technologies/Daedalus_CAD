@@ -94,6 +94,24 @@ pub fn inside_face(m: &Mesh, ring: &[u32], p: V, tol: f64) -> bool {
     inside
 }
 
+/// Whether `p` lies on face `f` itself: in its plane, inside its outline and not inside one of its holes.
+pub fn on_face(m: &Mesh, f: usize, p: V, tol: f64) -> bool {
+    inside_face(m, &m.faces[f], p, tol) && !m.holes_of(f).iter().any(|h| inside_face(m, h, p, tol))
+}
+
+/// Gives each hole of face `from` that lies inside face `to`'s outline to `to` (after a face is split or a ring cut).
+fn rehome_holes(m: &mut Mesh, from: usize, to: usize, tol: f64) {
+    let holes = m.holes_of(from).to_vec();
+    if holes.is_empty() {
+        return;
+    }
+    let (moved, kept): (Vec<Vec<u32>>, Vec<Vec<u32>>) = holes.into_iter().partition(|h| inside_face(m, &m.faces[to], m.positions[h[0] as usize], tol));
+    let mut theirs = m.holes_of(to).to_vec();
+    theirs.extend(moved);
+    m.set_holes(from, kept);
+    m.set_holes(to, theirs);
+}
+
 /// Every edge of the mesh: face edges and loose lines, as (u, v), each once.
 fn all_edges(m: &Mesh) -> Vec<(u32, u32)> {
     m.all_edges()
@@ -102,7 +120,7 @@ fn all_edges(m: &Mesh) -> Vec<(u32, u32)> {
 /// Puts vertex `w` into the edge `u`-`v` wherever it is: between them in every face ring that has that edge, and a loose
 /// line `u`-`v` becomes two.
 pub fn insert_on_edge(m: &mut Mesh, u: u32, v: u32, w: u32) {
-    for ring in &mut m.faces {
+    for ring in m.faces.iter_mut().chain(m.holes.iter_mut().flatten()) {
         let n = ring.len();
         if let Some(i) = (0..n).find(|&i| {
             let (a, b) = (ring[i], ring[(i + 1) % n]);
@@ -196,12 +214,13 @@ pub fn add_segment(m: &mut Mesh, a: V, b: V, tol: f64) -> (Vec<usize>, bool) {
         }
         let mid = scale(add(m.positions[u as usize], m.positions[w as usize]), 0.5);
         // a piece across a face, between two of its corners: the face splits along it
-        let face = m.faces.iter().position(|ring| {
+        let face = (0..m.faces.len()).find(|&f| {
+            let ring = &m.faces[f];
             let (Some(i), Some(j)) = (ring.iter().position(|&x| x == u), ring.iter().position(|&x| x == w)) else {
                 return false;
             };
             let n = ring.len();
-            (i + 1) % n != j && (j + 1) % n != i && inside_face(m, ring, mid, tol * 10.0)
+            (i + 1) % n != j && (j + 1) % n != i && on_face(m, f, mid, tol * 10.0)
         });
         match face {
             Some(f) => {
@@ -217,7 +236,10 @@ pub fn add_segment(m: &mut Mesh, a: V, b: V, tol: f64) -> (Vec<usize>, bool) {
                 m.faces[f] = first;
                 m.faces.push(second);
                 let c = m.color_of(f);
-                m.set_color(m.faces.len() - 1, c);
+                let new = m.faces.len() - 1;
+                m.set_color(new, c);
+                // its holes go with the half they are in
+                rehome_holes(m, f, new, tol);
                 split = true;
             }
             None => {
@@ -229,15 +251,34 @@ pub fn add_segment(m: &mut Mesh, a: V, b: V, tol: f64) -> (Vec<usize>, bool) {
     (added, split)
 }
 
-/// A closed outline `inner` drawn wholly inside face `outer`: the outline becomes a face of its own and the rest of
-/// `outer` the ring around it. A face here has one outline and no holes, so the ring is made of two faces, joined by two
-/// short seams from the outline to the outside edge, kept in `Mesh::seams` and not drawn. `inner` must wind the same way as `outer`. Returns the new inner face's index.
+/// A closed outline `inner` drawn wholly inside face `outer`: `outer` gets a hole there and the outline becomes a face of its
+/// own filling it (as a rectangle drawn on a wall makes a window). Holes of `outer` inside the outline go to the new face.
+/// `inner` must wind the same way as `outer`. Returns the new inner face's index.
 pub fn cut_hole(m: &mut Mesh, outer: usize, inner: &[u32]) -> Option<usize> {
-    cut_hole_avoiding(m, outer, inner, &[])
+    if inner.len() < 3 || outer >= m.faces.len() || inner.iter().any(|v| m.faces[outer].contains(v)) {
+        return None;
+    }
+    // the new face winds as the face around it does (and the hole the other way)
+    let mut inner = inner.to_vec();
+    if let (Some((a, _)), Some((b, _))) = (face_plane(m, &m.faces[outer]), face_plane(m, &inner)) {
+        if dot(a, b) < 0.0 {
+            inner.reverse();
+        }
+    }
+    let inner = &inner[..];
+    m.faces.push(inner.to_vec());
+    let new = m.faces.len() - 1;
+    let c = m.color_of(outer);
+    m.set_color(new, c);
+    rehome_holes(m, outer, new, 0.0);
+    let mut holes = m.holes_of(outer).to_vec();
+    holes.push(inner.iter().rev().copied().collect());
+    m.set_holes(outer, holes);
+    Some(new)
 }
 
-/// [`cut_hole`], with seams that also keep clear of `avoid`: other holes of the same face still to be cut (a seam through
-/// one of them would leave it in two faces, and it could not be cut).
+/// The ring around a hole as two faces joined by two seams that stay inside it, keeping clear of the holes in `avoid`: how
+/// faces with holes were covered before they existed (kept for reading old files until they are converted).
 pub fn cut_hole_avoiding(m: &mut Mesh, outer: usize, inner: &[u32], avoid: &[Vec<u32>]) -> Option<usize> {
     let ring = m.faces.get(outer)?.clone();
     let (n, k) = (ring.len(), inner.len());
@@ -474,15 +515,16 @@ mod tests {
             let mut t = m.clone();
             let f = cut_hole(&mut t, 0, &inner);
             assert!(f.is_some(), "{inner:?}");
-            let area: f64 = t.faces[..2]
-                .iter()
-                .map(|r| {
-                    let p: Vec<[f64; 2]> = r.iter().map(|&v| [t.positions[v as usize][0], t.positions[v as usize][1]]).collect();
-                    signed_area(&p)
-                })
-                .sum();
-            assert!((area - 56.0).abs() < 1e-3, "{area}");
-            assert_eq!(t.seams.len(), 2);
+            // one face with a hole (81 - 25) and the new face filling it (25), wound the same way; no seams
+            let area = |r: &Vec<u32>| {
+                let p: Vec<[f64; 2]> = r.iter().map(|&v| [t.positions[v as usize][0], t.positions[v as usize][1]]).collect();
+                signed_area(&p)
+            };
+            let ring: f64 = t.loops(0).map(area).sum();
+            assert!((ring - 56.0).abs() < 1e-3, "{ring}");
+            assert!((area(&t.faces[1]) - 25.0).abs() < 1e-3);
+            assert_eq!(t.holes_of(0).len(), 1);
+            assert!(t.seams.is_empty());
         }
     }
 

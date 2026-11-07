@@ -1,10 +1,11 @@
 //! `.daedalus`: Daedalus's own file. Plain UTF-8 text, so it is readable, diffable and survives a version-control merge:
 //!
 //! ```text
-//! daedalus 3
+//! daedalus 4
 //! # anything after # is a comment (outside "quotes")
 //! v 0 0 0          one line per vertex: x y z (metres)
 //! f 0 1 2 3        one line per face: vertex indices, counter-clockwise seen from outside
+//! h 4 7 6 5        a hole in the face above (a window in a wall): its vertices the other way round (version 4)
 //! l 0 4            a loose line (version 2)
 //! s 0 1            a hidden seam: a face edge not drawn (version 2)
 //! c 2 200 80 40    face 2 painted red, green, blue (version 2)
@@ -26,7 +27,7 @@ use daedalus_core::scene::{Axes, Context, Definition, Dimension, Guide, Instance
 use daedalus_core::Mesh;
 
 /// Version 2 added loose lines, seams and colours; version 3 groups and components (`def`, `i`) and notes.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 const MAGIC: &str = "daedalus";
 
 pub struct Native;
@@ -131,6 +132,7 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
         let rest = &w[1..];
         let v2 = version >= 2;
         let v3 = version >= 3;
+        let v4 = version >= 4;
         let ctx: &mut Context = match block {
             None => &mut scene.root,
             Some(d) => &mut scene.defs[d].ctx,
@@ -150,6 +152,19 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
                     return Err(IoError::Parse(format!("line {n}: vertex {bad} is not defined above")));
                 }
                 mesh.add_face(idx);
+            }
+            "h" if v4 => {
+                let idx = indices(rest, "a hole lists vertex numbers", n)?;
+                if idx.len() < 3 || mesh.faces.is_empty() {
+                    return Err(IoError::Parse(format!("line {n}: a hole needs three vertices and a face above it")));
+                }
+                if let Some(bad) = idx.iter().find(|&&i| i as usize >= mesh.positions.len()) {
+                    return Err(IoError::Parse(format!("line {n}: vertex {bad} is not defined above")));
+                }
+                let f = mesh.faces.len() - 1;
+                let mut holes = mesh.holes_of(f).to_vec();
+                holes.push(idx);
+                mesh.set_holes(f, holes);
             }
             "l" | "s" if v2 => {
                 let idx = indices(rest, "a line lists two vertex numbers", n)?;
@@ -230,6 +245,13 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
     if block.is_some() {
         return Err(IoError::Parse("the last definition has no \"end\"".into()));
     }
+    // saved before faces had holes: a face with a hole was two faces joined by seams; one face with its hole again
+    if version < 4 {
+        scene.root.mesh.join_seamed_faces();
+        for d in &mut scene.defs {
+            d.ctx.mesh.join_seamed_faces();
+        }
+    }
     // every instance names a definition that is there, and no definition holds itself
     let count = scene.defs.len();
     let all = std::iter::once(&scene.root).chain(scene.defs.iter().map(|d| &d.ctx));
@@ -258,12 +280,19 @@ fn write_mesh(s: &mut String, mesh: &Mesh) {
     for p in &mesh.positions {
         s.push_str(&format!("v {} {} {}\n", p[0], p[1], p[2]));
     }
-    for f in &mesh.faces {
+    for (fi, f) in mesh.faces.iter().enumerate() {
         s.push('f');
         for i in f {
             s.push_str(&format!(" {i}"));
         }
         s.push('\n');
+        for h in mesh.holes_of(fi) {
+            s.push('h');
+            for i in h {
+                s.push_str(&format!(" {i}"));
+            }
+            s.push('\n');
+        }
     }
     for [a, b] in &mesh.lines {
         s.push_str(&format!("l {a} {b}\n"));
@@ -297,7 +326,10 @@ fn v3(p: [f64; 3]) -> String {
 /// Writes a whole scene, in the oldest version that holds it.
 pub fn write_scene(scene: &Scene) -> Vec<u8> {
     let extras = |m: &Mesh| !m.lines.is_empty() || !m.seams.is_empty() || m.colors.iter().any(|c| c.is_some());
-    let version = if !scene.is_plain() || !scene.defs.is_empty() {
+    let holes = std::iter::once(&scene.root).chain(scene.defs.iter().map(|d| &d.ctx)).any(|c| c.mesh.holes.iter().any(|h| !h.is_empty()));
+    let version = if holes {
+        4
+    } else if !scene.is_plain() || !scene.defs.is_empty() {
         3
     } else if extras(&scene.root.mesh) {
         2
@@ -400,7 +432,8 @@ mod tests {
     fn bad_files_are_refused_with_the_line() {
         let e = |t: &str| Native.import(t.as_bytes()).unwrap_err().to_string();
         assert!(e("hello\n").contains("not a .daedalus file"));
-        assert!(e("daedalus 4\n").contains("newer Daedalus"), "{}", e("daedalus 4\n"));
+        assert!(e("daedalus 5\n").contains("newer Daedalus"), "{}", e("daedalus 5\n"));
+        assert!(e("daedalus 3\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\nh 0 1 2\n").contains("unknown entry"), "holes need version 4");
         assert!(e("daedalus 1\nv 0 0 0\nv 1 0 0\nl 0 1\n").contains("unknown entry"), "lines need version 2");
         assert!(e("daedalus 2\nv 0 0 0\nl 0 1\n").contains("vertex 1 is not defined"));
         assert!(e("daedalus 1\nv 0 0\n").contains("line 2"));
@@ -438,5 +471,45 @@ mod tests {
         assert!(e("daedalus 3\ndef \"a\" group\n").contains("no \"end\""));
         assert!(e("daedalus 2\ndef \"a\" group\nend\n").contains("unknown entry"), "definitions need version 3");
         assert!(e("daedalus 3\ntext 0 0 0 0 0 0 \"open\n").contains("not closed"));
+    }
+
+    #[test]
+    fn a_face_with_a_hole_is_saved_and_read_back() {
+        let mut m = Mesh::new();
+        for p in [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 4.0, 0.0], [0.0, 4.0, 0.0], [1.0, 1.0, 0.0], [3.0, 1.0, 0.0], [3.0, 3.0, 0.0], [1.0, 3.0, 0.0]] {
+            m.add_vertex(p);
+        }
+        m.add_face(vec![0, 1, 2, 3]);
+        m.set_holes(0, vec![vec![4, 7, 6, 5]]);
+        m.add_face(vec![4, 5, 6, 7]);
+        let bytes = write_scene(&Scene::from_mesh(m.clone()));
+        assert!(std::str::from_utf8(&bytes).unwrap().starts_with("daedalus 4\n"));
+        let back = read_scene(&bytes).unwrap().root.mesh;
+        assert_eq!(back.faces, m.faces);
+        assert_eq!(back.holes_of(0), m.holes_of(0));
+        assert!(back.holes_of(1).is_empty());
+    }
+
+    #[test]
+    fn an_older_file_with_a_seamed_ring_opens_with_a_true_hole() {
+        // version 2: the ring as two faces and two seams, as Daedalus saved it before faces had holes
+        let old = "daedalus 2\nv 0 0 0\nv 9 0 0\nv 9 9 0\nv 0 9 0\nv 2 2 0\nv 7 2 0\nv 7 7 0\nv 2 7 0\n";
+        let mut m = Mesh::new();
+        for p in [[0.0, 0.0, 0.0], [9.0, 0.0, 0.0], [9.0, 9.0, 0.0], [0.0, 9.0, 0.0], [2.0, 2.0, 0.0], [7.0, 2.0, 0.0], [7.0, 7.0, 0.0], [2.0, 7.0, 0.0]] {
+            m.add_vertex(p);
+        }
+        m.add_face(vec![0, 1, 2, 3]);
+        daedalus_core::imprint::cut_hole_avoiding(&mut m, 0, &[4, 5, 6, 7], &[]).unwrap();
+        let mut text = old.to_string();
+        for f in &m.faces {
+            text.push_str(&format!("f {}\n", f.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" ")));
+        }
+        for [a, b] in &m.seams {
+            text.push_str(&format!("s {a} {b}\n"));
+        }
+        let back = read_scene(text.as_bytes()).unwrap().root.mesh;
+        assert_eq!(back.faces.len(), 2);
+        assert!(back.seams.is_empty());
+        assert_eq!(back.holes.iter().map(Vec::len).sum::<usize>(), 1);
     }
 }

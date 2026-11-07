@@ -176,12 +176,14 @@ impl MeshExporter for Dae {
             mesh.positions.len()
         );
         s.push_str("<vertices id=\"verts\"><input semantic=\"POSITION\" source=\"#pos\"/></vertices>\n");
-        let _ = writeln!(s, "<polylist count=\"{}\"><input semantic=\"VERTEX\" source=\"#verts\" offset=\"0\"/><vcount>", mesh.faces.len());
-        for f in &mesh.faces {
+        // a face with holes goes out as its triangles (a polylist has no holes)
+        let (polys, _) = mesh.polygons();
+        let _ = writeln!(s, "<polylist count=\"{}\"><input semantic=\"VERTEX\" source=\"#verts\" offset=\"0\"/><vcount>", polys.len());
+        for f in &polys {
             let _ = write!(s, "{} ", f.len());
         }
         s.push_str("</vcount><p>");
-        for f in &mesh.faces {
+        for f in &polys {
             for i in f {
                 let _ = write!(s, "{i} ");
             }

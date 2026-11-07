@@ -166,9 +166,22 @@ fn face_volume(positions: &[[f64; 3]], ring: &[u32]) -> f64 {
     (1..ring.len() - 1).map(|i| dot(p(0), cross(p(i), p(i + 1)))).sum::<f64>() / 6.0
 }
 
+/// A ring's (unnormalised) Newell normal.
+fn ring_normal(positions: &[[f64; 3]], ring: &[u32]) -> [f64; 3] {
+    let mut n = [0.0f64; 3];
+    for i in 0..ring.len() {
+        let (a, b) = (positions[ring[i] as usize], positions[ring[(i + 1) % ring.len()] as usize]);
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    n
+}
+
 /// Signed volume of a mesh (positive when faces point outward). Only meaningful when closed.
 pub fn signed_volume(mesh: &Mesh) -> f64 {
-    mesh.faces.iter().map(|f| face_volume(&mesh.positions, f)).sum()
+    // holes, wound the other way, take their part off
+    (0..mesh.faces.len()).flat_map(|f| mesh.loops(f)).map(|r| face_volume(&mesh.positions, r)).sum()
 }
 
 pub fn inspect(mesh: &Mesh, tol: f64) -> Report {
@@ -176,11 +189,9 @@ pub fn inspect(mesh: &Mesh, tol: f64) -> Report {
 
     // Undirected edge -> [(face, stored direction matches (min, max))]
     let mut edges: HashMap<(u32, u32), Vec<(usize, bool)>> = HashMap::new();
-    for (fi, f) in mesh.faces.iter().enumerate() {
-        for (a, b) in ring_edges(f) {
-            if a != b {
-                edges.entry(key(a, b)).or_default().push((fi, a < b));
-            }
+    for (fi, a, b) in mesh.face_edges() {
+        if a != b {
+            edges.entry(key(a, b)).or_default().push((fi, a < b));
         }
     }
     let mut keys: Vec<_> = edges.keys().copied().collect();
@@ -228,7 +239,7 @@ pub fn inspect(mesh: &Mesh, tol: f64) -> Report {
     }
 
     let mut used = vec![false; mesh.positions.len()];
-    for f in &mesh.faces {
+    for f in mesh.faces.iter().chain(mesh.holes.iter().flatten()) {
         for &v in f {
             if let Some(u) = used.get_mut(v as usize) {
                 *u = true;
@@ -301,37 +312,47 @@ pub fn repair(mesh: &Mesh, tol: f64) -> (Mesh, RepairSummary) {
         remap.push(id);
     }
 
-    // 2. Rebuild faces, dropping degenerate ones.
-    let mut faces: Vec<Vec<u32>> = Vec::new();
-    for f in &mesh.faces {
+    // 2. Rebuild faces, dropping degenerate ones (each keeps its holes, welded the same way).
+    let weld = |f: &Vec<u32>| {
         let mut ring: Vec<u32> = f.iter().filter_map(|&v| remap.get(v as usize).copied()).collect();
         ring.dedup();
         while ring.len() > 1 && ring.first() == ring.last() {
             ring.pop();
         }
+        ring
+    };
+    let mut faces: Vec<Vec<u32>> = Vec::new();
+    let mut holes: Vec<Vec<Vec<u32>>> = Vec::new();
+    for (fi, f) in mesh.faces.iter().enumerate() {
+        let ring = weld(f);
         if ring.len() < 3 || area(&mesh.positions, &ring) < tol * tol {
             s.removed_degenerate_faces += 1;
         } else {
             faces.push(ring);
+            holes.push(mesh.holes_of(fi).iter().map(weld).filter(|h| h.len() >= 3).collect());
         }
     }
 
     // 3. Drop duplicate faces, keeping the first.
     let mut seen = HashSet::new();
-    faces.retain(|f| {
-        let mut k = f.clone();
-        k.sort_unstable();
-        let fresh = seen.insert(k);
-        if !fresh {
-            s.removed_duplicate_faces += 1;
-        }
-        fresh
-    });
+    let fresh: Vec<bool> = faces
+        .iter()
+        .map(|f| {
+            let mut k = f.clone();
+            k.sort_unstable();
+            seen.insert(k)
+        })
+        .collect();
+    s.removed_duplicate_faces = fresh.iter().filter(|&&f| !f).count();
+    let mut keep = fresh.iter();
+    faces.retain(|_| *keep.next().expect("one each"));
+    let mut keep = fresh.iter();
+    holes.retain(|_| *keep.next().expect("one each"));
 
     // 4. Compact vertices to those still used.
     // Original order is kept so repairing a clean mesh returns it unchanged.
     let mut used = vec![false; mesh.positions.len()];
-    faces.iter().flatten().for_each(|&v| used[v as usize] = true);
+    faces.iter().chain(holes.iter().flatten()).flatten().for_each(|&v| used[v as usize] = true);
     mesh.lines.iter().flatten().for_each(|&v| used[v as usize] = true);
     let mut new_index = vec![u32::MAX; mesh.positions.len()];
     let mut positions = Vec::new();
@@ -339,18 +360,30 @@ pub fn repair(mesh: &Mesh, tol: f64) -> (Mesh, RepairSummary) {
         new_index[i] = positions.len() as u32;
         positions.push(mesh.positions[i]);
     }
-    faces.iter_mut().flatten().for_each(|v| *v = new_index[*v as usize]);
+    faces.iter_mut().chain(holes.iter_mut().flatten()).flatten().for_each(|v| *v = new_index[*v as usize]);
     let lines: Vec<[u32; 2]> = mesh.lines.iter().map(|l| l.map(|v| new_index[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
     let seams: Vec<[u32; 2]> = mesh.seams.iter().map(|l| l.map(|v| new_index[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
     s.removed_unused_vertices = mesh.positions.len() - s.welded_vertices - positions.len();
 
-    // 5-7. Orientation, holes, inverted solids.
+    // 5-7. Orientation, gaps in the surface, inverted solids. A face turned round turns its holes round with it.
+    let before: Vec<[f64; 3]> = faces.iter().map(|f| ring_normal(&positions, f)).collect();
     s.reoriented_faces = make_consistent(&mut faces);
     s.filled_holes = fill_holes(&positions, &mut faces, tol);
     s.inverted_solids_flipped = fix_inverted(&positions, &mut faces);
+    for (i, n) in before.iter().enumerate() {
+        if dot(*n, ring_normal(&positions, &faces[i])) < 0.0 {
+            for h in &mut holes[i] {
+                h.reverse();
+            }
+        }
+    }
 
     // repair renumbers and drops faces, so colours are not carried (it is for imported meshes, which have none)
-    (Mesh { positions, faces, lines, seams, colors: Vec::new() }, s)
+    let mut out = Mesh { positions, faces, lines, seams, colors: Vec::new(), holes: Vec::new() };
+    for (i, h) in holes.into_iter().enumerate() {
+        out.set_holes(i, h);
+    }
+    (out, s)
 }
 
 fn edge_faces(faces: &[Vec<u32>]) -> HashMap<(u32, u32), Vec<usize>> {

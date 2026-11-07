@@ -977,10 +977,12 @@ mod tests {
         assert!((m.mesh().face_normal(inner)[2] - 1.0).abs() < 1e-6, "faces up like the top around it");
         assert!(m.mesh().is_closed(), "still a closed solid");
         assert!((m.mesh().signed_volume() - 32.0).abs() < 1e-3);
-        // the two seams of the ring around it are not drawn; the square's own edges are
+        // a true hole in the top: no seams, every edge drawn
         let mesh = m.mesh().to_mesh();
-        assert_eq!(mesh.seams.len(), 2);
-        assert_eq!(mesh.all_edges().len() - mesh.visible_edges().len(), 2);
+        assert!(mesh.seams.is_empty());
+        assert_eq!(mesh.all_edges().len(), mesh.visible_edges().len());
+        assert_eq!(mesh.holes.iter().map(Vec::len).sum::<usize>(), 1, "the top has one hole");
+        assert_eq!(m.mesh().euler_characteristic(), 2);
         // pushed in by 1: a pocket of 2 x 2 x 1
         m.push_pull(inner, -1.0).unwrap();
         assert!(m.mesh().is_closed());

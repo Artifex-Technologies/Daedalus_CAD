@@ -10,10 +10,10 @@ pub fn cut_lines(mesh: &Mesh, point: [f64; 3], normal: [f64; 3]) -> Vec<([f64; 3
     // a vertex on the plane counts as in front, so a crossing there is found once
     let side = |p: [f64; 3]| dot(p, normal) - off;
     let mut out = Vec::new();
-    for f in &mesh.faces {
-        let n = f.len();
+    for fi in 0..mesh.faces.len() {
         let mut hits: Vec<[f64; 3]> = Vec::new();
-        for i in 0..n {
+        // the outline and the holes: a cut through a window gives two pieces, one each side of it
+        for (f, n, i) in mesh.loops(fi).flat_map(|f| (0..f.len()).map(move |i| (f, f.len(), i))) {
             let (a, b) = (mesh.positions[f[i] as usize], mesh.positions[f[(i + 1) % n] as usize]);
             let (da, db) = (side(a), side(b));
             if (da >= 0.0) != (db >= 0.0) {
