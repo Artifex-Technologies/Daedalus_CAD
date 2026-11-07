@@ -302,7 +302,7 @@ enum Op {
     /// Rotate: about the plane's normal through `center`, from the `start` direction (once set) by `angle` radians.
     Rotate { t: Target, plane: Plane, center: [f64; 3], start: Option<[f64; 3]>, angle: f64 },
     /// Scale: uniformly about `anchor` (the corner of the bounding box opposite the grip), `start` being the grip.
-    Scale { t: Target, anchor: [f64; 3], start: [f64; 3], factor: f64 },
+    Scale { t: Target, anchor: [f64; 3], start: [f64; 3], factor: f64, axes: [bool; 3] },
     /// Tape Measure: from `start` to the cursor.
     Tape { start: [f64; 3], cursor: Option<[f64; 3]> },
     /// Protractor: a guide through `center` turned `angle` radians from the `start` direction (once set).
@@ -606,9 +606,9 @@ impl Tools {
                 let (center, n, a) = (*center, plane.normal, *angle);
                 Some((t, Xform::from_fn(|q| rotate_about(q, center, n, a))))
             }
-            Op::Scale { t, anchor, factor, .. } => {
-                let (anchor, f) = (*anchor, *factor);
-                Some((t, Xform::from_fn(|q| scale_about(q, anchor, f))))
+            Op::Scale { t, anchor, factor, axes, .. } => {
+                let (anchor, f, axes) = (*anchor, *factor, *axes);
+                Some((t, Xform::from_fn(|q| scale_axes(q, anchor, f, axes))))
             }
             _ => None,
         }
@@ -946,14 +946,20 @@ impl Tools {
             (Tool::Scale, Op::Idle) => {
                 let t = self.target(model, c).ok_or("select something to scale, or point at a face or group")?;
                 if let Some(h) = c.hit {
-                    let anchor = opposite_corner(&target_points(model, &t), h.point);
-                    if dist(anchor, h.point) < 1e-6 {
+                    // the grip: which ways it scales, as SketchUp's grips (a corner all ways, an edge's middle two, a face's
+                    // middle one)
+                    let pts = target_points(model, &t);
+                    let axes = grip_axes(&pts, h.point);
+                    let anchor = opposite_corner(&pts, h.point);
+                    // the grip moved only along the ways it scales
+                    let start = std::array::from_fn(|i| if axes[i] { h.point[i] } else { anchor[i] });
+                    if !axes.contains(&true) || dist(anchor, start) < 1e-9 {
                         return Err("pick a point away from the middle of what is scaled".into());
                     }
-                    self.op = Op::Scale { t, anchor, start: h.point, factor: 1.0 };
+                    self.op = Op::Scale { t, anchor, start, factor: 1.0, axes };
                 }
             }
-            (Tool::Scale, Op::Scale { t, anchor, factor, .. }) => self.transform(model, &t, |q| scale_about(q, anchor, factor))?,
+            (Tool::Scale, Op::Scale { t, anchor, factor, axes, .. }) => self.transform(model, &t, |q| scale_axes(q, anchor, factor, axes))?,
             (Tool::TapeMeasure, Op::Idle) => {
                 if let Some(h) = c.hit {
                     self.op = Op::Tape { start: h.point, cursor: None };
@@ -1207,7 +1213,7 @@ impl Tools {
                 self.draw_arc(model, sketch::arc_from_center(&plane, center, st, rad, self.arc_segments))
             }
             Op::Pie { plane, center, start: Some(st), .. } => self.commit(model, sketch::pie(&plane, center, st, rad, self.arc_segments)),
-            Op::Scale { t, anchor, .. } if n != 0.0 => self.transform(model, &t, |q| scale_about(q, anchor, n)),
+            Op::Scale { t, anchor, axes, .. } if n != 0.0 => self.transform(model, &t, |q| scale_axes(q, anchor, n, axes)),
             Op::Scale { .. } => Err("a scale of 0 would flatten it to a point".into()),
             op => {
                 self.op = op;
@@ -1302,7 +1308,7 @@ impl Tools {
             Op::Rotate { t, plane, center, start: Some(_), angle } if *angle != 0.0 && !t.verts.is_empty() => {
                 moved(&t.verts, &|q| rotate_about(q, *center, plane.normal, *angle))
             }
-            Op::Scale { t, anchor, factor, .. } if *factor != 1.0 && !t.verts.is_empty() => moved(&t.verts, &|q| scale_about(q, *anchor, *factor)),
+            Op::Scale { t, anchor, factor, axes, .. } if *factor != 1.0 && !t.verts.is_empty() => moved(&t.verts, &|q| scale_axes(q, *anchor, *factor, *axes)),
             _ => None,
         }
     }
@@ -1667,8 +1673,24 @@ fn rotate_about(p: [f64; 3], center: [f64; 3], axis: [f64; 3], angle: f64) -> [f
     add(center, r)
 }
 
-fn scale_about(p: [f64; 3], anchor: [f64; 3], factor: f64) -> [f64; 3] {
-    add(anchor, scale(sub(p, anchor), factor))
+/// Scales `p` about `anchor` by `factor` along the world axes in `axes` only.
+fn scale_axes(p: [f64; 3], anchor: [f64; 3], factor: f64, axes: [bool; 3]) -> [f64; 3] {
+    std::array::from_fn(|i| if axes[i] { anchor[i] + (p[i] - anchor[i]) * factor } else { p[i] })
+}
+
+/// Which world axes a Scale grip at `grip` scales: those along which it is near an end of the bounding box (in its outer
+/// quarter either side); along an axis where it is near the middle, or where the box has no size, it does not.
+fn grip_axes(pts: &[[f64; 3]], grip: [f64; 3]) -> [bool; 3] {
+    let lo = pts.iter().fold([f64::MAX; 3], |m, p| std::array::from_fn(|i| m[i].min(p[i])));
+    let hi = pts.iter().fold([f64::MIN; 3], |m, p| std::array::from_fn(|i| m[i].max(p[i])));
+    std::array::from_fn(|i| {
+        let size = hi[i] - lo[i];
+        if size <= 1e-12 {
+            return false;
+        }
+        let at = (grip[i] - lo[i]) / size;
+        !(0.25..=0.75).contains(&at)
+    })
 }
 
 /// The corner of the vertices' bounding box opposite `grip`: on each axis, the far side from it (or the grip's own
@@ -2026,6 +2048,23 @@ mod tests {
         assert_eq!(m.mesh().face_count(), 4);
         assert!(m.undo());
         assert_eq!(m.mesh().face_count(), 6);
+    }
+
+    #[test]
+    fn a_grip_in_the_middle_of_the_top_scales_only_the_height() {
+        let (mut m, top) = box_model();
+        let mut t = Tools::default();
+        t.select(&m, top.hit.unwrap().face, None, false, false, true);
+        t.set_tool(Tool::Scale);
+        // the top face's middle: (1, 1, 2)
+        t.click(&mut m, &top).unwrap();
+        t.type_entry(&mut m, "2").unwrap();
+        assert_eq!(bounds(&m), ([0.0; 3], [2.0, 2.0, 4.0]), "twice as tall, as wide as before");
+        // a corner grip scales every way
+        let corner = Cursor { hit: Some(Hit { point: [2.0, 2.0, 4.0], ..top.hit.unwrap() }), ..top };
+        t.click(&mut m, &corner).unwrap();
+        t.type_entry(&mut m, "0.5").unwrap();
+        assert_eq!(bounds(&m), ([0.0; 3], [1.0, 1.0, 2.0]));
     }
 
     #[test]
