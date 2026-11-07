@@ -588,7 +588,10 @@ name = "daedalus-sheet"
 version = "0.1.0"
 dependencies = [
  "daedalus-core",
+ "serde",
+ "serde_json",
  "solidcore-record",
+ "solidcraft-geom",
  "solidcraft-kernel",
 ]
 

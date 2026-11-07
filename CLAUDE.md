@@ -25,6 +25,11 @@ Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/c
 - `crates/daedalus-io`: `MeshImporter` / `MeshExporter` per format (`.daedalus` native, STL, OBJ, DXF, DAE), `dxf2d`
   (flat-pattern DXF), images/PSD
 - `crates/daedalus-app`: CLI (`inspect`, `flatten`, stats)
+- `crates/daedalus-sheet`: exact solids (B-rep) on SolidCraft's kernel (MIT/Apache, git dependency pinned to commit
+  871014f; solidcore underneath is Apache-2.0; notices in the crate's `NOTICE.md`). `sheet.rs` is SolidCraft's sheet-metal
+  model copied and cut loose from its document (rules are plain numbers, `RuleValues`); `util.rs` the error type and 4x4
+  helpers it needs. Rust 2024 edition for this crate only. Dependencies and this crate are optimised in debug builds
+  (root `Cargo.toml`), or its tests take minutes. STEP comes from `kernel::step_export` (AP242, true cylinders).
 - `crates/daedalus-viewer`: wgpu 24 + winit 0.30 + egui 0.31 (pinned together on purpose; egui 0.32 needs wgpu 25).
   `tools.rs` is the GPU-free tool state machine (unit-tested); `render.rs` GPU; `ui.rs` egui chrome; `main.rs` events,
   snapping and the document (open, save, unsaved changes); `filedlg.rs` the built-in file browser (no GTK/Qt dialog);
@@ -53,7 +58,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 144 tests pass (2026-11-06). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 287 tests pass (2026-11-06, 100 of them in daedalus-sheet). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -170,7 +175,11 @@ the current state is:
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").
-- Next milestones: Solid Tools (phase 4), Sandbox (phase 5), constraints, sheet metal inside the model, STEP export.
+- Sheet metal and STEP (2026-11-06, started): `daedalus-sheet` builds base flanges, edge/contour flanges, bends, reliefs,
+  flat patterns and folded solids (SolidCraft's 99 tests pass here) and writes exact STEP; an L-bracket test checks the
+  flat length against hand-computed bend allowance. Not yet: parts in the model, the part editor tabs (Drawing / 3D bent
+  or flat / Flat pattern), DXF from the flat pattern, material presets.
+- Next milestones: sheet-metal parts in the model and their editor, STEP export from the File menu, constraints.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
   constraint solver, reuse CADCraft crates or reimplement.
 
