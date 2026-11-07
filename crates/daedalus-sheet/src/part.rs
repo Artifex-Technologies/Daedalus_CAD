@@ -117,9 +117,9 @@ pub struct SolidSource {
     pub bends: Vec<[f64; 3]>,
 }
 
-/// An edge flange, a hem, a fold or a jog as the user asked for it, in the order they were added (the part is built again
-/// from them in this order).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// An edge flange, a hem, a fold, a jog, a path flange or a hole as the user asked for it, in the order they were added (the
+/// part is built again from them in this order).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FlangeAsked {
     /// The point picked on the edge (part mm).
     pub pick: [f64; 3],
@@ -136,6 +136,35 @@ pub struct FlangeAsked {
     /// A fold along a line across a panel, or a jog (then `height` is its step and `position` is not used); `pick` is unused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fold: Option<FoldLine>,
+    /// A path flange on the edge at `pick`: one flange per leg, each `[length, turn]` (mm from the outside of its bend,
+    /// degrees). The first turn is from the sheet, each after it from the leg before; positive turns toward the sheet's top
+    /// face (the side it grew to from the face it was made of), so legs of the same sign curl the same way.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<[f64; 2]>,
+    /// A hole or cut-out through a flat panel (the other values are unused).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole: Option<HoleAsked>,
+}
+
+/// A hole or rectangular cut-out through one flat panel of the part, bent or not. It is placed on its panel, so it moves with
+/// the panel when a flange before it changes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HoleAsked {
+    /// The panel: None the base panel (a converted part's face that stays put), else a flange, by its number in the sheet.
+    pub panel: Option<usize>,
+    /// Its centre (mm). On the base, flat coordinates; on a flange, along its bend from the bend's start, and out across the
+    /// panel from where the bend ends.
+    pub at: [f64; 2],
+    /// Round, `size[0]` across; else a rectangle `size[0]` along the bend by `size[1]` across it.
+    pub round: bool,
+    pub size: [f64; 2],
+}
+
+impl HoleAsked {
+    /// Its size as the panel shows it: `6` for a round hole, `10 x 5` for a cut-out.
+    pub fn size_text(&self) -> String {
+        if self.round { fmt_mm(self.size[0]) } else { format!("{} x {}", fmt_mm(self.size[0]), fmt_mm(self.size[1])) }
+    }
 }
 
 /// Where a fold or jog runs: two points on its line, on a face of the panel it folds (part mm).
@@ -179,17 +208,25 @@ impl FoldPosition {
     }
 }
 
-/// What a step is: a flange, a hem, a fold or a jog.
+/// What a step is: a flange, a hem, a fold, a jog, a path flange or a hole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepKind {
     Flange,
     Hem,
     Fold,
     Jog,
+    Path,
+    Hole,
 }
 
 impl FlangeAsked {
     pub fn kind(&self) -> StepKind {
+        if self.hole.is_some() {
+            return StepKind::Hole;
+        }
+        if !self.path.is_empty() {
+            return StepKind::Path;
+        }
         match &self.fold {
             Some(f) if f.jog => StepKind::Jog,
             Some(_) => StepKind::Fold,
@@ -197,6 +234,28 @@ impl FlangeAsked {
             None => StepKind::Flange,
         }
     }
+}
+
+/// A path flange's legs as text, `length turn` per leg, legs apart by commas: `20 90, 15 -90`.
+pub fn legs_text(legs: &[[f64; 2]]) -> String {
+    legs.iter().map(|l| format!("{} {}", fmt_mm(l[0]), fmt_mm(l[1]))).collect::<Vec<_>>().join(", ")
+}
+
+/// Legs read back from [`legs_text`]'s form (each length may carry a unit, `0.75"`; the turn is degrees). None if a leg
+/// does not read.
+pub fn parse_legs(text: &str) -> Option<Vec<[f64; 2]>> {
+    use daedalus_core::units::{self, Units};
+    let mut legs = Vec::new();
+    for leg in text.split([',', ';']).map(str::trim).filter(|l| !l.is_empty()) {
+        let (len, turn) = leg.rsplit_once(char::is_whitespace)?;
+        let len = units::parse(len.trim(), Units::Millimetres)? * MM;
+        let turn = turn.trim().trim_end_matches('°').parse::<f64>().ok()?;
+        if !(len.is_finite() && turn.is_finite()) {
+            return None;
+        }
+        legs.push([len, turn]);
+    }
+    (!legs.is_empty()).then_some(legs)
 }
 
 /// The kind a part's text names, so `Definition::part` can hold other kinds later.
@@ -237,9 +296,15 @@ pub fn part_from_solid(mesh: &Mesh, fixed: [f64; 3], bends: &[[f64; 3]], materia
     Ok(part)
 }
 
-/// A flange or hem as asked, added to `sheet`.
+/// A step as asked, added to `sheet`.
 fn apply(sheet: &mut SheetBody, f: &FlangeAsked, rule: &RuleValues) -> Result<()> {
     let pick = Vec3::new(f.pick[0], f.pick[1], f.pick[2]);
+    if let Some(h) = &f.hole {
+        return cut_hole(sheet, h);
+    }
+    if !f.path.is_empty() {
+        return path_flange(sheet, pick, &f.path, rule.bend_radius);
+    }
     if let Some(line) = &f.fold {
         let (a, b) = (Vec3::new(line.a[0], line.a[1], line.a[2]), Vec3::new(line.b[0], line.b[1], line.b[2]));
         if line.jog {
@@ -320,6 +385,95 @@ fn jog(sheet: &mut SheetBody, a: Vec3, b: Vec3, step: f64, angle: f64, radius: f
     Ok(())
 }
 
+/// Where a panel's own coordinates sit in the flat (origin, along, across): the base's are the flat's; a flange's start where
+/// its bend ends, along the bend and out across the panel.
+fn panel_frame(sheet: &SheetBody, panel: Option<usize>) -> Option<(Vec2, Vec2, Vec2)> {
+    let Some(i) = panel else { return Some((Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0))) };
+    let f = sheet.flanges.get(i)?;
+    let (d, n) = (f.d.normalized()?, f.n.normalized()?);
+    Some((f.p + n * sheet.allowance(f), d, n))
+}
+
+/// The flat material's area (mm²), cut-outs taken off.
+fn flat_area(sheet: &SheetBody) -> Result<f64> {
+    Ok(sheet.flat_regions()?.iter().map(|r| r.area()).sum())
+}
+
+fn check_hole(h: &HoleAsked) -> Result<()> {
+    let size_ok = |x: f64| x > 0.0 && x.is_finite();
+    if !(size_ok(h.size[0]) && (h.round || size_ok(h.size[1]))) {
+        return invalid("a hole's size must be more than 0");
+    }
+    if !h.at.iter().all(|x| x.is_finite()) {
+        return invalid("the hole's position is not a number");
+    }
+    Ok(())
+}
+
+/// A hole as asked, cut through its panel (in the flat, so the folded part and the blank both have it). A hole that takes no
+/// material (off the panel, or inside a hole already there) is refused.
+fn cut_hole(sheet: &mut SheetBody, h: &HoleAsked) -> Result<()> {
+    check_hole(h)?;
+    let (o, d, n) = panel_frame(sheet, h.panel).ok_or_else(|| DocError::Invalid("the flange the hole was on is gone".into()))?;
+    let at = |u: f64, v: f64| o + d * u + n * v;
+    let [u, v] = h.at;
+    let outer = if h.round {
+        Loop2::circle(at(u, v), h.size[0] / 2.0)
+    } else {
+        let (w, l) = (h.size[0] / 2.0, h.size[1] / 2.0);
+        Loop2::polygon(&[at(u - w, v - l), at(u + w, v - l), at(u + w, v + l), at(u - w, v + l)]).ccw()
+    };
+    let before = flat_area(sheet)?;
+    sheet.holes.push(Region2 { outer, holes: Vec::new() });
+    if !(before - flat_area(sheet)? > 1e-6) {
+        sheet.holes.pop();
+        return invalid("the hole misses the sheet (it would cut no material)");
+    }
+    Ok(())
+}
+
+fn check_path(legs: &[[f64; 2]]) -> Result<()> {
+    if legs.is_empty() || legs.len() > sheet::MAX_PATH_LINES {
+        return invalid(format!("a path flange has 1 to {} legs", sheet::MAX_PATH_LINES));
+    }
+    for (k, &[len, turn]) in legs.iter().enumerate() {
+        if !(len > 0.0 && len.is_finite()) {
+            return invalid(format!("leg {} of the path flange must be longer than 0", k + 1));
+        }
+        if !(turn.abs() > 1e-6 && turn.abs() < 180.0 - 1e-6) {
+            return invalid(format!("leg {} of the path flange must turn, by less than 180 degrees either way", k + 1));
+        }
+    }
+    Ok(())
+}
+
+/// A path flange on the edge at `pick`: a flange for each leg, the first on the edge, each after it on the far edge of the
+/// one before (heights from the outside of the bends, as SolidCraft's path flange does).
+fn path_flange(sheet: &mut SheetBody, pick: Vec3, legs: &[[f64; 2]], radius: f64) -> Result<()> {
+    check_path(legs)?;
+    let (_, _, _, top, dist) = sheet.edge_at(pick).ok_or_else(|| DocError::Invalid("no sheet edge there".into()))?;
+    if dist > sheet.t * 2.0 + 1e-3 {
+        return invalid("pick an edge of the sheet's top or bottom face");
+    }
+    let mut last = None;
+    for (k, &[height, turn]) in legs.iter().enumerate() {
+        let line = |e: DocError| match e {
+            DocError::Invalid(m) => DocError::Invalid(format!("leg {}: {m}", k + 1)),
+            e => e,
+        };
+        // the first on the edge picked (`flip` is from the face it was picked on), each after it on the last one's far edge,
+        // picked nearer its top face
+        let (at, flip) = match last {
+            None => (pick, top == (turn < 0.0)),
+            Some(i) => (sheet.far_edge_pick(i).ok_or_else(|| DocError::Invalid(format!("leg {}: the leg before has no far edge", k + 1)))?, turn < 0.0),
+        };
+        let each = [sheet::EdgeFlange { pick: at, height, angle: turn.abs().to_radians(), from: sheet::HeightFrom::Outer }];
+        let (made, _) = sheet.add_flanges_each(&each, radius, "inside", flip, sheet::ReliefOverride::default()).map_err(line)?;
+        last = Some(*made.last().ok_or_else(|| DocError::Invalid(format!("leg {} made no flange", k + 1)))?);
+    }
+    Ok(())
+}
+
 fn check_flange(height: f64, angle_deg: f64) -> Result<()> {
     if !(height > 0.0 && height.is_finite()) {
         return invalid("the flange height must be more than 0");
@@ -343,17 +497,43 @@ impl SheetPart {
     /// The sheet built again from the outline, the rule and the flanges. Fails (and changes nothing) if a flange no longer
     /// finds its edge or the part cannot be made.
     pub fn rebuild(&mut self) -> Result<()> {
+        let (sheet, notes, _) = self.build()?;
+        (self.sheet, self.notes) = (sheet, notes);
+        Ok(())
+    }
+
+    /// The sheet made from the description, its notes, and which of the sheet's flanges each step made.
+    fn build(&self) -> Result<(SheetBody, Vec<String>, Vec<std::ops::Range<usize>>)> {
         let rule = self.rule.checked()?;
         let (mut sheet, notes) = match &self.solid {
             Some(src) => converted(src, &self.material, &rule)?,
             None => (sheet::base_flange("Part", &self.material, &rule, Plane::XY, self.region.clone()), Vec::new()),
         };
-        self.notes = notes;
+        let mut made = Vec::with_capacity(self.flanges.len());
         for (n, f) in self.flanges.iter().enumerate() {
-            apply(&mut sheet, f, &rule).map_err(|e| DocError::Invalid(format!("flange {}: {e}", n + 1)))?;
+            let before = sheet.flanges.len();
+            apply(&mut sheet, f, &rule).map_err(|e| DocError::Invalid(format!("step {}: {e}", n + 1)))?;
+            made.push(before..sheet.flanges.len().max(before));
         }
         sheet.solid()?;
-        self.sheet = sheet;
+        Ok((sheet, notes, made))
+    }
+
+    /// Step `i` is about to make `count` flanges instead of the ones it makes now: holes after it on flanges made later are
+    /// renumbered to match, and a hole on one of its flanges that would go stops the change.
+    fn renumber(&mut self, i: usize, count: usize) -> Result<()> {
+        let (_, _, made) = self.build()?;
+        let Some(r) = made.get(i).cloned() else { return invalid("no such step") };
+        for (j, f) in self.flanges.iter_mut().enumerate().skip(i + 1) {
+            let Some(h) = f.hole.as_mut() else { continue };
+            match h.panel {
+                Some(p) if p >= r.end => h.panel = Some(p + count - r.len()),
+                Some(p) if p >= r.start && p - r.start >= count => {
+                    return invalid(format!("hole {} (step {}) is on it: take the hole away first", j + 1, j + 1));
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -406,6 +586,7 @@ impl SheetPart {
         if i >= next.flanges.len() {
             return invalid("no such flange");
         }
+        next.renumber(i, 0)?;
         next.flanges.remove(i);
         next.rebuild()?;
         *self = next;
@@ -433,14 +614,14 @@ impl SheetPart {
     /// `angle_deg` bend angle (0…180), radius from the part's rule. The part is unchanged if it fails.
     pub fn add_flange(&mut self, pick: [f64; 3], height: f64, angle_deg: f64, position: FlangePosition, down: bool) -> Result<()> {
         check_flange(height, angle_deg)?;
-        self.add(FlangeAsked { pick, height, angle_deg, position: position.key().into(), down, hem: false, fold: None })
+        self.add(FlangeAsked { pick, height, angle_deg, position: position.key().into(), down, ..Default::default() })
     }
 
     /// Adds a flat hem on the part's edge nearest `pick` (part mm): folded right back onto the sheet, `length` to its outer
     /// face, the rule's hem gap inside. The part is unchanged if it fails.
     pub fn add_hem(&mut self, pick: [f64; 3], length: f64, down: bool) -> Result<()> {
         check_flange(length, 180.0)?;
-        self.add(FlangeAsked { pick, height: length, angle_deg: 180.0, position: FlangePosition::Inside.key().into(), down, hem: true, fold: None })
+        self.add(FlangeAsked { pick, height: length, angle_deg: 180.0, position: FlangePosition::Inside.key().into(), down, hem: true, ..Default::default() })
     }
 
     /// Adds a fold along the line through `a` and `b` (part mm, on a face of the panel to fold): `angle_deg` (0…180), up or
@@ -449,7 +630,7 @@ impl SheetPart {
     pub fn add_fold(&mut self, a: [f64; 3], b: [f64; 3], angle_deg: f64, position: FoldPosition, down: bool) -> Result<()> {
         check_flange(1.0, angle_deg)?;
         let fold = Some(FoldLine { a, b, jog: false });
-        self.add(FlangeAsked { pick: a, height: 0.0, angle_deg, position: position.key().into(), down, hem: false, fold })
+        self.add(FlangeAsked { pick: a, height: 0.0, angle_deg, position: position.key().into(), down, fold, ..Default::default() })
     }
 
     /// Adds a jog (a joggle) along the line through `a` and `b`: the side away from the larger part steps `step` mm aside
@@ -460,7 +641,76 @@ impl SheetPart {
             return invalid("a jog's bends must be less than 179 degrees");
         }
         let fold = Some(FoldLine { a, b, jog: true });
-        self.add(FlangeAsked { pick: a, height: step, angle_deg, position: "centerline".into(), down, hem: false, fold })
+        self.add(FlangeAsked { pick: a, height: step, angle_deg, position: "centerline".into(), down, fold, ..Default::default() })
+    }
+
+    /// Adds a path flange on the part's edge nearest `pick` (part mm): `legs` as [`FlangeAsked::path`] says, the bends at the
+    /// rule's radius. The part is unchanged if it fails.
+    pub fn add_path_flange(&mut self, pick: [f64; 3], legs: &[[f64; 2]]) -> Result<()> {
+        check_path(legs)?;
+        self.add(FlangeAsked { pick, height: legs[0][0], angle_deg: legs[0][1], position: FlangePosition::Inside.key().into(), path: legs.to_vec(), ..Default::default() })
+    }
+
+    /// Path flange `i` with new legs (holes on its flanges keep their place; one on a leg taken away stops the change).
+    pub fn set_path(&mut self, i: usize, legs: &[[f64; 2]]) -> Result<()> {
+        check_path(legs)?;
+        let mut next = self.clone();
+        if next.flanges.get(i).is_none_or(|f| f.path.is_empty()) {
+            return invalid("that is not a path flange");
+        }
+        next.renumber(i, legs.len())?;
+        let f = &mut next.flanges[i];
+        (f.path, f.height, f.angle_deg) = (legs.to_vec(), legs[0][0], legs[0][1]);
+        next.rebuild()?;
+        *self = next;
+        Ok(())
+    }
+
+    /// The flat panel a point of the part lies on (part mm; the part `flat` or folded, as it is shown), and the point in that
+    /// panel's coordinates (see [`HoleAsked::at`]). None on a bend or off the part.
+    pub fn panel_at(&self, p: [f64; 3], flat: bool) -> Option<(Option<usize>, [f64; 2])> {
+        let mut sheet = self.sheet.clone();
+        sheet.flat = flat;
+        let p = Vec3::new(p[0], p[1], p[2]);
+        let tol = (sheet.t * 0.25).max(1e-3);
+        // later flanges first: a fold's panel lies on the material it was folded out of
+        let mut panels: Vec<(Option<usize>, Region2)> = sheet.flanges.iter().enumerate().filter(|(_, f)| f.leg > 1e-9).map(|(i, f)| (Some(i), sheet.panel(f))).collect();
+        panels.reverse();
+        panels.push((None, sheet.base.clone()));
+        for (pi, region) in panels {
+            let Some(inv) = crate::util::mat_inverse(&sheet.world(pi)) else { continue };
+            let q = crate::util::apply_point(&inv, p);
+            if q.z.abs().min((q.z - sheet.t).abs()) > tol {
+                continue;
+            }
+            let q2 = Vec2::new(q.x, q.y);
+            if !region.contains(q2) {
+                continue;
+            }
+            let (o, d, n) = panel_frame(&sheet, pi)?;
+            let r = q2 - o;
+            return Some((pi, [r.dot(d), r.dot(n)]));
+        }
+        None
+    }
+
+    /// Adds a round hole (`size[0]` across) or a rectangular cut-out (`size[0]` along the panel's bend by `size[1]`), centred
+    /// at `at` on `panel` (both as [`panel_at`](Self::panel_at) gives them). The part is unchanged if it fails.
+    pub fn add_hole(&mut self, panel: Option<usize>, at: [f64; 2], round: bool, size: [f64; 2]) -> Result<()> {
+        let hole = HoleAsked { panel, at, round, size };
+        check_hole(&hole)?;
+        self.add(FlangeAsked { hole: Some(hole), ..Default::default() })
+    }
+
+    /// Hole `i` moved or resized. The part is unchanged if it fails.
+    pub fn set_hole(&mut self, i: usize, at: [f64; 2], round: bool, size: [f64; 2]) -> Result<()> {
+        let mut next = self.clone();
+        let Some(h) = next.flanges.get_mut(i).and_then(|f| f.hole.as_mut()) else { return invalid("that is not a hole") };
+        (h.at, h.round, h.size) = (at, round, size);
+        check_hole(h)?;
+        next.rebuild()?;
+        *self = next;
+        Ok(())
     }
 
     fn add(&mut self, f: FlangeAsked) -> Result<()> {
@@ -507,8 +757,13 @@ impl SheetPart {
             out.push(format!("Bend radius {} mm is tighter than the {} mm thickness: some materials crack.", fmt_mm(r), fmt_mm(t)));
         }
         for (i, f) in self.flanges.iter().enumerate() {
-            if !f.hem && f.height < 4.0 * t {
-                out.push(format!("Flange {} is {} mm high, under 4 x thickness ({} mm): it may be too short to bend.", i + 1, fmt_mm(f.height), fmt_mm(4.0 * t)));
+            let heights: Vec<f64> = match f.kind() {
+                StepKind::Flange => vec![f.height],
+                StepKind::Path => f.path.iter().map(|l| l[0]).collect(),
+                _ => Vec::new(),
+            };
+            for h in heights.into_iter().filter(|&h| h < 4.0 * t) {
+                out.push(format!("Flange {} is {} mm high, under 4 x thickness ({} mm): it may be too short to bend.", i + 1, fmt_mm(h), fmt_mm(4.0 * t)));
             }
         }
         let Ok(regions) = self.sheet.flat_regions() else { return out };
@@ -847,6 +1102,121 @@ mod tests {
             }
         }
         crate::util::apply_point(&s.world(best.0), Vec3::new(x, y, s.t)).z
+    }
+
+    const BA90: f64 = std::f64::consts::FRAC_PI_2 * (2.0 + 0.44 * 2.0);
+
+    /// The centre of hole `k` of the sheet (flat mm), from its arc or its corners.
+    fn hole_centre(p: &SheetPart, k: usize) -> Vec2 {
+        let lp = &p.sheet.holes[k].outer;
+        match lp.segs[..] {
+            [Seg2::Arc { center, .. }] => center,
+            _ => lp.centroid(),
+        }
+    }
+
+    #[test]
+    fn a_hole_on_a_bent_flange_is_cut_in_the_blank_where_it_was_clicked() {
+        let mut p = plain_plate();
+        p.add_flange([60.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Inside, false).unwrap();
+        // the flange stands at y = 0 (its outer face there), its panel from z = 4 (T + R) up to 30
+        assert_eq!(p.panel_at([60.0, 30.0, 2.0], false), Some((None, [60.0, 30.0])));
+        let (panel, at) = p.panel_at([60.0, 0.0, 20.0], false).unwrap();
+        assert_eq!(panel, Some(0));
+        assert!((at[0] - 60.0).abs() < 1e-9 && (at[1] - 16.0).abs() < 1e-9, "{at:?}");
+        // on the bend's outside, half way round: no panel
+        let c = 4.0 - 4.0 * std::f64::consts::FRAC_1_SQRT_2;
+        assert_eq!(p.panel_at([60.0, c, c], false), None);
+        let area = flat_area(&p.sheet).unwrap();
+        p.add_hole(panel, at, true, [6.0, 0.0]).unwrap();
+        assert_eq!(p.flanges[1].kind(), StepKind::Hole);
+        assert!((area - flat_area(&p.sheet).unwrap() - std::f64::consts::PI * 9.0).abs() < 1e-3);
+        // in the blank: x 60, 16 past where the bend ends (the panel's edge 4 - BA from y = 0)
+        let c = hole_centre(&p, 0);
+        assert!((c.x - 60.0).abs() < 1e-9 && (c.y - (4.0 - BA90 - 16.0)).abs() < 1e-9, "{c:?}");
+        let dxf = p.flat_dxf(Units::Millimeters).unwrap();
+        assert_eq!(dxf.lines().filter(|l| *l == "CIRCLE").count(), 1, "one true circle");
+        // the same spot found on the blank when it is shown flat
+        let (flat_panel, flat_at) = p.panel_at([60.0, 4.0 - BA90 - 10.0, 2.0], true).unwrap();
+        assert_eq!(flat_panel, Some(0));
+        assert!((flat_at[1] - 10.0).abs() < 1e-9, "{flat_at:?}");
+        // moved and made a cut-out; then a bad change and one off the part leave it alone
+        p.set_hole(1, [30.0, 12.0], false, [20.0, 8.0]).unwrap();
+        assert!((area - flat_area(&p.sheet).unwrap() - 160.0).abs() < 1e-6);
+        let before = p.clone();
+        assert!(p.set_hole(1, [30.0, 12.0], true, [0.0, 0.0]).is_err());
+        assert!(p.add_hole(Some(0), [500.0, 500.0], true, [6.0, 0.0]).is_err());
+        assert!(p.add_hole(Some(7), [10.0, 10.0], true, [6.0, 0.0]).is_err());
+        assert_eq!(p, before);
+        // its text reads back the same
+        let mut back = SheetPart::from_text(&p.to_text()).unwrap();
+        back.rebuild().unwrap();
+        assert_eq!(back.sheet, p.sheet);
+    }
+
+    #[test]
+    fn a_path_flange_makes_a_flange_per_leg_with_the_blank_by_hand() {
+        let mut p = plain_plate();
+        // 30 up, then 20 back over the plate: a lip
+        p.add_path_flange([60.0, 0.0, 2.0], &[[30.0, 90.0], [20.0, 90.0]]).unwrap();
+        assert_eq!(p.flanges[0].kind(), StepKind::Path);
+        assert_eq!(p.sheet.flanges.len(), 2);
+        assert_eq!(p.bend_table().len(), 2);
+        let s = size(&p.faces(false).unwrap());
+        assert!((s[0] - 0.12).abs() < 1e-9 && (s[1] - 0.06).abs() < 1e-9 && (s[2] - 0.03).abs() < 1e-6, "folded {s:?}");
+        // flat: base 60 - 4, the upright 30 less a setback at each bend, the lip 20 - 4, two allowances
+        let (w, h) = p.flat_size().unwrap();
+        assert!((w - 120.0).abs() < 1e-9 && (h - (56.0 + 22.0 + 16.0 + 2.0 * BA90)).abs() < 1e-6, "{w} x {h}");
+        // the lip turned the other way stands out past the edge
+        p.set_path(0, &[[30.0, 90.0], [20.0, -90.0]]).unwrap();
+        let s = size(&p.faces(false).unwrap());
+        assert!(s[1] > 0.075 && (s[2] - 0.03).abs() < 1e-6, "outward lip {s:?}");
+        // bad legs are refused and change nothing
+        let before = p.clone();
+        assert!(p.set_path(0, &[]).is_err());
+        assert!(p.set_path(0, &[[30.0, 0.0]]).is_err());
+        assert!(p.set_path(0, &[[30.0, 180.0]]).is_err());
+        assert!(p.set_path(0, &[[-1.0, 90.0]]).is_err());
+        assert!(p.add_path_flange([60.0, 30.0, 2.0], &[[20.0, 90.0]]).is_err(), "not on an edge");
+        assert_eq!(p, before);
+        assert!(p.shop_checks().is_empty(), "{:?}", p.shop_checks());
+    }
+
+    #[test]
+    fn holes_follow_their_flange_when_steps_before_them_change_or_go() {
+        let mut p = plain_plate();
+        p.add_flange([60.0, 60.0, 2.0], 25.0, 90.0, FlangePosition::Inside, false).unwrap();
+        p.add_path_flange([60.0, 0.0, 2.0], &[[30.0, 90.0], [20.0, 90.0]]).unwrap();
+        // on the lip (the path's second flange, number 2 in the sheet)
+        p.add_hole(Some(2), [60.0, 8.0], true, [5.0, 0.0]).unwrap();
+        let c0 = hole_centre(&p, 0);
+        // a longer upright moves the lip, and its hole with it, 10 further out in the blank
+        p.set_path(1, &[[40.0, 90.0], [20.0, 90.0]]).unwrap();
+        let c1 = hole_centre(&p, 0);
+        assert!((c0.y - c1.y - 10.0).abs() < 1e-9 && (c0.x - c1.x).abs() < 1e-9, "{c0:?} {c1:?}");
+        // the flange before goes: the hole's flange is number 1 now, and the hole stays where it was on it
+        p.remove_flange(0).unwrap();
+        assert_eq!(p.flanges[1].hole.as_ref().unwrap().panel, Some(1));
+        let c2 = hole_centre(&p, 0);
+        assert!((c2.x - c1.x).abs() < 1e-9, "{c1:?} {c2:?}");
+        // a path without its lip, or without the path at all, would leave the hole on nothing: refused
+        assert!(p.set_path(0, &[[40.0, 90.0]]).is_err());
+        assert!(p.remove_flange(0).is_err());
+        p.remove_flange(1).unwrap();
+        p.remove_flange(0).unwrap();
+        assert!(p.flanges.is_empty());
+    }
+
+    #[test]
+    fn legs_read_from_text_and_back() {
+        assert_eq!(parse_legs("20 90, 15 -90"), Some(vec![[20.0, 90.0], [15.0, -90.0]]));
+        let inch = parse_legs("0.5\" 45°").unwrap();
+        assert!((inch[0][0] - 12.7).abs() < 1e-9 && inch[0][1] == 45.0);
+        assert_eq!(parse_legs(""), None);
+        assert_eq!(parse_legs("20"), None);
+        assert_eq!(parse_legs("20 up"), None);
+        assert_eq!(legs_text(&[[20.0, 90.0], [15.5, -90.0]]), "20 90, 15.5 -90");
+        assert_eq!(parse_legs(&legs_text(&[[20.0, 90.0], [15.5, -45.0]])), Some(vec![[20.0, 90.0], [15.5, -45.0]]));
     }
 
     #[test]

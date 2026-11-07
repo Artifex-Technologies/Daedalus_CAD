@@ -8,6 +8,7 @@ pub mod export;
 pub mod part;
 #[allow(dead_code)] // SolidCraft helpers its other features used; kept so updates stay easy to compare
 pub mod sheet;
+pub mod table;
 pub mod util;
 
 #[cfg(test)]

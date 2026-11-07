@@ -16,6 +16,8 @@ pub enum Purpose {
     Step,
     PartStep,
     FlatDxf,
+    /// A fabricator's bend table (CSV) for the Sheet Metal panel's materials.
+    BendTable,
 }
 
 impl Purpose {
@@ -28,6 +30,7 @@ impl Purpose {
             Purpose::Texture => "Texture",
             Purpose::Step | Purpose::PartStep => "Export STEP",
             Purpose::FlatDxf => "Export flat pattern",
+            Purpose::BendTable => "Bend table",
         }
     }
 
@@ -41,6 +44,7 @@ impl Purpose {
             Purpose::Texture => &["jpg", "jpeg", "png", "bmp"],
             Purpose::Step | Purpose::PartStep => &["step", "stp"],
             Purpose::FlatDxf => &["dxf"],
+            Purpose::BendTable => &["csv", "txt"],
         }
     }
 

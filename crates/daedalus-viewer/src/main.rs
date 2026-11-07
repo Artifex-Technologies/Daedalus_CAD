@@ -84,6 +84,12 @@ struct State {
     /// part's instance and the point, part mm) once picked.
     fold_defaults: (bool, f64, f64, usize, bool),
     fold_first: Option<(usize, [f64; 3])>,
+    /// What the Hole tool cuts (round, size mm), and whether the Flange tool makes path flanges (with these legs).
+    hole_defaults: (bool, [f64; 2]),
+    path_defaults: (bool, Vec<[f64; 2]>),
+    /// The fabricator's bend table (`~/.config/daedalus/bend-table.csv`), and what in it did not read.
+    bend_table: Vec<daedalus_sheet::table::TableRow>,
+    bend_table_note: Vec<String>,
     /// The selected part as the panel shows it, for the model state and selection it was made for.
     sheet_cache: Option<(u64, Option<ui::SheetView>)>,
     /// The flat pattern DXF being saved is in inches.
@@ -238,6 +244,10 @@ impl State {
             flange_defaults: (20.0, 90.0, 0, false, false),
             fold_defaults: (false, 90.0, 10.0, 0, false),
             fold_first: None,
+            hole_defaults: (true, [6.0, 6.0]),
+            path_defaults: (false, vec![[20.0, 90.0], [12.0, 90.0]]),
+            bend_table: Vec::new(),
+            bend_table_note: Vec::new(),
             sheet_cache: None,
             dxf_inches: false,
             convert: None,
@@ -297,6 +307,7 @@ impl State {
                 font: settings::load("text3d-font").map(PathBuf::from).filter(|p| p.is_file()),
             },
         };
+        s.load_bend_table();
         s.refresh();
         s
     }
@@ -492,6 +503,7 @@ impl State {
                 Err(e) => self.message = Some(format!("Not exported: {e}.")),
             },
             Purpose::Texture => self.add_texture_from(&path),
+            Purpose::BendTable => self.import_bend_table(&path),
             Purpose::Step => match daedalus_sheet::export::scene_step(&self.document()) {
                 Ok(r) => match std::fs::write(&path, r.text) {
                     Ok(()) => {
@@ -946,10 +958,13 @@ impl State {
                             StepKind::Hem => 1,
                             StepKind::Fold => 2,
                             StepKind::Jog => 3,
+                            StepKind::Hole => 4,
+                            StepKind::Path => 5,
                         };
                         (f.height, f.angle_deg, pos, f.down, k)
                     })
                     .collect(),
+                step_text: p.flanges.iter().map(|f| step_text(&p, f)).collect(),
                 base,
                 flat_loops,
                 bend_lines,
@@ -988,7 +1003,7 @@ impl State {
 
     /// Make Sheet Metal Part: the selected face becomes a flat part of that material.
     fn make_sheet_part(&mut self, t: f64, k: f64, r: f64, preset: usize) {
-        use daedalus_sheet::part::{part_from_face, MATERIALS};
+        use daedalus_sheet::part::part_from_face;
         use daedalus_sheet::sheet::RuleValues;
         if self.readonly.is_some() {
             return;
@@ -997,7 +1012,7 @@ impl State {
             self.message = Some("Make Sheet Metal Part: select one face.".into());
             return;
         };
-        let name = MATERIALS.get(preset).map(|m| m.name.to_string()).unwrap_or_else(|| format!("{} mm sheet", t));
+        let name = self.material_name(preset, t);
         // square corner reliefs, as cutting shops such as SendCutSend ask for (SolidCraft's own default cuts none)
         let rule = RuleValues { k_factor: k, bend_radius: r, corner_relief_shape: daedalus_sheet::sheet::ReliefShape::Rectangular, ..RuleValues::steel(t) };
         // the face as the model has it (open context coordinates are model coordinates while editing)
@@ -1042,7 +1057,10 @@ impl State {
             self.message = Some("Flange: show the part bent first (Sheet Metal panel, 3D tab).".into());
             return;
         }
-        if hem {
+        if self.path_defaults.0 {
+            let legs = self.path_defaults.1.clone();
+            self.change_part("Path flange", |p| p.add_path_flange(pick, &legs));
+        } else if hem {
             self.change_part("Hem", |p| p.add_hem(pick, h, down));
         } else {
             self.change_part("Flange", |p| p.add_flange(pick, h, a, position, down));
@@ -1090,6 +1108,76 @@ impl State {
             }
         }
         self.sheet_open = true;
+    }
+
+    /// The Hole tool's click: a hole (or cut-out) of the panel's size centred where the part was clicked, on that panel.
+    fn hole_at(&mut self, i: usize, point: [f64; 3]) {
+        let Some(back) = self.model.instance_world(i).and_then(|w| w.inverse()) else { return };
+        let def = self.model.instances()[i].def;
+        let is_part = self.model.definition(def).and_then(|d| d.part.as_deref()).is_some_and(daedalus_sheet::part::is_sheet);
+        if !is_part {
+            self.message = Some("Hole: click a face of a sheet-metal part (Tools > Sheet Metal makes one of a face).".into());
+            return;
+        }
+        self.tools.selected.clear();
+        self.tools.instances = vec![i];
+        let local = back.apply(point);
+        let pick = [local[0] * 1000.0, local[1] * 1000.0, local[2] * 1000.0];
+        let Some((_, _, part)) = self.sheet_part() else { return };
+        let Some((panel, at)) = part.panel_at(pick, part.shown_flat) else {
+            self.message = Some("Hole: click a flat face of the part, not a bend or an edge.".into());
+            self.sheet_open = true;
+            return;
+        };
+        let (round, size) = self.hole_defaults;
+        self.change_part("Hole", |p| p.add_hole(panel, at, round, size));
+        self.sheet_open = true;
+    }
+
+    /// The materials the Sheet Metal panel offers: the built-in presets, then the bend table's rows (name, thickness,
+    /// K-factor, inside radius).
+    fn materials(&self) -> Vec<(String, f64, f64, f64)> {
+        let presets = daedalus_sheet::part::MATERIALS.iter().map(|m| (m.name.to_string(), m.thickness, m.k_factor, m.bend_radius));
+        presets.chain(self.bend_table.iter().map(|r| (r.name(), r.thickness, r.k_factor, r.radius))).collect()
+    }
+
+    /// The name of material `preset` (into [`materials`](Self::materials)), or one for typed-in values.
+    fn material_name(&self, preset: usize, t: f64) -> String {
+        self.materials().get(preset).map(|m| m.0.clone()).unwrap_or_else(|| format!("{t} mm sheet"))
+    }
+
+    /// The bend table read again from `~/.config/daedalus/bend-table.csv` (none there: no rows).
+    fn load_bend_table(&mut self) {
+        let text = settings::config_file("bend-table.csv").and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+        (self.bend_table, self.bend_table_note) = daedalus_sheet::table::read(&text);
+    }
+
+    /// A bend table chosen in the dialog: read, and kept as Daedalus's own copy if any row reads.
+    fn import_bend_table(&mut self, path: &std::path::Path) {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.message = Some(format!("Bend table: {e}."));
+                return;
+            }
+        };
+        let (rows, note) = daedalus_sheet::table::read(&text);
+        if rows.is_empty() {
+            self.message = Some(format!("Bend table: no row of {} reads ({}).", short(path), note.first().map(String::as_str).unwrap_or("it is empty")));
+            return;
+        }
+        let kept = settings::config_file("bend-table.csv").ok_or_else(|| "no home folder".to_string()).and_then(|to| {
+            std::fs::create_dir_all(to.parent().unwrap_or(&to)).map_err(|e| e.to_string())?;
+            std::fs::write(&to, &text).map_err(|e| e.to_string())
+        });
+        match kept {
+            Ok(()) => {
+                self.load_bend_table();
+                let skipped = if note.is_empty() { String::new() } else { format!(", {} line(s) passed over", note.len()) };
+                self.message = Some(format!("Bend table: {} material(s) from {}{skipped}.", rows.len(), short(path)));
+            }
+            Err(e) => self.message = Some(format!("Bend table not kept: {e}.")),
+        }
     }
 
     /// Stress Test: a click on a solid group or component. A new part (another one, or the same after the model changed) is
@@ -1168,7 +1256,7 @@ impl State {
         };
         let Some(def) = self.model.instances().get(i).map(|x| x.def) else { return };
         let Some(mesh) = self.model.definition(def).map(|d| d.ctx.mesh.clone()) else { return };
-        let name = daedalus_sheet::part::MATERIALS.get(preset).map(|m| m.name.to_string()).unwrap_or_else(|| format!("{t} mm sheet"));
+        let name = self.material_name(preset, t);
         // square corner reliefs, as cutting shops such as SendCutSend ask for (SolidCraft's own default cuts none)
         let rule = RuleValues { k_factor: k, bend_radius: r, corner_relief_shape: daedalus_sheet::sheet::ReliefShape::Rectangular, ..RuleValues::steel(t) };
         let made = daedalus_sheet::part::part_from_solid(&mesh, fixed, &bends, &name, rule)
@@ -1514,6 +1602,17 @@ impl State {
             self.refresh();
             return;
         }
+        // Hole: a hole or cut-out on the flat face of a sheet-metal part under the mouse
+        if self.tools.tool == Tool::Hole {
+            if self.readonly.is_some() {
+                return;
+            }
+            match c.hit.and_then(|h| h.instance.map(|i| (i, h.point))) {
+                Some((i, point)) => self.hole_at(i, point),
+                None => self.message = Some("Hole: click a flat face of a sheet-metal part.".into()),
+            }
+            return;
+        }
         // Flange: a flange on the sheet-metal part's edge under the mouse
         if self.tools.tool == Tool::Flange {
             if self.readonly.is_some() {
@@ -1666,7 +1765,7 @@ impl State {
     }
 
     fn set_tool(&mut self, tool: Tool) {
-        if matches!(tool, Tool::Flange | Tool::SheetConvert | Tool::Fold) {
+        if matches!(tool, Tool::Flange | Tool::SheetConvert | Tool::Fold | Tool::Hole) {
             self.sheet_open = true;
         }
         self.fold_first = None;
@@ -2184,7 +2283,7 @@ impl State {
             }
             UiAction::MakeSheetPart(t, k, r, preset) => self.make_sheet_part(t, k, r, preset),
             UiAction::SheetRule(t, k, r, preset) => {
-                let name = daedalus_sheet::part::MATERIALS.get(preset).map(|m| m.name.to_string()).unwrap_or_else(|| format!("{t} mm sheet"));
+                let name = self.material_name(preset, t);
                 self.change_part("Material", |p| {
                     let rule = daedalus_sheet::sheet::RuleValues { thickness: t, k_factor: k, bend_radius: r, ..p.rule };
                     p.set_rule(&name, rule)
@@ -2210,6 +2309,11 @@ impl State {
                 self.change_part("Fold", |p| p.set_fold(i, step, a, position, down));
             }
             UiAction::FoldDefaults(jog, a, step, pos, down) => self.fold_defaults = (jog, a, step, pos, down),
+            UiAction::SheetHole(i, at, round, size) => self.change_part("Hole", |p| p.set_hole(i, at, round, size)),
+            UiAction::HoleDefaults(round, size) => self.hole_defaults = (round, size),
+            UiAction::SheetPath(i, legs) => self.change_part("Path flange", |p| p.set_path(i, legs.get())),
+            UiAction::PathDefaults(on, legs) => self.path_defaults = (on, legs.get().to_vec()),
+            UiAction::ImportBendTable => self.choose(Purpose::BendTable, ""),
         }
         self.window.request_redraw();
     }
@@ -2443,6 +2547,11 @@ impl State {
             flange_defaults: self.flange_defaults,
             fold_defaults: self.fold_defaults,
             fold_first: self.fold_first.is_some(),
+            hole_defaults: self.hole_defaults,
+            path_defaults: self.path_defaults.clone(),
+            materials: self.materials(),
+            table_rows: self.bend_table.len(),
+            table_note: self.bend_table_note.clone(),
             stress_open: self.stress_open,
             stress: self.stress.as_ref().map(|s| s.view(self.model.state())),
             converting: self.convert.as_ref().and_then(|(i, fixed, bends)| {
@@ -3040,6 +3149,44 @@ const RELIEFS: [daedalus_sheet::sheet::ReliefShape; 4] = [
 
 fn relief_index(shape: daedalus_sheet::sheet::ReliefShape) -> usize {
     RELIEFS.iter().position(|r| *r == shape).unwrap_or(0)
+}
+
+/// The text a step's row shows where numbers do not say it: a hole's size, where it sits and its panel; a path flange's legs.
+fn step_text(p: &daedalus_sheet::part::SheetPart, f: &daedalus_sheet::part::FlangeAsked) -> (String, String, String) {
+    let fmt = |x: f64| {
+        let s = format!("{x:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    };
+    if let Some(h) = &f.hole {
+        // the panel by the step that made it
+        let on = match h.panel {
+            None => "base".to_string(),
+            Some(k) => {
+                let mut made = 0;
+                let mut name = format!("flange {}", k + 1);
+                for (n, g) in p.flanges.iter().enumerate() {
+                    let c = match g.kind() {
+                        daedalus_sheet::part::StepKind::Hole => 0,
+                        daedalus_sheet::part::StepKind::Jog => 2,
+                        daedalus_sheet::part::StepKind::Path => g.path.len(),
+                        _ => 1,
+                    };
+                    if (made..made + c).contains(&k) {
+                        name = if c > 1 { format!("step {} ({})", n + 1, k - made + 1) } else { format!("step {}", n + 1) };
+                        break;
+                    }
+                    made += c;
+                }
+                // a converted part's own bends come first
+                if p.solid.is_some() { format!("flange {}", k + 1) } else { name }
+            }
+        };
+        return (h.size_text(), format!("{}, {}", fmt(h.at[0]), fmt(h.at[1])), on);
+    }
+    if !f.path.is_empty() {
+        return (daedalus_sheet::part::legs_text(&f.path), String::new(), String::new());
+    }
+    (String::new(), String::new(), String::new())
 }
 
 fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {

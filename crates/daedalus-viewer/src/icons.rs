@@ -421,6 +421,14 @@ impl Draw {
                 self.line_with(&turn, accent);
                 self.head(0.75, 0.42, -0.4, -1.0, 0.09, self.accent);
             }
+            Icon::Tool(Tool::Hole) => {
+                // a plate seen at a slant with a round hole and a slot through it, an orange arrow going in
+                self.closed(&[(0.06, 0.62), (0.66, 0.62), (0.94, 0.88), (0.34, 0.88)]);
+                self.circle(0.42, 0.74, 0.07);
+                self.closed(&[(0.6, 0.7), (0.74, 0.7), (0.8, 0.78), (0.66, 0.78)]);
+                self.line_with(&[(0.42, 0.08), (0.42, 0.5)], Stroke::new(1.5_f32, self.accent));
+                self.head(0.42, 0.58, 0.0, 1.0, 0.1, self.accent);
+            }
             Icon::Tool(Tool::Stress) => {
                 // a bracket held at its foot (hatching), pushed down at its tip (arrow), bending
                 self.line(&[(0.14, 0.86), (0.14, 0.3)]);

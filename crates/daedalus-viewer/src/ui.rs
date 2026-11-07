@@ -109,6 +109,16 @@ pub enum UiAction {
     SheetFold(usize, f64, f64, usize, bool),
     /// What the Fold tool adds: a jog (else a fold), angle (degrees), a jog's step (mm), a fold's position, bent down.
     FoldDefaults(bool, f64, f64, usize, bool),
+    /// Hole `0` of the selected part changed to: centre on its panel (mm), round (else a cut-out), size (mm).
+    SheetHole(usize, [f64; 2], bool, [f64; 2]),
+    /// What the Hole tool cuts: round (else a rectangle), size (mm: across, or along the bend by across it).
+    HoleDefaults(bool, [f64; 2]),
+    /// Path flange `0` of the selected part with new legs (length mm, turn degrees each).
+    SheetPath(usize, Legs),
+    /// The Flange tool makes path flanges (else flanges or hems), with these legs.
+    PathDefaults(bool, Legs),
+    /// Choose a CSV bend table from the fabricator to use as materials.
+    ImportBendTable,
     /// Convert to Sheet Metal: make the part (thickness, K-factor, radius, preset), or start the picks again.
     ConvertSheet(f64, f64, f64, usize),
     ConvertReset,
@@ -129,6 +139,28 @@ pub enum UiAction {
     ToggleMaximize,
     Minimize,
     Close,
+}
+
+/// A path flange's legs (length mm, turn degrees each) in a list of fixed size, so that a [`UiAction`] stays `Copy`: the panel
+/// takes up to [`Legs::MAX`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Legs {
+    n: usize,
+    v: [[f64; 2]; Legs::MAX],
+}
+
+impl Legs {
+    pub const MAX: usize = 16;
+
+    pub fn new(legs: &[[f64; 2]]) -> Option<Legs> {
+        let mut v = [[0.0; 2]; Legs::MAX];
+        v.get_mut(..legs.len())?.copy_from_slice(legs);
+        Some(Legs { n: legs.len(), v })
+    }
+
+    pub fn get(&self) -> &[[f64; 2]] {
+        &self.v[..self.n]
+    }
 }
 
 /// Everything the chrome shows, gathered by the viewer each frame.
@@ -154,8 +186,10 @@ pub struct SheetView {
     pub relief: (usize, f64, f64, f64),
     pub flat: bool,
     /// Each step, in order: height (a jog's step), angle (degrees), position (into FlangePosition::ALL, or FoldPosition::ALL
-    /// for a fold), bent down, and what it is (0 flange, 1 hem, 2 fold, 3 jog).
+    /// for a fold), bent down, and what it is (0 flange, 1 hem, 2 fold, 3 jog, 4 hole, 5 path flange).
     pub flanges: Vec<(f64, f64, usize, bool, usize)>,
+    /// Each step's text where numbers do not say it: a hole's size, where it is and on which panel; a path flange's legs.
+    pub step_text: Vec<(String, String, String)>,
     /// The base outline and holes (Drawing tab) and the flat pattern's loops and bend centre lines (Flat pattern tab).
     pub base: Vec<Vec<[f64; 2]>>,
     pub flat_loops: Vec<Vec<[f64; 2]>>,
@@ -231,6 +265,14 @@ pub struct UiView<'a> {
     /// What the Fold tool adds (a jog, angle, step, position, down), and whether its first point is picked.
     pub fold_defaults: (bool, f64, f64, usize, bool),
     pub fold_first: bool,
+    /// What the Hole tool cuts (round, size mm) and whether the Flange tool makes path flanges (and their legs).
+    pub hole_defaults: (bool, [f64; 2]),
+    pub path_defaults: (bool, Vec<[f64; 2]>),
+    /// The materials to pick from: the built-in presets, then the bend table's rows (name, thickness, K-factor, radius), how
+    /// many of them come from the bend table, and what the table's file holds that did not read.
+    pub materials: Vec<(String, f64, f64, f64)>,
+    pub table_rows: usize,
+    pub table_note: Vec<String>,
     /// Convert to Sheet Metal under way: the solid's name, whether its fixed face is picked, and how many bend edges.
     pub converting: Option<(String, bool, usize)>,
     /// The Stress Test panel: open, and the test under way (None: no part picked yet).
@@ -830,7 +872,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                         actions.push(UiAction::SheetMetal);
                         ui.close_menu();
                     }
-                    tool_items(ui, v, &[Tool::Flange, Tool::Fold, Tool::SheetConvert], &mut actions);
+                    tool_items(ui, v, &[Tool::Flange, Tool::Fold, Tool::Hole, Tool::SheetConvert], &mut actions);
                     if ui.button("Sheet Metal Panel").clicked() {
                         actions.push(UiAction::SheetMetal);
                         ui.close_menu();
@@ -1194,6 +1236,7 @@ fn toolbar_groups() -> [Vec<Slot>; 4] {
             t(Tool::Interact),
             t(Tool::Flange),
             t(Tool::Fold),
+            t(Tool::Hole),
             t(Tool::SheetConvert),
             t(Tool::Stress),
         ],

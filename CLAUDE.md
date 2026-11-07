@@ -65,7 +65,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 323 tests pass (2026-11-07, 114 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 329 tests pass (2026-11-07, 120 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -211,6 +211,16 @@ the current state is:
   Drawing tab: corner relief None / Round / Square / Tear and its size, bend relief width and depth; new parts start with
   square corner reliefs (what SendCutSend asks for; SolidCraft's default cuts none). Tested in the part model (fold, jogs at
   90/45/60 degrees up and down, every relief shape at a two-flange corner); not yet seen on screen.
+- Holes, path flanges, bend table (2026-11-07): Tools > Sheet Metal > Hole or Cut-out (toolbar too): click a flat face of a
+  part, bent or not, and a round hole or a rectangle (sides along and across that panel's bend) is cut there, through the flat
+  so the blank and the folded part both have it (`SheetPart::add_hole`, `panel_at`). A hole is a step placed on its panel
+  (`HoleAsked`: the base's flat x, y, or along a flange's bend and across from where the bend ends), so it moves with the
+  panel when a step before it changes; taking away a step renumbers holes on later flanges, and one that would be left on
+  nothing stops it. Path flanges: the Flange tool's kind Path, legs typed `20 90, 12 90` (length from the outside of its bend,
+  turn; SolidCraft's path flange, one flange on the far edge of the one before). Bend table (`sheet/src/table.rs`): the
+  fabricator's CSV (material, thickness, inside radius, K-factor, or `BD` 90 degree bend deduction / `BA` allowance; units
+  allowed), chosen with Drawing > Material > Bend table… and kept in `~/.config/daedalus/bend-table.csv`; its rows join the
+  material list. Tested in the part model (blank sizes by hand); not yet seen on screen.
 - Box selection (2026-11-07, `f52ceb3`): with Select, drag a box. Left to right takes what is wholly inside;
   right to left (dashed, crossing) takes what it touches. Ctrl adds, Shift toggles, Ctrl+Shift takes out. It takes faces,
   edges and loose lines of the geometry being edited, and groups/components whole.
@@ -225,7 +235,8 @@ the current state is:
   the flat leg: 27 600 cubes of 1 mm, 10 s, 57.8 MPa (hand 58.5), 0.47 mm, 0.217 kg (0.220). Not built: shell elements
   (voxels already bend right at two cubes across a sheet), several load cases, results saved in the file.
 - Next milestones (my decision, 2026-11-07: stress testing first, now built): more sheet metal (folds, jogs and reliefs
-  done; still: path flanges, holes and cut-outs on bent panels, K-factor tables) and per-copy values for Dynamic Components. Constraints are still to come too.
+  done 2026-11-07, as are path flanges, holes on bent panels and bend tables; next there: seeing them on screen, then
+  SolidCraft's other features as needed) and per-copy values for Dynamic Components. Constraints are still to come too.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
   constraint solver, reuse CADCraft crates or reimplement.
 

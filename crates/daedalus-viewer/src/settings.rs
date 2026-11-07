@@ -5,8 +5,13 @@ use daedalus_core::units::Units;
 use std::path::PathBuf;
 
 fn path() -> Option<PathBuf> {
+    config_file("settings.conf")
+}
+
+/// A file in Daedalus's own settings folder (`~/.config/daedalus`).
+pub fn config_file(name: &str) -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("daedalus").join("settings.conf"))
+    Some(base.join("daedalus").join(name))
 }
 
 /// The value of `key` in settings text.
