@@ -12,7 +12,7 @@ fn children<'a, 'b>(n: Node<'a, 'b>, name: &'static str) -> impl Iterator<Item =
     n.children().filter(move |c| c.is_element() && c.tag_name().name() == name)
 }
 
-fn floats(n: Node) -> Vec<f32> {
+fn floats(n: Node) -> Vec<f64> {
     n.text().unwrap_or("").split_whitespace().filter_map(|s| s.parse().ok()).collect()
 }
 
@@ -37,7 +37,7 @@ impl MeshImporter for Dae {
         for geometry in doc.descendants().filter(|n| n.is_element() && n.tag_name().name() == "geometry") {
             for mesh in children(geometry, "mesh") {
                 // source id -> (data, stride)
-                let mut sources: HashMap<&str, (Vec<f32>, usize)> = HashMap::new();
+                let mut sources: HashMap<&str, (Vec<f64>, usize)> = HashMap::new();
                 for src in children(mesh, "source") {
                     let Some(id) = src.attribute("id") else { continue };
                     let data = children(src, "float_array").next().map(floats).unwrap_or_default();

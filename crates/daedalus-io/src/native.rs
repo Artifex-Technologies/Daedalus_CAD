@@ -85,8 +85,8 @@ fn quote(t: &str) -> String {
     s
 }
 
-fn numbers(parts: &[String], n: usize, what: &str, line: usize) -> Result<Vec<f32>, IoError> {
-    let c: Vec<f32> = parts.iter().map(|p| p.parse::<f32>()).collect::<Result<_, _>>().map_err(|_| IoError::Parse(format!("line {line}: {what}")))?;
+fn numbers(parts: &[String], n: usize, what: &str, line: usize) -> Result<Vec<f64>, IoError> {
+    let c: Vec<f64> = parts.iter().map(|p| p.parse::<f64>()).collect::<Result<_, _>>().map_err(|_| IoError::Parse(format!("line {line}: {what}")))?;
     if c.len() != n {
         return Err(IoError::Parse(format!("line {line}: {what}")));
     }
@@ -100,7 +100,7 @@ fn indices(parts: &[String], what: &str, line: usize) -> Result<Vec<u32>, IoErro
     parts.iter().map(|p| p.parse::<u32>()).collect::<Result<_, _>>().map_err(|_| IoError::Parse(format!("line {line}: {what}")))
 }
 
-fn p3(c: &[f32]) -> [f32; 3] {
+fn p3(c: &[f64]) -> [f64; 3] {
     [c[0], c[1], c[2]]
 }
 
@@ -290,7 +290,7 @@ fn write_instances(s: &mut String, instances: &[Instance]) {
     }
 }
 
-fn v3(p: [f32; 3]) -> String {
+fn v3(p: [f64; 3]) -> String {
     format!("{} {} {}", p[0], p[1], p[2])
 }
 

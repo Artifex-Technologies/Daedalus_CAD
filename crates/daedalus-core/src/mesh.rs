@@ -7,7 +7,7 @@ use crate::triangulate::triangulate;
 /// An editable half-edge structure will be built on top of it later.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Mesh {
-    pub positions: Vec<[f32; 3]>,
+    pub positions: Vec<[f64; 3]>,
     pub faces: Vec<Vec<u32>>,
     /// Loose edges: lines drawn that do not border a face (yet), as SketchUp keeps them. Vertex pairs.
     pub lines: Vec<[u32; 2]>,
@@ -22,7 +22,7 @@ impl Mesh {
         Self::default()
     }
 
-    pub fn add_vertex(&mut self, p: [f32; 3]) -> u32 {
+    pub fn add_vertex(&mut self, p: [f64; 3]) -> u32 {
         self.positions.push(p);
         (self.positions.len() - 1) as u32
     }
@@ -56,8 +56,17 @@ impl Mesh {
         self.faces.remove(f)
     }
 
+    /// How close two points or planes must be to count as the same, for this mesh: its size x 1e-7 (a 10 m house: 1 um; a
+    /// 10 mm part: 1 nm), so small models keep their detail and large ones are not split by rounding. At least 1e-10 m.
+    pub fn tolerance(&self) -> f64 {
+        let size = self.bounds().map_or(0.0, |(lo, hi)| (0..3).map(|i| (hi[i] - lo[i]).powi(2)).sum::<f64>().sqrt());
+        let reach = self.positions.iter().flatten().fold(0.0f64, |m, c| m.max(c.abs()));
+        // far from the origin, rounding grows with the coordinates themselves
+        (size * 1e-7).max(reach * 1e-12).max(1e-10)
+    }
+
     /// Axis-aligned bounds as (min, max), or None if the mesh has no vertices.
-    pub fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
+    pub fn bounds(&self) -> Option<([f64; 3], [f64; 3])> {
         let first = *self.positions.first()?;
         Some(self.positions.iter().fold((first, first), |(mut lo, mut hi), p| {
             for i in 0..3 {
@@ -99,8 +108,8 @@ impl Mesh {
     /// Nearest face hit by a ray, as (face index, distance along the ray).
     /// Faces are treated as two-sided. Works on any mesh, including
     /// non-manifold imports that cannot become a half-edge mesh.
-    pub fn pick_face(&self, origin: [f32; 3], dir: [f32; 3]) -> Option<(usize, f32)> {
-        let mut best: Option<(usize, f32)> = None;
+    pub fn pick_face(&self, origin: [f64; 3], dir: [f64; 3]) -> Option<(usize, f64)> {
+        let mut best: Option<(usize, f64)> = None;
         for (f, ring) in self.faces.iter().enumerate() {
             for tri in triangulate(&self.positions, ring) {
                 if let Some(t) = ray_triangle(origin, dir, tri.map(|v| self.positions[v as usize])) {
@@ -120,8 +129,8 @@ impl Mesh {
 
     /// [`Mesh::pick_face`] with the triangles already worked out ([`Mesh::face_triangles`] of this mesh): no ear clipping
     /// on every call, so it is quick enough for every mouse move on a large model.
-    pub fn pick_triangles(&self, tris: &[Vec<[u32; 3]>], origin: [f32; 3], dir: [f32; 3]) -> Option<(usize, f32)> {
-        let mut best: Option<(usize, f32)> = None;
+    pub fn pick_triangles(&self, tris: &[Vec<[u32; 3]>], origin: [f64; 3], dir: [f64; 3]) -> Option<(usize, f64)> {
+        let mut best: Option<(usize, f64)> = None;
         for (f, ts) in tris.iter().enumerate() {
             for tri in ts {
                 if let Some(t) = ray_triangle(origin, dir, tri.map(|v| self.positions[v as usize])) {
@@ -171,8 +180,8 @@ impl Mesh {
 
     /// Like [`Mesh::append`], but a vertex of `other` within `tol` of one already here becomes that vertex, so the two
     /// share their touching corners and edges.
-    pub fn append_welded(&mut self, other: &Mesh, tol: f32) {
-        let key = |p: [f32; 3]| p.map(|c| (c / tol).round() as i64);
+    pub fn append_welded(&mut self, other: &Mesh, tol: f64) {
+        let key = |p: [f64; 3]| p.map(|c| (c / tol).round() as i64);
         let mut at: std::collections::HashMap<[i64; 3], u32> = std::collections::HashMap::new();
         for (i, &p) in self.positions.iter().enumerate() {
             at.entry(key(p)).or_insert(i as u32);

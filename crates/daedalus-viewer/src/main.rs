@@ -12,10 +12,10 @@ mod tools;
 mod ui;
 
 use camera::Camera;
-use daedalus_core::inspect::{self, DEFAULT_TOLERANCE};
+use daedalus_core::inspect;
 use daedalus_core::scene::{Scene, Section};
 use daedalus_core::{HalfEdgeMesh, Mesh, Model, Plane};
-use glam::Vec3;
+use glam::DVec3;
 use render::{FaceStyle, LineVertex, Renderer, Style, UiFrame};
 use filedlg::{FileDialog, Outcome, Purpose};
 use std::path::{Path, PathBuf};
@@ -34,7 +34,7 @@ const SNAP_RADIUS: f32 = 12.0;
 const EDGE_PICK_RADIUS: f32 = 6.0;
 
 /// Position Camera: eye height above the point clicked (SketchUp's 5' 6").
-const EYE_HEIGHT: f32 = 1.676;
+const EYE_HEIGHT: f64 = 1.676;
 
 /// How many earlier views Camera > Previous can go back through.
 const VIEW_HISTORY: usize = 50;
@@ -159,9 +159,9 @@ impl State {
         );
         let (model, readonly) = load(scene);
         let camera = match scene.flatten().bounds() {
-            Some((lo, hi)) => Camera::fit(Vec3::from(lo), Vec3::from(hi)),
+            Some((lo, hi)) => Camera::fit(DVec3::from(lo), DVec3::from(hi)),
             // An empty model: frame a room-sized area around the origin.
-            None => Camera::fit(Vec3::new(-1.0, -1.0, 0.0), Vec3::new(6.0, 6.0, 2.0)),
+            None => Camera::fit(DVec3::new(-1.0, -1.0, 0.0), DVec3::new(6.0, 6.0, 2.0)),
         };
         let mut tools = Tools::default();
         tools.units = settings::load_units();
@@ -270,8 +270,8 @@ impl State {
         self.flagged.clear();
         self.typed.clear();
         self.camera = match mesh.bounds() {
-            Some((lo, hi)) => Camera::fit(Vec3::from(lo), Vec3::from(hi)),
-            None => Camera::fit(Vec3::new(-1.0, -1.0, 0.0), Vec3::new(6.0, 6.0, 2.0)),
+            Some((lo, hi)) => Camera::fit(DVec3::from(lo), DVec3::from(hi)),
+            None => Camera::fit(DVec3::new(-1.0, -1.0, 0.0), DVec3::new(6.0, 6.0, 2.0)),
         };
         self.refresh();
     }
@@ -497,11 +497,11 @@ impl State {
         // the section cut: black lines round it, a hair on the kept side so the cut does not hide them
         self.cut_lines = match self.model.notes().section.filter(|s| s.active) {
             Some(s) => {
-                let back = Vec3::from(s.normal) * -1e-4;
+                let back = DVec3::from(s.normal) * -1e-4;
                 daedalus_core::section::cut_lines(&self.display, s.point, s.normal)
                     .into_iter()
-                    .flat_map(|(a, b)| [Vec3::from(a) + back, Vec3::from(b) + back])
-                    .map(|p| LineVertex { position: p.into(), color: [0.0, 0.0, 0.0, 1.0] })
+                    .flat_map(|(a, b)| [DVec3::from(a) + back, DVec3::from(b) + back])
+                    .map(|p| LineVertex::at(p, [0.0, 0.0, 0.0, 1.0]))
                     .collect()
             }
             None => Vec::new(),
@@ -531,19 +531,19 @@ impl State {
         let (origin, dir) = self.camera.ray(self.cursor.0, self.cursor.1, w, h);
         let face_hit = self.display.pick_triangles(&self.tris, origin.into(), dir.into());
 
-        let mut candidates: Vec<(Vec3, Snap)> = Vec::new();
+        let mut candidates: Vec<(DVec3, Snap)> = Vec::new();
         for &(a, b) in &self.edges {
-            let (pa, pb) = (Vec3::from(self.display.positions[a as usize]), Vec3::from(self.display.positions[b as usize]));
+            let (pa, pb) = (DVec3::from(self.display.positions[a as usize]), DVec3::from(self.display.positions[b as usize]));
             candidates.push((pa, Snap::Endpoint));
             candidates.push((pb, Snap::Endpoint));
             candidates.push(((pa + pb) * 0.5, Snap::Midpoint));
         }
-        candidates.extend(self.tools.pending_points().into_iter().map(|p| (Vec3::from(p), Snap::Endpoint)));
+        candidates.extend(self.tools.pending_points().into_iter().map(|p| (DVec3::from(p), Snap::Endpoint)));
         // the origin, and the point of each axis nearest the mouse (as SketchUp snaps onto the axes)
         let axes = self.model.notes().axes;
-        let axes_at = Vec3::from(axes.origin);
+        let axes_at = DVec3::from(axes.origin);
         candidates.push((axes_at, Snap::Origin));
-        for (i, axis) in axes.dirs.into_iter().map(Vec3::from).enumerate() {
+        for (i, axis) in axes.dirs.into_iter().map(DVec3::from).enumerate() {
             let b = axis.dot(dir);
             let denom = 1.0 - b * b;
             if denom.abs() > 1e-6 {
@@ -555,9 +555,9 @@ impl State {
         // guide points, and the point of each guide line nearest the mouse
         for g in &self.model.notes().guides {
             match *g {
-                Guide::Point(p) => candidates.push((Vec3::from(p), Snap::OnGuide)),
+                Guide::Point(p) => candidates.push((DVec3::from(p), Snap::OnGuide)),
                 Guide::Line(p, d) => {
-                    let (p, d) = (Vec3::from(p), Vec3::from(d));
+                    let (p, d) = (DVec3::from(p), DVec3::from(d));
                     let b = d.dot(dir);
                     let denom = 1.0 - b * b;
                     if denom.abs() > 1e-6 {
@@ -569,11 +569,11 @@ impl State {
             }
         }
 
-        let visible = |p: Vec3| match face_hit {
+        let visible = |p: DVec3| match face_hit {
             Some((_, t)) => (p - origin).dot(dir) <= t * 1.001 + 1e-4,
             None => true,
         };
-        let mut best: Option<(Vec3, Snap, f32)> = None;
+        let mut best: Option<(DVec3, Snap, f32)> = None;
         for (p, snap) in candidates {
             let Some((x, y)) = self.camera.project(p, w, h) else { continue };
             let d = ((x - self.cursor.0).powi(2) + (y - self.cursor.1).powi(2)).sqrt();
@@ -589,20 +589,20 @@ impl State {
             }
         }
 
-        let face_plane = |f: usize, at: Vec3| Plane::from_point_normal(at.into(), render::newell(&self.display, &self.display.faces[f]));
+        let face_plane = |f: usize, at: DVec3| Plane::from_point_normal(at.into(), render::newell(&self.display, &self.display.faces[f]));
         let hit = match (best, face_hit) {
             (Some((p, snap, _)), fh) => {
                 let on_face = fh.and_then(|(f, _)| {
                     let plane = face_plane(f, p)?;
-                    let off = (p - Vec3::from(plane.origin)).dot(Vec3::from(plane.normal)).abs();
+                    let off = (p - DVec3::from(plane.origin)).dot(DVec3::from(plane.normal)).abs();
                     let face_point = origin + dir * fh?.1;
-                    let off_face = (p - face_point).dot(Vec3::from(plane.normal)).abs();
+                    let off_face = (p - face_point).dot(DVec3::from(plane.normal)).abs();
                     (off < 1e-4 && off_face < 1e-3 * (1.0 + p.length())).then_some((f, plane))
                 });
                 let ground = self.ground();
                 let (face, plane) = match on_face {
                     Some((f, plane)) => (Some(f), plane),
-                    None if (p - Vec3::from(ground.origin)).dot(Vec3::from(ground.normal)).abs() < 1e-5 => (None, ground),
+                    None if (p - DVec3::from(ground.origin)).dot(DVec3::from(ground.normal)).abs() < 1e-5 => (None, ground),
                     None => (None, Plane { origin: p.into(), ..ground }),
                 };
                 let (face, instance) = face.map_or((None, None), |f| self.owner(f));
@@ -621,8 +621,8 @@ impl State {
         // the loose line nearest the mouse on screen, for the Eraser
         let active_lines = if self.readonly.is_some() { 0 } else { self.model.mesh().lines.len() };
         let line = self.display.lines.iter().take(active_lines).enumerate().filter_map(|(i, &[a, b])| {
-            let pa = self.camera.project(Vec3::from(self.display.positions[a as usize]), w, h)?;
-            let pb = self.camera.project(Vec3::from(self.display.positions[b as usize]), w, h)?;
+            let pa = self.camera.project(DVec3::from(self.display.positions[a as usize]), w, h)?;
+            let pb = self.camera.project(DVec3::from(self.display.positions[b as usize]), w, h)?;
             let d = segment_distance(self.cursor, pa, pb);
             (d <= SNAP_RADIUS * 0.6).then_some((i, d))
         });
@@ -642,7 +642,7 @@ impl State {
         let (w, h) = self.size();
         let ppp = self.egui_ctx.pixels_per_point();
         self.model.notes().labels.iter().enumerate().rev().find_map(|(i, l)| {
-            let (x, y) = self.camera.project(Vec3::from(l.at), w, h)?;
+            let (x, y) = self.camera.project(DVec3::from(l.at), w, h)?;
             let longest = l.text.lines().map(|t| t.chars().count()).max().unwrap_or(1).max(4) as f32;
             let half = (longest * 3.6 + 6.0) * ppp;
             let tall = (l.text.lines().count().max(1) as f32 * 8.0 + 4.0) * ppp;
@@ -661,7 +661,7 @@ impl State {
             if a >= self.active_vertices || b >= self.active_vertices {
                 continue;
             }
-            let (pa, pb) = (Vec3::from(self.display.positions[a as usize]), Vec3::from(self.display.positions[b as usize]));
+            let (pa, pb) = (DVec3::from(self.display.positions[a as usize]), DVec3::from(self.display.positions[b as usize]));
             let (Some(sa), Some(sb)) = (self.camera.project(pa, w, h), self.camera.project(pb, w, h)) else { continue };
             let d = segment_distance(self.cursor, sa, sb);
             if d > EDGE_PICK_RADIUS || best.is_some_and(|(_, bd)| d >= bd) {
@@ -672,7 +672,7 @@ impl State {
             let (dx, dy) = (sb.0 - sa.0, sb.1 - sa.1);
             let l2 = dx * dx + dy * dy;
             let s = if l2 > 0.0 { (((self.cursor.0 - sa.0) * dx + (self.cursor.1 - sa.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
-            let q = pa + (pb - pa) * s;
+            let q = pa + (pb - pa) * s as f64;
             let depth = (q - origin).dot(dir);
             if face_t.is_some_and(|t| depth > t * 1.001 + 1e-3 * (1.0 + depth.abs())) {
                 continue;
@@ -768,7 +768,7 @@ impl State {
         if self.tools.tool == Tool::PositionCamera {
             if let Some(h) = c.hit {
                 self.remember_view();
-                self.camera.stand_at(Vec3::from(h.point), EYE_HEIGHT);
+                self.camera.stand_at(DVec3::from(h.point), EYE_HEIGHT);
                 self.set_tool(Tool::LookAround);
             }
             return;
@@ -988,7 +988,9 @@ impl State {
     /// Reports solid problems on stdout and marks the offending faces red.
     fn inspect(&mut self) {
         // the geometry being edited (faces of groups have numbers of their own)
-        let report = inspect::inspect(&self.display_active(), DEFAULT_TOLERANCE);
+        let active = self.display_active();
+        // imports (STL is 32-bit) are rougher than the model's own tolerance: ten times it
+        let report = inspect::inspect(&active, active.tolerance() * 10.0);
         println!("--- solid inspector ---\n{}", report.summary());
         self.message = Some(if report.is_solid() {
             "Solid Inspector: this is a valid solid.".into()
@@ -1001,9 +1003,10 @@ impl State {
 
     /// Repairs the model. A repaired import that is manifold becomes editable.
     fn repair(&mut self) {
-        let (fixed, summary) = inspect::repair(&self.display_active(), DEFAULT_TOLERANCE);
+        let active = self.display_active();
+        let (fixed, summary) = inspect::repair(&active, active.tolerance() * 10.0);
         // and coplanar faces merged: an import's triangle pairs become the faces they were drawn as
-        let (fixed, _) = daedalus_core::merge::merge_coplanar(&fixed, daedalus_core::model::MERGE_TOLERANCE);
+        let (fixed, _) = daedalus_core::merge::merge_coplanar(&fixed, fixed.tolerance() * 10.0);
         if !summary.changed_anything() {
             self.message = Some("Repair: nothing to fix.".into());
             return;
@@ -1083,7 +1086,7 @@ impl State {
     fn zoom_extents(&mut self) {
         self.remember_view();
         if let Some((lo, hi)) = self.display.bounds() {
-            self.camera.zoom_extents(Vec3::from(lo), Vec3::from(hi));
+            self.camera.zoom_extents(DVec3::from(lo), DVec3::from(hi));
         }
         self.window.request_redraw();
     }
@@ -1277,46 +1280,46 @@ impl State {
         for (i, color) in AXIS_COLORS.iter().take(3).enumerate() {
             let faded = [color[0] * 0.4 + 0.55, color[1] * 0.4 + 0.55, color[2] * 0.4 + 0.55, 1.0];
             for (sign, color) in [(1.0, *color), (-1.0, faded)] {
-                let end = (Vec3::from(axes.origin) + Vec3::from(axes.dirs[i]) * reach * sign).into();
-                out.push(LineVertex { position: axes.origin, color });
-                out.push(LineVertex { position: end, color });
+                let end = DVec3::from(axes.origin) + DVec3::from(axes.dirs[i]) * reach * sign;
+                out.push(LineVertex::at(axes.origin, color));
+                out.push(LineVertex::at(end, color));
             }
         }
         out.extend_from_slice(&self.cut_lines);
         // text leaders, from the point to the text
         for l in &self.model.notes().labels {
             if l.point != l.at {
-                out.push(LineVertex { position: l.point, color: [0.15, 0.15, 0.18, 1.0] });
-                out.push(LineVertex { position: l.at, color: [0.15, 0.15, 0.18, 1.0] });
+                out.push(LineVertex::at(l.point, [0.15, 0.15, 0.18, 1.0]));
+                out.push(LineVertex::at(l.at, [0.15, 0.15, 0.18, 1.0]));
             }
         }
         // dimensions, in dark grey
         for (a, b, color) in self.tools.dim_lines(&self.model, [0.15, 0.15, 0.18, 1.0]) {
-            out.push(LineVertex { position: a, color });
-            out.push(LineVertex { position: b, color });
+            out.push(LineVertex::at(a, color));
+            out.push(LineVertex::at(b, color));
         }
         // guides: lines reach as far as the axes; points are small crosses
         let guides = self.model.notes().guides.iter().copied().chain(self.tools.guide_preview());
         let cross = self.camera.distance * 0.008;
         for g in guides {
-            let mut seg = |a: Vec3, b: Vec3| {
-                out.push(LineVertex { position: a.into(), color: GUIDE_COLOR });
-                out.push(LineVertex { position: b.into(), color: GUIDE_COLOR });
+            let mut seg = |a: DVec3, b: DVec3| {
+                out.push(LineVertex::at(a, GUIDE_COLOR));
+                out.push(LineVertex::at(b, GUIDE_COLOR));
             };
             match g {
                 Guide::Line(p, d) => {
-                    let (p, d) = (Vec3::from(p), Vec3::from(d));
+                    let (p, d) = (DVec3::from(p), DVec3::from(d));
                     // dashed: pieces along the line
                     let n = 400;
-                    let step = 2.0 * reach / n as f32;
+                    let step = 2.0 * reach / n as f64;
                     for i in (0..n).step_by(2) {
-                        let a = p + d * (-reach + step * i as f32);
+                        let a = p + d * (-reach + step * i as f64);
                         seg(a, a + d * step);
                     }
                 }
                 Guide::Point(p) => {
-                    let p = Vec3::from(p);
-                    for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+                    let p = DVec3::from(p);
+                    for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
                         seg(p - axis * cross, p + axis * cross);
                     }
                 }
@@ -1331,7 +1334,7 @@ impl State {
             .preview_lines()
             .into_iter()
             .chain(self.tools.section_outline(&self.model, size))
-            .flat_map(|(a, b, color)| [LineVertex { position: a, color }, LineVertex { position: b, color }])
+            .flat_map(|(a, b, color)| [LineVertex::at(a, color), LineVertex::at(b, color)])
             .collect()
     }
 
@@ -1362,7 +1365,7 @@ impl State {
 
                 .last_cursor
                 .and_then(|c| self.tools.marker(&c))
-                .and_then(|(p, snap)| self.camera.project(Vec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), snap)))
+                .and_then(|(p, snap)| self.camera.project(DVec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), snap)))
             }
             _ => None,
         };
@@ -1391,7 +1394,7 @@ impl State {
                 .tools
                 .dim_labels(&self.model)
                 .into_iter()
-                .filter_map(|(p, t)| self.camera.project(Vec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), t)))
+                .filter_map(|(p, t)| self.camera.project(DVec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), t)))
                 .collect(),
             texts: self
                 .model
@@ -1400,7 +1403,7 @@ impl State {
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| self.label_edit.as_ref().is_none_or(|e| e.0 != *i))
-                .filter_map(|(_, l)| self.camera.project(Vec3::from(l.at), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), l.text.clone())))
+                .filter_map(|(_, l)| self.camera.project(DVec3::from(l.at), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), l.text.clone())))
                 .collect(),
             can_go_back: !self.views.is_empty(),
             own_frame: frame::OWN_FRAME,
@@ -1420,7 +1423,7 @@ impl State {
         let label_pos = label_edit
             .as_ref()
             .and_then(|(i, _)| self.model.notes().labels.get(*i))
-            .and_then(|l| self.camera.project(Vec3::from(l.at), w, h))
+            .and_then(|l| self.camera.project(DVec3::from(l.at), w, h))
             .map(|(x, y)| egui::pos2(x / ppp, y / ppp));
         let mut label_done = false;
         // 3D Text: its window while it waits for the words
@@ -1553,13 +1556,13 @@ impl State {
         let (axes, overlay) = (self.axes(), self.overlay());
         // edges about 1.5 points wide, like SketchUp's default
         let line_width = 1.4 * self.window.scale_factor() as f32;
-        let section = self.model.notes().section.filter(|s| s.active).map(|s: Section| (s.point, s.normal));
+        let section = self.model.notes().section.filter(|s| s.active).map(|s: Section| (render::gpu(s.point), render::gpu(s.normal)));
         let eye = if self.camera.ortho {
             let d = (self.camera.eye() - self.camera.target).normalize_or_zero();
-            [d.x, d.y, d.z, 0.0]
+            [d.x as f32, d.y as f32, d.z as f32, 0.0]
         } else {
             let e = self.camera.eye();
-            [e.x, e.y, e.z, 1.0]
+            [e.x as f32, e.y as f32, e.z as f32, 1.0]
         };
         self.gpu.render(self.camera.view_proj(w / h), eye, self.style, line_width, section, &axes, &overlay, ui);
 
@@ -1723,7 +1726,6 @@ impl ApplicationHandler<AppEvent> for App {
                     // after it, the graphics driver's clean-up talks to a connection that is gone and crashes
                     self.state = None;
                     event_loop.exit();
-                    return;
                 }
             }
             WindowEvent::ModifiersChanged(m) => s.modifiers = m.state(),
@@ -1854,7 +1856,7 @@ impl ApplicationHandler<AppEvent> for App {
                     s.view_saved_at = std::time::Instant::now();
                 }
                 // Zoom toward the point under the cursor.
-                let focus = s.resolve_cursor().hit.map(|h| Vec3::from(h.point));
+                let focus = s.resolve_cursor().hit.map(|h| DVec3::from(h.point));
                 s.camera.zoom(amount, focus);
                 s.mouse_moved();
                 s.window.request_redraw();

@@ -11,7 +11,7 @@ use crate::Mesh;
 
 /// An affine transform, three rows of a 4x4 matrix: `p' = M * [p, 1]`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Xform(pub [[f32; 4]; 3]);
+pub struct Xform(pub [[f64; 4]; 3]);
 
 impl Default for Xform {
     fn default() -> Self {
@@ -22,12 +22,12 @@ impl Default for Xform {
 impl Xform {
     pub const IDENTITY: Xform = Xform([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]);
 
-    pub fn translation(d: [f32; 3]) -> Xform {
+    pub fn translation(d: [f64; 3]) -> Xform {
         Xform([[1.0, 0.0, 0.0, d[0]], [0.0, 1.0, 0.0, d[1]], [0.0, 0.0, 1.0, d[2]]])
     }
 
     /// The transform that sends points where `f` does; `f` must be affine (a move, a turn, a scale or a mix of them).
-    pub fn from_fn(f: impl Fn([f32; 3]) -> [f32; 3]) -> Xform {
+    pub fn from_fn(f: impl Fn([f64; 3]) -> [f64; 3]) -> Xform {
         let o = f([0.0; 3]);
         let cols = [f([1.0, 0.0, 0.0]), f([0.0, 1.0, 0.0]), f([0.0, 0.0, 1.0])];
         let mut m = [[0.0; 4]; 3];
@@ -40,13 +40,13 @@ impl Xform {
         Xform(m)
     }
 
-    pub fn apply(&self, p: [f32; 3]) -> [f32; 3] {
+    pub fn apply(&self, p: [f64; 3]) -> [f64; 3] {
         let m = &self.0;
         [0, 1, 2].map(|r| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2] + m[r][3])
     }
 
     /// Where the definition's origin lands.
-    pub fn origin(&self) -> [f32; 3] {
+    pub fn origin(&self) -> [f64; 3] {
         [self.0[0][3], self.0[1][3], self.0[2][3]]
     }
 
@@ -62,7 +62,7 @@ impl Xform {
         Xform(m)
     }
 
-    pub fn det(&self) -> f32 {
+    pub fn det(&self) -> f64 {
         let m = &self.0;
         m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
             + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
@@ -75,7 +75,7 @@ impl Xform {
             return None;
         }
         let m = &self.0;
-        let mut inv = [[0.0f32; 4]; 3];
+        let mut inv = [[0.0f64; 4]; 3];
         // the inverse of the 3x3 part, by cofactors
         inv[0][0] = (m[1][1] * m[2][2] - m[1][2] * m[2][1]) / d;
         inv[0][1] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) / d;
@@ -119,40 +119,40 @@ pub struct Definition {
 /// A construction guide: drawn dashed, snapped to, never part of the geometry (SketchUp's guide lines and points).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Guide {
-    Point([f32; 3]),
+    Point([f64; 3]),
     /// Through a point, along a unit direction, endless.
-    Line([f32; 3], [f32; 3]),
+    Line([f64; 3], [f64; 3]),
 }
 
 /// A dimension: the two points measured and how far the dimension line stands off from them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Dimension {
-    pub a: [f32; 3],
-    pub b: [f32; 3],
-    pub offset: [f32; 3],
+    pub a: [f64; 3],
+    pub b: [f64; 3],
+    pub offset: [f64; 3],
 }
 
 /// Text (the Text tool): `text` shown at `at`, with a leader line to `point` when the two differ.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Label {
-    pub point: [f32; 3],
-    pub at: [f32; 3],
+    pub point: [f64; 3],
+    pub at: [f64; 3],
     pub text: String,
 }
 
 /// A section plane: a point on it and the normal of the side it cuts away; `active` while it cuts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Section {
-    pub point: [f32; 3],
-    pub normal: [f32; 3],
+    pub point: [f64; 3],
+    pub normal: [f64; 3],
     pub active: bool,
 }
 
 /// The drawing axes (Axes tool): where they meet and their red, green and blue directions (unit length, at right angles).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Axes {
-    pub origin: [f32; 3],
-    pub dirs: [[f32; 3]; 3],
+    pub origin: [f64; 3],
+    pub dirs: [[f64; 3]; 3],
 }
 
 impl Default for Axes {
@@ -326,7 +326,7 @@ impl Scene {
 mod tests {
     use super::*;
 
-    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+    fn close(a: [f64; 3], b: [f64; 3]) -> bool {
         (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5)
     }
 

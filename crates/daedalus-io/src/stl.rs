@@ -12,8 +12,8 @@ fn is_binary(bytes: &[u8]) -> bool {
     84 + n * 50 == bytes.len()
 }
 
-fn f32_at(b: &[u8], o: usize) -> f32 {
-    f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+fn f32_at(b: &[u8], o: usize) -> f64 {
+    f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as f64
 }
 
 impl MeshImporter for Stl {
@@ -45,7 +45,7 @@ impl MeshImporter for Stl {
                 let mut parts = line.split_whitespace();
                 match parts.next() {
                     Some("vertex") => {
-                        let c: Vec<f32> = parts.filter_map(|s| s.parse().ok()).collect();
+                        let c: Vec<f64> = parts.filter_map(|s| s.parse().ok()).collect();
                         if c.len() != 3 {
                             return Err(IoError::Parse(format!("bad vertex line: {line}")));
                         }
@@ -80,7 +80,7 @@ impl MeshExporter for Stl {
         let mut out = vec![0u8; 80];
         out.extend_from_slice(&(tris.len() as u32).to_le_bytes());
         for t in tris {
-            let p: Vec<[f32; 3]> = t.iter().map(|&i| mesh.positions[i as usize]).collect();
+            let p: Vec<[f64; 3]> = t.iter().map(|&i| mesh.positions[i as usize]).collect();
             let u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
             let v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
             let mut n = [
@@ -93,7 +93,7 @@ impl MeshExporter for Stl {
                 n.iter_mut().for_each(|c| *c /= len);
             }
             for c in n.iter().chain(p.iter().flatten()) {
-                out.extend_from_slice(&c.to_le_bytes());
+                out.extend_from_slice(&(*c as f32).to_le_bytes()); // binary STL holds 32-bit floats
             }
             out.extend_from_slice(&[0, 0]);
         }

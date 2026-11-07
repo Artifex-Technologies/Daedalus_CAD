@@ -12,40 +12,40 @@ use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Material {
-    pub thickness: f32,
+    pub thickness: f64,
     /// Position of the neutral axis as a fraction of thickness, 0.0 to 0.5.
-    pub k_factor: f32,
+    pub k_factor: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bend {
     /// Bend angle in degrees (how far the flange turns). Positive bends up,
     /// negative bends down; the sign does not change the flat length.
-    pub angle_deg: f32,
-    pub inside_radius: f32,
+    pub angle_deg: f64,
+    pub inside_radius: f64,
 }
 
 /// `flanges.len()` must be `bends.len() + 1`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
-    pub flanges: Vec<f32>,
+    pub flanges: Vec<f64>,
     pub bends: Vec<Bend>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BendLine {
     /// Distance from the start of the flat strip to the centre of the bend.
-    pub position: f32,
-    pub angle_deg: f32,
-    pub inside_radius: f32,
+    pub position: f64,
+    pub angle_deg: f64,
+    pub inside_radius: f64,
     /// Arc length of the neutral axis through this bend.
-    pub allowance: f32,
+    pub allowance: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlatPattern {
-    pub length: f32,
-    pub width: f32,
+    pub length: f64,
+    pub width: f64,
     pub bend_lines: Vec<BendLine>,
 }
 
@@ -56,7 +56,7 @@ pub enum SheetMetalError {
     FlangeCount { flanges: usize, bends: usize },
     InvalidBend { index: usize },
     /// Flange `index` is not longer than the bend setbacks that eat into it.
-    FlangeTooShort { index: usize, length: f32, needed: f32 },
+    FlangeTooShort { index: usize, length: f64, needed: f64 },
 }
 
 impl fmt::Display for SheetMetalError {
@@ -80,21 +80,21 @@ impl fmt::Display for SheetMetalError {
 impl std::error::Error for SheetMetalError {}
 
 /// Arc length of the neutral axis through a bend.
-pub fn bend_allowance(bend: Bend, m: Material) -> f32 {
+pub fn bend_allowance(bend: Bend, m: Material) -> f64 {
     bend.angle_deg.abs().to_radians() * (bend.inside_radius + m.k_factor * m.thickness)
 }
 
 /// Distance from the virtual sharp back to where the bend starts, on each side.
-pub fn outside_setback(bend: Bend, m: Material) -> f32 {
+pub fn outside_setback(bend: Bend, m: Material) -> f64 {
     (bend.angle_deg.abs().to_radians() / 2.0).tan() * (bend.inside_radius + m.thickness)
 }
 
 /// How much shorter the flat is than the sum of the two outside lengths.
-pub fn bend_deduction(bend: Bend, m: Material) -> f32 {
+pub fn bend_deduction(bend: Bend, m: Material) -> f64 {
     2.0 * outside_setback(bend, m) - bend_allowance(bend, m)
 }
 
-pub fn flat_pattern(profile: &Profile, m: Material, width: f32) -> Result<FlatPattern, SheetMetalError> {
+pub fn flat_pattern(profile: &Profile, m: Material, width: f64) -> Result<FlatPattern, SheetMetalError> {
     if !(m.thickness > 0.0) {
         return Err(SheetMetalError::InvalidMaterial("thickness must be positive"));
     }
@@ -114,7 +114,7 @@ pub fn flat_pattern(profile: &Profile, m: Material, width: f32) -> Result<FlatPa
         }
     }
 
-    let setbacks: Vec<f32> = profile.bends.iter().map(|&b| outside_setback(b, m)).collect();
+    let setbacks: Vec<f64> = profile.bends.iter().map(|&b| outside_setback(b, m)).collect();
     let mut position = 0.0;
     let mut bend_lines = Vec::with_capacity(profile.bends.len());
     for (i, &outside) in profile.flanges.iter().enumerate() {
@@ -146,7 +146,7 @@ mod tests {
     const M: Material = Material { thickness: 2.0, k_factor: 0.44 };
     const R90: Bend = Bend { angle_deg: 90.0, inside_radius: 2.0 };
 
-    fn close(a: f32, b: f32) -> bool {
+    fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-3
     }
 
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn obtuse_and_acute_bends() {
         let b45 = Bend { angle_deg: 45.0, inside_radius: 1.0 };
-        let setback = (22.5f32).to_radians().tan() * 3.0;
+        let setback = (22.5f64).to_radians().tan() * 3.0;
         assert!(close(outside_setback(b45, M), setback));
         let flat = flat_pattern(&Profile { flanges: vec![20.0, 20.0], bends: vec![b45] }, M, 10.0).unwrap();
         assert!(flat.length > 0.0 && flat.length < 40.0);

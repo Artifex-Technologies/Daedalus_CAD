@@ -5,7 +5,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use daedalus_core::Mesh;
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
@@ -32,6 +32,13 @@ const DEFAULT_FACE: [f32; 3] = [0.78, 0.80, 0.84];
 pub struct LineVertex {
     pub position: [f32; 3],
     pub color: [f32; 4],
+}
+
+impl LineVertex {
+    /// A line's end at model point `p` (f64; the GPU takes f32).
+    pub fn at(p: impl Into<[f64; 3]>, color: [f32; 4]) -> Self {
+        LineVertex { position: gpu(p.into()), color }
+    }
 }
 
 #[repr(C)]
@@ -101,7 +108,7 @@ pub struct Style {
 fn face_vertices(mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagged: &[usize], faded_from: usize) -> Vec<Vertex> {
     let mut out = Vec::new();
     for (fi, face) in mesh.faces.iter().enumerate() {
-        let normal = newell(mesh, face);
+        let normal = newell(mesh, face).map(|c| c as f32);
         let highlight = if fi >= faded_from {
             3.0
         } else if selected.binary_search(&fi).is_ok() {
@@ -114,7 +121,7 @@ fn face_vertices(mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagge
         let color = mesh.color_of(fi).map_or(DEFAULT_FACE, |c| c.map(|x| x as f32 / 255.0));
         for &tri in tris.get(fi).map(Vec::as_slice).unwrap_or(&[]) {
             for v in tri {
-                out.push(Vertex { position: mesh.positions[v as usize], normal, highlight, color });
+                out.push(Vertex { position: gpu(mesh.positions[v as usize]), normal, highlight, color });
             }
         }
     }
@@ -141,16 +148,22 @@ fn edge_vertices(mesh: &Mesh, faded_vertex: u32, selected: &[[u32; 2]]) -> Vec<L
             };
             [(a, color), (b, color)]
         })
-        .map(|(v, color)| LineVertex { position: mesh.positions[v as usize], color })
+        .map(|(v, color)| LineVertex { position: gpu(mesh.positions[v as usize]), color })
         .collect()
 }
 
-pub fn newell(mesh: &Mesh, face: &[u32]) -> [f32; 3] {
-    let mut n = Vec3::ZERO;
+/// A model point (f64) as the GPU takes it (f32).
+pub fn gpu(p: [f64; 3]) -> [f32; 3] {
+    p.map(|c| c as f32)
+}
+
+/// A face's unit normal (Newell's method), in the model's precision.
+pub fn newell(mesh: &Mesh, face: &[u32]) -> [f64; 3] {
+    let mut n = glam::DVec3::ZERO;
     for i in 0..face.len() {
-        let a = Vec3::from(mesh.positions[face[i] as usize]);
-        let b = Vec3::from(mesh.positions[face[(i + 1) % face.len()] as usize]);
-        n += Vec3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
+        let a = glam::DVec3::from(mesh.positions[face[i] as usize]);
+        let b = glam::DVec3::from(mesh.positions[face[(i + 1) % face.len()] as usize]);
+        n += glam::DVec3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
     }
     n.normalize_or_zero().into()
 }

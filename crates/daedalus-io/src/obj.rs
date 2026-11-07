@@ -17,7 +17,7 @@ impl MeshImporter for Obj {
             let mut parts = line.split_whitespace();
             match parts.next() {
                 Some("v") => {
-                    let c: Vec<f32> = parts.take(3).filter_map(|s| s.parse().ok()).collect();
+                    let c: Vec<f64> = parts.take(3).filter_map(|s| s.parse().ok()).collect();
                     if c.len() != 3 {
                         return Err(IoError::Parse(format!("bad vertex: {line}")));
                     }

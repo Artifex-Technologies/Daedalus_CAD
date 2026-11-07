@@ -18,8 +18,8 @@ fn pairs(text: &str) -> Vec<(i32, &str)> {
     out
 }
 
-fn num(v: &str) -> f32 {
-    v.parse::<f64>().unwrap_or(0.0) as f32
+fn num(v: &str) -> f64 {
+    v.parse::<f64>().unwrap_or(0.0)
 }
 
 struct Entity<'a> {
@@ -34,7 +34,7 @@ fn entities<'a>(pairs: &[(i32, &'a str)]) -> Vec<Entity<'a>> {
     while i < pairs.len() {
         let (code, val) = pairs[i];
         if code == 0 && val == "SECTION" {
-            in_entities = pairs.get(i + 1).map_or(false, |&(c, v)| c == 2 && v == "ENTITIES");
+            in_entities = pairs.get(i + 1).is_some_and(|&(c, v)| c == 2 && v == "ENTITIES");
         } else if code == 0 && val == "ENDSEC" {
             in_entities = false;
         } else if in_entities && code == 0 {
@@ -62,12 +62,12 @@ impl MeshImporter for Dxf {
         let mut welder = Welder::default();
 
         // Polyface state: (vertices, 1-based face records)
-        let mut poly: Option<(Vec<[f32; 3]>, Vec<Vec<i32>>)> = None;
+        let mut poly: Option<(Vec<[f64; 3]>, Vec<Vec<i32>>)> = None;
 
         for e in entities(&pairs) {
             match e.name {
                 "3DFACE" => {
-                    let mut p = [[0.0f32; 3]; 4];
+                    let mut p = [[0.0f64; 3]; 4];
                     for &(code, v) in &e.data {
                         let slot = (code % 10) as usize;
                         if slot < 4 {
@@ -149,7 +149,7 @@ impl MeshExporter for Dxf {
     fn export(&self, mesh: &Mesh) -> Result<Vec<u8>, IoError> {
         let mut s = String::from("0\nSECTION\n2\nENTITIES\n");
         for t in mesh.triangles() {
-            let p: Vec<[f32; 3]> = t.iter().map(|&i| mesh.positions[i as usize]).collect();
+            let p: Vec<[f64; 3]> = t.iter().map(|&i| mesh.positions[i as usize]).collect();
             s.push_str("0\n3DFACE\n8\n0\n");
             // The fourth corner repeats the third, which DXF uses to mean a triangle.
             for (k, pt) in [p[0], p[1], p[2], p[2]].iter().enumerate() {

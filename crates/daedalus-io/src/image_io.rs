@@ -11,7 +11,7 @@ pub struct Raster {
 }
 
 pub fn load_raster(path: &Path) -> Result<Raster, IoError> {
-    let is_psd = path.extension().map_or(false, |e| e.eq_ignore_ascii_case("psd"));
+    let is_psd = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("psd"));
     if is_psd {
         let bytes = std::fs::read(path)?;
         let psd = psd::Psd::from_bytes(&bytes).map_err(|e| IoError::Parse(e.to_string()))?;

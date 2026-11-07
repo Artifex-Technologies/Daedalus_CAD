@@ -29,8 +29,8 @@ impl Units {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Segment {
     pub layer: &'static str,
-    pub a: [f32; 2],
-    pub b: [f32; 2],
+    pub a: [f64; 2],
+    pub b: [f64; 2],
 }
 
 fn layer_color(name: &str) -> i32 {

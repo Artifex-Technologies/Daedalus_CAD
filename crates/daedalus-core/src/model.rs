@@ -2,11 +2,11 @@ use crate::scene::{Context, Definition, Instance, Notes, Scene, Xform};
 use crate::{HalfEdgeMesh, Mesh, TopologyError};
 
 /// Within this distance (model units, metres) two faces' planes count as one when coplanar faces are merged.
-pub const MERGE_TOLERANCE: f32 = 1e-5;
 
 /// Merges coplanar faces of `m` in place; returns where `face` went (or `face` when nothing could be rebuilt).
 fn merge_in_place(m: &mut HalfEdgeMesh, face: usize) -> usize {
-    let (merged, map) = crate::merge::merge_coplanar(&m.to_mesh(), MERGE_TOLERANCE);
+    let mesh = m.to_mesh();
+    let (merged, map) = crate::merge::merge_coplanar(&mesh, mesh.tolerance());
     match HalfEdgeMesh::from_mesh(&merged) {
         Ok(h) => {
             *m = h;
@@ -202,9 +202,9 @@ impl Model {
             }
             let (rest, part) = if faces.is_empty() { (mesh.clone(), Mesh::new()) } else { mesh.extract(faces) };
             // the lowest corner of the faces and of the instances' origins, in the open context's coordinates
-            let mut pts: Vec<[f32; 3]> = part.positions.iter().map(|&p| back.apply(p)).collect();
+            let mut pts: Vec<[f64; 3]> = part.positions.iter().map(|&p| back.apply(p)).collect();
             pts.extend(taken.iter().map(|&i| ctx.instances[i].xf.origin()));
-            let corner = pts.iter().fold([f32::INFINITY; 3], |lo, p| [lo[0].min(p[0]), lo[1].min(p[1]), lo[2].min(p[2])]);
+            let corner = pts.iter().fold([f64::INFINITY; 3], |lo, p| [lo[0].min(p[0]), lo[1].min(p[1]), lo[2].min(p[2])]);
             let xf = Xform::translation(corner);
             let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
             let un = xf.inverse().ok_or(TopologyError::DegenerateNormal)?;
@@ -254,7 +254,8 @@ impl Model {
             let def = s.defs.get(inst.def).ok_or_else(nothing)?.ctx.clone();
             let geo = def.mesh.transformed(&w.after(&inst.xf));
             let mut joined = m.to_mesh();
-            joined.append_welded(&geo, 1e-6);
+            let tol = joined.tolerance().max(geo.tolerance());
+            joined.append_welded(&geo, tol);
             *m = match HalfEdgeMesh::from_mesh(&joined) {
                 Ok(h) => h,
                 Err(_) => {
@@ -321,7 +322,11 @@ impl Model {
             }
             let (_, part) = mesh.extract(faces);
             let mut joined = mesh.clone();
-            joined.append_welded(&part.transformed(t), 1e-6);
+            {
+                let part = part.transformed(t);
+                let tol = joined.tolerance().max(part.tolerance());
+                joined.append_welded(&part, tol);
+            }
             *m = HalfEdgeMesh::from_mesh(&joined)?;
             Ok(())
         })
@@ -362,7 +367,11 @@ impl Model {
                     }
                     let (_, part) = mesh.extract(faces);
                     let mut joined = mesh.clone();
-                    joined.append_welded(&part.transformed(t), 1e-6);
+                    {
+                let part = part.transformed(t);
+                let tol = joined.tolerance().max(part.tolerance());
+                joined.append_welded(&part, tol);
+            }
                     *m = HalfEdgeMesh::from_mesh(&joined)?;
                     made.0 = (mesh.faces.len()..joined.faces.len()).collect();
                 }
@@ -492,14 +501,14 @@ impl Model {
     }
 
     /// Draws a rectangle spanned by edge vectors `u` and `v` from `origin`.
-    pub fn add_rectangle(&mut self, origin: [f32; 3], u: [f32; 3], v: [f32; 3]) -> Result<usize, TopologyError> {
-        let add = |a: [f32; 3], b: [f32; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    pub fn add_rectangle(&mut self, origin: [f64; 3], u: [f64; 3], v: [f64; 3]) -> Result<usize, TopologyError> {
+        let add = |a: [f64; 3], b: [f64; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
         let pts = [origin, add(origin, u), add(add(origin, u), v), add(origin, v)];
         self.edit(|m| m.add_polygon(&pts))
     }
 
     /// Adds a closed outline as a new face (Line, Rectangle, Circle and Polygon tools).
-    pub fn add_polygon(&mut self, points: &[[f32; 3]]) -> Result<usize, TopologyError> {
+    pub fn add_polygon(&mut self, points: &[[f64; 3]]) -> Result<usize, TopologyError> {
         self.edit(|m| m.add_polygon(points))
     }
 
@@ -508,13 +517,13 @@ impl Model {
     }
 
     /// Line tool: one segment, as one undo step. Returns the face it closed, if it closed one.
-    pub fn add_line(&mut self, a: [f32; 3], b: [f32; 3]) -> Result<Option<usize>, TopologyError> {
+    pub fn add_line(&mut self, a: [f64; 3], b: [f64; 3]) -> Result<Option<usize>, TopologyError> {
         self.edit(|m| m.add_line(a, b))
     }
 
     /// A shape's outline (Rectangle, Circle, Polygon, Pie ...) drawn as its lines in one undo step, so it joins and cuts what
     /// is there like lines do: on a face it splits it, or cuts a hole that it fills. Returns the face it made, if any.
-    pub fn add_outline(&mut self, points: &[[f32; 3]]) -> Result<Option<usize>, TopologyError> {
+    pub fn add_outline(&mut self, points: &[[f64; 3]]) -> Result<Option<usize>, TopologyError> {
         if points.len() < 3 {
             return Err(TopologyError::DegenerateFace(self.mesh.face_count()));
         }
@@ -548,7 +557,7 @@ impl Model {
     /// profile is taken to stand at the path's first point; at every bend the cross-section is mitred (projected onto the
     /// plane halfway between the two directions). An open path gets end caps (the profile's place and the far end); a
     /// closed one makes a ring with no caps. One undo step; returns the end cap's face (or the last face made).
-    pub fn follow_me(&mut self, profile: usize, path: &[[f32; 3]], closed: bool) -> Result<usize, TopologyError> {
+    pub fn follow_me(&mut self, profile: usize, path: &[[f64; 3]], closed: bool) -> Result<usize, TopologyError> {
         self.edit(|m| {
             let mut mesh = m.to_mesh();
             if profile >= mesh.faces.len() {
@@ -558,23 +567,23 @@ impl Model {
             if n < 2 || (closed && n < 3) {
                 return Err(TopologyError::InvalidSplit);
             }
-            let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-            let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-            let unit = |a: [f32; 3]| {
+            let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+            let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            let unit = |a: [f64; 3]| {
                 let l = dot(a, a).sqrt();
                 if l > 0.0 { a.map(|c| c / l) } else { a }
             };
             // the directions along the path, one per piece (a closed path has one more, back to the start)
             let pieces = if closed { n } else { n - 1 };
-            let dirs: Vec<[f32; 3]> = (0..pieces).map(|i| unit(sub(path[(i + 1) % n], path[i]))).collect();
+            let dirs: Vec<[f64; 3]> = (0..pieces).map(|i| unit(sub(path[(i + 1) % n], path[i]))).collect();
             if dirs.iter().any(|d| dot(*d, *d) < 0.5) {
                 return Err(TopologyError::DegenerateFace(profile));
             }
             let color = mesh.color_of(profile);
             let mut ring = mesh.remove_face(profile);
             // the profile wound counter-clockwise about the way the path sets off
-            let pts: Vec<[f32; 3]> = ring.iter().map(|&v| mesh.positions[v as usize]).collect();
-            let mut nrm = [0.0f32; 3];
+            let pts: Vec<[f64; 3]> = ring.iter().map(|&v| mesh.positions[v as usize]).collect();
+            let mut nrm = [0.0f64; 3];
             for i in 0..pts.len() {
                 let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
                 nrm[0] += (p[1] - q[1]) * (p[2] + q[2]);
@@ -654,7 +663,7 @@ impl Model {
     }
 
     /// An open chain of lines (an arc, a freehand stroke) in one undo step. Returns the face it closed, if any.
-    pub fn add_polyline(&mut self, points: &[[f32; 3]]) -> Result<Option<usize>, TopologyError> {
+    pub fn add_polyline(&mut self, points: &[[f64; 3]]) -> Result<Option<usize>, TopologyError> {
         self.edit(|m| {
             let mut made = None;
             for w in points.windows(2) {
@@ -680,7 +689,7 @@ impl Model {
 
     /// Pushes or pulls a face, then merges coplanar faces as SketchUp does (pushing a face of a solid again leaves no seam).
     /// Returns the pushed face's index after the merge.
-    pub fn push_pull(&mut self, face: usize, distance: f32) -> Result<usize, TopologyError> {
+    pub fn push_pull(&mut self, face: usize, distance: f64) -> Result<usize, TopologyError> {
         self.edit(|m| {
             let f = m.push_pull(face, distance)?;
             Ok(merge_in_place(m, f))
@@ -704,7 +713,7 @@ impl Model {
 
     /// Move, Rotate and Scale: puts each of `vertices` where `f` sends it, as one undo step. Faces keep their numbers.
     /// Faces that share some of the vertices but not all of them stretch to follow, as in SketchUp.
-    pub fn transform_vertices(&mut self, vertices: &[u32], f: impl Fn([f32; 3]) -> [f32; 3]) -> Result<(), TopologyError> {
+    pub fn transform_vertices(&mut self, vertices: &[u32], f: impl Fn([f64; 3]) -> [f64; 3]) -> Result<(), TopologyError> {
         self.edit(|m| {
             for &v in vertices {
                 if let Some(p) = m.positions.get_mut(v as usize) {
@@ -1031,14 +1040,14 @@ mod tests {
     }
 
     /// A 2 x 1 x 1 box at (x, 0, 0), every face of it.
-    fn box_at(m: &mut Model, x: f32) -> Vec<usize> {
+    fn box_at(m: &mut Model, x: f64) -> Vec<usize> {
         let before = m.mesh().face_count();
         let f = m.add_rectangle([x, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
         m.push_pull(f, 1.0).unwrap();
         (before..m.mesh().face_count()).collect()
     }
 
-    fn volume(mesh: &Mesh) -> f32 {
+    fn volume(mesh: &Mesh) -> f64 {
         HalfEdgeMesh::from_mesh(mesh).unwrap().signed_volume()
     }
 

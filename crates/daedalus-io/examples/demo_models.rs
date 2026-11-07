@@ -15,27 +15,27 @@ const GLASS: [u8; 3] = [126, 164, 204];
 const DOOR: [u8; 3] = [118, 80, 52];
 const WOOD: [u8; 3] = [168, 128, 84];
 
-fn points(m: &Model, f: usize) -> Vec<[f32; 3]> {
+fn points(m: &Model, f: usize) -> Vec<[f64; 3]> {
     let h = m.mesh();
     h.face_vertices(f).iter().map(|&v| h.positions[v as usize]).collect()
 }
 
 /// The first face whose corners and normal pass `pred`.
-fn find(m: &Model, pred: impl Fn(&[[f32; 3]], [f32; 3]) -> bool) -> usize {
+fn find(m: &Model, pred: impl Fn(&[[f64; 3]], [f64; 3]) -> bool) -> usize {
     (0..m.mesh().face_count()).find(|&f| pred(&points(m, f), m.mesh().face_normal(f))).expect("the face looked for is there")
 }
 
-fn faces_where(m: &Model, pred: impl Fn(&[[f32; 3]], [f32; 3]) -> bool) -> Vec<usize> {
+fn faces_where(m: &Model, pred: impl Fn(&[[f64; 3]], [f64; 3]) -> bool) -> Vec<usize> {
     (0..m.mesh().face_count()).filter(|&f| pred(&points(m, f), m.mesh().face_normal(f))).collect()
 }
 
-fn vertex_at(m: &Model, p: [f32; 3]) -> u32 {
+fn vertex_at(m: &Model, p: [f64; 3]) -> u32 {
     let h = m.mesh();
     (0..h.positions.len()).find(|&i| (0..3).all(|k| (h.positions[i][k] - p[k]).abs() < 1e-4)).expect("a corner there") as u32
 }
 
 /// A hole cut into a wall and pushed in `depth` (the opening of a window or door); returns the face at its back.
-fn opening(m: &mut Model, outline: &[[f32; 3]], depth: f32) -> usize {
+fn opening(m: &mut Model, outline: &[[f64; 3]], depth: f64) -> usize {
     let f = m.add_outline(outline).unwrap().expect("the outline cut a hole and filled it");
     m.push_pull(f, -depth).unwrap()
 }

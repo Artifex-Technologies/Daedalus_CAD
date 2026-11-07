@@ -52,7 +52,7 @@ impl std::error::Error for TopologyError {}
 /// [`HalfEdgeMesh::from_mesh`] and turn it back with [`HalfEdgeMesh::to_mesh`].
 #[derive(Debug, Clone, Default)]
 pub struct HalfEdgeMesh {
-    pub positions: Vec<[f32; 3]>,
+    pub positions: Vec<[f64; 3]>,
     half_edges: Vec<HalfEdge>,
     /// One half-edge per face.
     faces: Vec<u32>,
@@ -176,9 +176,9 @@ impl HalfEdgeMesh {
     }
 
     /// Unit normal by Newell's method; zero vector for a degenerate face.
-    pub fn face_normal(&self, face: usize) -> [f32; 3] {
+    pub fn face_normal(&self, face: usize) -> [f64; 3] {
         let vs = self.face_vertices(face);
-        let mut n = [0.0f32; 3];
+        let mut n = [0.0f64; 3];
         for i in 0..vs.len() {
             let a = self.positions[vs[i] as usize];
             let b = self.positions[vs[(i + 1) % vs.len()] as usize];
@@ -196,7 +196,7 @@ impl HalfEdgeMesh {
 
     /// Signed volume of the surface (positive when faces point outward).
     /// Only meaningful for closed meshes.
-    pub fn signed_volume(&self) -> f32 {
+    pub fn signed_volume(&self) -> f64 {
         let mut vol = 0.0;
         for f in 0..self.faces.len() {
             let vs = self.face_vertices(f);
@@ -209,7 +209,7 @@ impl HalfEdgeMesh {
     }
 
     /// Adds a free-standing polygon (new vertices, no welding) and returns its face index.
-    pub fn add_polygon(&mut self, points: &[[f32; 3]]) -> Result<usize, TopologyError> {
+    pub fn add_polygon(&mut self, points: &[[f64; 3]]) -> Result<usize, TopologyError> {
         if points.len() < 3 {
             return Err(TopologyError::DegenerateFace(self.face_count()));
         }
@@ -248,10 +248,12 @@ impl HalfEdgeMesh {
     /// meets, splits a face it crosses from edge to edge, and is otherwise a loose line. A closed loop it completes, of
     /// loose lines and face edges lying in one plane, becomes a face, as in SketchUp. Returns the face that was made or
     /// split off, if any. A line that is already there (or has no length) changes nothing.
-    pub fn add_line(&mut self, a: [f32; 3], b: [f32; 3]) -> Result<Option<usize>, TopologyError> {
-        let scale = a.iter().chain(b.iter()).fold(1.0f32, |m, c| m.max(c.abs()));
-        let tol = 1e-5 * scale;
+    pub fn add_line(&mut self, a: [f64; 3], b: [f64; 3]) -> Result<Option<usize>, TopologyError> {
         let mut m = self.to_mesh();
+        // the model's own tolerance, with the new line in it (a first line on an empty model has only itself)
+        let span = (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt();
+        let reach = a.iter().chain(b.iter()).fold(0.0f64, |r, c| r.max(c.abs()));
+        let tol = m.tolerance().max(span * 1e-7).max(reach * 1e-12).max(1e-10);
         let (added, split) = crate::imprint::add_segment(&mut m, a, b, tol);
         *self = Self::from_mesh(&m)?;
         let mut made = split.then(|| self.face_count() - 1);
@@ -288,6 +290,7 @@ impl HalfEdgeMesh {
         gone.dedup();
         let gone_set: HashSet<(u32, u32)> = gone.iter().copied().collect();
         let mut m = self.to_mesh();
+        let tol = m.tolerance();
         m.lines.retain(|&[a, b]| !gone_set.contains(&key(a, b)));
         let seams: HashSet<(u32, u32)> = m.seams.iter().map(|&[a, b]| key(a, b)).collect();
         let on_edge = |m: &Mesh, e: (u32, u32)| -> Vec<usize> {
@@ -300,7 +303,7 @@ impl HalfEdgeMesh {
                 continue;
             }
             if let [a, b] = faces[..] {
-                let joined = crate::merge::join_pair(&m, a, b, crate::model::MERGE_TOLERANCE);
+                let joined = crate::merge::join_pair(&m, a, b, tol);
                 if let Some(ring) = joined {
                     let (lo, hi) = (a.min(b), a.max(b));
                     m.remove_face(hi);
@@ -308,7 +311,7 @@ impl HalfEdgeMesh {
                     continue;
                 }
                 // in one plane but not one simple face (it would have a hole): left as it is, rather than lose both
-                if crate::merge::coplanar(&m, a, b, crate::model::MERGE_TOLERANCE) {
+                if crate::merge::coplanar(&m, a, b, tol) {
                     kept += 1;
                     continue;
                 }
@@ -354,7 +357,7 @@ impl HalfEdgeMesh {
     /// Loose line number `new_line` may close a loop: the shortest path of other loose lines and face edges from one of
     /// its ends back to the other, if it lies in one plane with at least three corners and covers no face already there,
     /// becomes a face (its loose lines turn into the face's edges).
-    fn close_loop(&mut self, new_line: usize, tol: f32) -> Option<usize> {
+    fn close_loop(&mut self, new_line: usize, tol: f64) -> Option<usize> {
         let [a, b] = self.lines[new_line];
         let mesh = self.to_mesh();
         let mut adjacent: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
@@ -378,8 +381,8 @@ impl HalfEdgeMesh {
                 break;
             }
             for &(w, line) in adjacent.get(&v).map(|n| n.as_slice()).unwrap_or(&[]) {
-                if !came.contains_key(&w) {
-                    came.insert(w, (v, line));
+                if let std::collections::hash_map::Entry::Vacant(e) = came.entry(w) {
+                    e.insert((v, line));
                     queue.push_back(w);
                 }
             }
@@ -401,8 +404,8 @@ impl HalfEdgeMesh {
             return None;
         }
         // one plane: every corner within tol of the plane through the first, by the ring's normal
-        let pts: Vec<[f32; 3]> = ring.iter().map(|&v| self.positions[v as usize]).collect();
-        let mut n = [0.0f32; 3];
+        let pts: Vec<[f64; 3]> = ring.iter().map(|&v| self.positions[v as usize]).collect();
+        let mut n = [0.0f64; 3];
         for i in 0..pts.len() {
             let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
             n[0] += (p[1] - q[1]) * (p[2] + q[2]);
@@ -414,15 +417,15 @@ impl HalfEdgeMesh {
             return None;
         }
         let n = n.map(|c| c / len);
-        if pts.iter().any(|&p| dot(sub(p, pts[0]), n).abs() > tol.max(1e-6)) {
+        if pts.iter().any(|&p| dot(sub(p, pts[0]), n).abs() > tol) {
             return None;
         }
         // not over a face already there: the middle of the new face (a point just inside its first corner) is in none
         let probe = {
             let k = pts.len();
             let (p0, p1, pl) = (pts[0], pts[1], pts[k - 1]);
-            let c = [(p0[0] + p1[0] + pl[0]) / 3.0, (p0[1] + p1[1] + pl[1]) / 3.0, (p0[2] + p1[2] + pl[2]) / 3.0];
-            c
+            
+            [(p0[0] + p1[0] + pl[0]) / 3.0, (p0[1] + p1[1] + pl[1]) / 3.0, (p0[2] + p1[2] + pl[2]) / 3.0]
         };
         let host = mesh.faces.iter().position(|f| crate::imprint::inside_face(&mesh, f, probe, tol));
 
@@ -473,7 +476,7 @@ impl HalfEdgeMesh {
     /// * A free-standing face stays behind as the base and becomes a solid.
     ///
     /// Face indices are not stable across this call; the new far face is returned.
-    pub fn push_pull(&mut self, face: usize, distance: f32) -> Result<usize, TopologyError> {
+    pub fn push_pull(&mut self, face: usize, distance: f64) -> Result<usize, TopologyError> {
         if face >= self.faces.len() {
             return Err(TopologyError::FaceOutOfRange(face));
         }
@@ -528,7 +531,7 @@ impl HalfEdgeMesh {
 
     /// Nearest face hit by a ray, as (face index, distance along the ray).
     /// Faces are treated as two-sided.
-    pub fn pick_face(&self, origin: [f32; 3], dir: [f32; 3]) -> Option<(usize, f32)> {
+    pub fn pick_face(&self, origin: [f64; 3], dir: [f64; 3]) -> Option<(usize, f64)> {
         self.to_mesh().pick_face(origin, dir)
     }
 
@@ -579,20 +582,20 @@ impl HalfEdgeMesh {
     }
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Moller-Trumbore ray/triangle intersection, two-sided. Returns the ray parameter.
-pub fn ray_triangle(origin: [f32; 3], dir: [f32; 3], tri: [[f32; 3]; 3]) -> Option<f32> {
+pub fn ray_triangle(origin: [f64; 3], dir: [f64; 3], tri: [[f64; 3]; 3]) -> Option<f64> {
     let e1 = sub(tri[1], tri[0]);
     let e2 = sub(tri[2], tri[0]);
     let p = cross(dir, e2);
@@ -697,7 +700,7 @@ mod tests {
         h
     }
 
-    fn assert_solid(h: &HalfEdgeMesh, volume: f32) {
+    fn assert_solid(h: &HalfEdgeMesh, volume: f64) {
         assert!(h.is_closed(), "mesh should be closed");
         assert_eq!(h.euler_characteristic(), 2);
         assert!((h.signed_volume() - volume).abs() < 1e-5, "volume {} != {volume}", h.signed_volume());
@@ -828,5 +831,17 @@ mod tests {
         // and a loose line goes when erased
         assert_eq!(h.erase_edges(&[[3, 2]]), Ok(0));
         assert_eq!(h.lines.len(), 2);
+    }
+
+    #[test]
+    fn small_models_keep_detail_a_micrometre_apart() {
+        // a 2 mm square, split by a line 1 um in from its edge: the old fixed 10 um tolerance joined that line to the edge
+        let mut h = HalfEdgeMesh::default();
+        h.add_polygon(&[[0.0, 0.0, 0.0], [0.002, 0.0, 0.0], [0.002, 0.002, 0.0], [0.0, 0.002, 0.0]]).unwrap();
+        let made = h.add_line([0.000001, 0.0, 0.0], [0.000001, 0.002, 0.0]).unwrap();
+        assert!(made.is_some(), "the line splits the face");
+        assert_eq!(h.face_count(), 2);
+        let mesh = h.to_mesh();
+        assert!(mesh.tolerance() < 1e-9, "a 2 mm part's tolerance is under a nanometre: {}", mesh.tolerance());
     }
 }

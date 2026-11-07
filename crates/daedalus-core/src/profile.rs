@@ -8,7 +8,7 @@ use crate::sketch::Plane;
 use crate::{HalfEdgeMesh, Mesh, TopologyError};
 
 /// Whether `p` lies inside the closed outline `ring` (even-odd).
-pub fn inside(ring: &[[f32; 2]], p: [f32; 2]) -> bool {
+pub fn inside(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
     let mut c = false;
     let n = ring.len();
     for i in 0..n {
@@ -25,11 +25,11 @@ pub fn inside(ring: &[[f32; 2]], p: [f32; 2]) -> bool {
 
 /// Faces for the solid parts of `outlines` (closed, each listed once round, any winding), laid on `plane`, all facing the
 /// plane's normal. A face with a hole is two faces joined by hidden seams, as the Line tool makes it.
-pub fn faces(outlines: &[Vec<[f32; 2]>], plane: &Plane) -> Result<Mesh, TopologyError> {
-    let rings: Vec<&Vec<[f32; 2]>> = outlines.iter().filter(|r| r.len() >= 3).collect();
+pub fn faces(outlines: &[Vec<[f64; 2]>], plane: &Plane) -> Result<Mesh, TopologyError> {
+    let rings: Vec<&Vec<[f64; 2]>> = outlines.iter().filter(|r| r.len() >= 3).collect();
     // how many other outlines hold each one: outsides first, then holes, then islands, so each is drawn into what holds it
-    let depth = |r: &Vec<[f32; 2]>| rings.iter().filter(|o| !std::ptr::eq(**o, r) && inside(o, r[0])).count();
-    let mut order: Vec<(usize, &Vec<[f32; 2]>)> = rings.iter().map(|r| (depth(r), *r)).collect();
+    let depth = |r: &Vec<[f64; 2]>| rings.iter().filter(|o| !std::ptr::eq(**o, r) && inside(o, r[0])).count();
+    let mut order: Vec<(usize, &Vec<[f64; 2]>)> = rings.iter().map(|r| (depth(r), *r)).collect();
     order.sort_by_key(|(d, _)| *d);
     let mut h = HalfEdgeMesh::default();
     for (_, r) in &order {
@@ -44,7 +44,7 @@ pub fn faces(outlines: &[Vec<[f32; 2]>], plane: &Plane) -> Result<Mesh, Topology
         .filter(|&f| {
             let tri = crate::triangulate::triangulate(&m.positions, &m.faces[f]);
             let Some(t) = tri.first() else { return false };
-            let c = t.iter().fold([0.0f32; 3], |s, &v| {
+            let c = t.iter().fold([0.0f64; 3], |s, &v| {
                 let p = m.positions[v as usize];
                 [s[0] + p[0] / 3.0, s[1] + p[1] / 3.0, s[2] + p[2] / 3.0]
             });
@@ -69,8 +69,8 @@ pub fn faces(outlines: &[Vec<[f32; 2]>], plane: &Plane) -> Result<Mesh, Topology
     Ok(m)
 }
 
-fn newell(positions: &[[f32; 3]], ring: &[u32]) -> [f32; 3] {
-    let mut n = [0.0f32; 3];
+fn newell(positions: &[[f64; 3]], ring: &[u32]) -> [f64; 3] {
+    let mut n = [0.0f64; 3];
     for i in 0..ring.len() {
         let (p, q) = (positions[ring[i] as usize], positions[ring[(i + 1) % ring.len()] as usize]);
         n[0] += (p[1] - q[1]) * (p[2] + q[2]);
@@ -83,7 +83,7 @@ fn newell(positions: &[[f32; 3]], ring: &[u32]) -> [f32; 3] {
 /// A flat set of faces made solid: the faces, a copy of them moved by `offset`, and walls round their outer edges. Walls
 /// along a curve (bending less than `smooth` radians from the next) are joined by hidden seams, so a round letter shows
 /// no stripes.
-pub fn extrude(cap: &Mesh, offset: [f32; 3], smooth: f32) -> Mesh {
+pub fn extrude(cap: &Mesh, offset: [f64; 3], smooth: f64) -> Mesh {
     let n = cap.positions.len() as u32;
     let mut m = Mesh { positions: cap.positions.clone(), ..Default::default() };
     m.positions.extend(cap.positions.iter().map(|p| [p[0] + offset[0], p[1] + offset[1], p[2] + offset[2]]));
@@ -143,7 +143,7 @@ pub fn extrude(cap: &Mesh, offset: [f32; 3], smooth: f32) -> Mesh {
 mod tests {
     use super::*;
 
-    fn square(x: f32, y: f32, s: f32) -> Vec<[f32; 2]> {
+    fn square(x: f64, y: f64, s: f64) -> Vec<[f64; 2]> {
         vec![[x, y], [x + s, y], [x + s, y + s], [x, y + s]]
     }
 
@@ -151,7 +151,7 @@ mod tests {
     fn a_square_with_a_hole_and_an_island() {
         let outlines = vec![square(0.0, 0.0, 9.0), square(2.0, 2.0, 5.0), square(4.0, 4.0, 1.0)];
         let cap = faces(&outlines, &Plane::ground()).unwrap();
-        let area: f32 = cap
+        let area: f64 = cap
             .faces
             .iter()
             .map(|f| {
@@ -173,8 +173,8 @@ mod tests {
 
     #[test]
     fn a_round_wall_hides_its_upright_edges() {
-        let ring: Vec<[f32; 2]> = (0..24).map(|i| {
-            let a = i as f32 / 24.0 * std::f32::consts::TAU;
+        let ring: Vec<[f64; 2]> = (0..24).map(|i| {
+            let a = i as f64 / 24.0 * std::f64::consts::TAU;
             [a.cos(), a.sin()]
         }).collect();
         let cap = faces(&[ring], &Plane::ground()).unwrap();

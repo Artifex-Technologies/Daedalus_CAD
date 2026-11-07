@@ -8,7 +8,7 @@
 use crate::Mesh;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-pub const DEFAULT_TOLERANCE: f32 = 1e-4;
+pub const DEFAULT_TOLERANCE: f64 = 1e-4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IssueKind {
@@ -77,7 +77,7 @@ pub struct Issue {
 pub struct Report {
     pub issues: Vec<Issue>,
     /// Signed volume, when the surface is closed and consistently wound.
-    pub volume: Option<f32>,
+    pub volume: Option<f64>,
 }
 
 impl Report {
@@ -132,26 +132,26 @@ fn key(a: u32, b: u32) -> (u32, u32) {
     }
 }
 
-fn quantize(p: [f32; 3], tol: f32) -> (i64, i64, i64) {
+fn quantize(p: [f64; 3], tol: f64) -> (i64, i64, i64) {
     ((p[0] / tol).round() as i64, (p[1] / tol).round() as i64, (p[2] / tol).round() as i64)
 }
 
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
+fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     dot(d, d).sqrt()
 }
 
 /// Polygon area via the magnitude of the Newell vector.
-fn area(positions: &[[f32; 3]], ring: &[u32]) -> f32 {
-    let mut n = [0.0f32; 3];
+fn area(positions: &[[f64; 3]], ring: &[u32]) -> f64 {
+    let mut n = [0.0f64; 3];
     for (a, b) in ring_edges(ring) {
         let (a, b) = (positions[a as usize], positions[b as usize]);
         n[0] += (a[1] - b[1]) * (a[2] + b[2]);
@@ -161,17 +161,17 @@ fn area(positions: &[[f32; 3]], ring: &[u32]) -> f32 {
     dot(n, n).sqrt() * 0.5
 }
 
-fn face_volume(positions: &[[f32; 3]], ring: &[u32]) -> f32 {
+fn face_volume(positions: &[[f64; 3]], ring: &[u32]) -> f64 {
     let p = |i: usize| positions[ring[i] as usize];
-    (1..ring.len() - 1).map(|i| dot(p(0), cross(p(i), p(i + 1)))).sum::<f32>() / 6.0
+    (1..ring.len() - 1).map(|i| dot(p(0), cross(p(i), p(i + 1)))).sum::<f64>() / 6.0
 }
 
 /// Signed volume of a mesh (positive when faces point outward). Only meaningful when closed.
-pub fn signed_volume(mesh: &Mesh) -> f32 {
+pub fn signed_volume(mesh: &Mesh) -> f64 {
     mesh.faces.iter().map(|f| face_volume(&mesh.positions, f)).sum()
 }
 
-pub fn inspect(mesh: &Mesh, tol: f32) -> Report {
+pub fn inspect(mesh: &Mesh, tol: f64) -> Report {
     let mut issues = Vec::new();
 
     // Undirected edge -> [(face, stored direction matches (min, max))]
@@ -287,7 +287,7 @@ impl RepairSummary {
 /// degenerate and duplicate faces and unused vertices, makes winding
 /// consistent, fills simple holes, and flips inverted closed solids.
 /// Non-manifold edges are left alone; run [`inspect`] on the result.
-pub fn repair(mesh: &Mesh, tol: f32) -> (Mesh, RepairSummary) {
+pub fn repair(mesh: &Mesh, tol: f64) -> (Mesh, RepairSummary) {
     let mut s = RepairSummary::default();
 
     // 1. Weld vertices that coincide within the tolerance.
@@ -400,7 +400,7 @@ fn make_consistent(faces: &mut [Vec<u32>]) -> usize {
 }
 
 /// Closes simple boundary loops with a polygon (or a fan when non-planar).
-fn fill_holes(positions: &[[f32; 3]], faces: &mut Vec<Vec<u32>>, tol: f32) -> usize {
+fn fill_holes(positions: &[[f64; 3]], faces: &mut Vec<Vec<u32>>, tol: f64) -> usize {
     let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
     for f in faces.iter() {
         for e in ring_edges(f) {
@@ -461,8 +461,8 @@ fn fill_holes(positions: &[[f32; 3]], faces: &mut Vec<Vec<u32>>, tol: f32) -> us
     filled
 }
 
-fn is_planar(positions: &[[f32; 3]], ring: &[u32], tol: f32) -> bool {
-    let mut n = [0.0f32; 3];
+fn is_planar(positions: &[[f64; 3]], ring: &[u32], tol: f64) -> bool {
+    let mut n = [0.0f64; 3];
     for (a, b) in ring_edges(ring) {
         let (a, b) = (positions[a as usize], positions[b as usize]);
         n[0] += (a[1] - b[1]) * (a[2] + b[2]);
@@ -482,7 +482,7 @@ fn is_planar(positions: &[[f32; 3]], ring: &[u32], tol: f32) -> bool {
 }
 
 /// Flips every closed connected piece whose signed volume is negative.
-fn fix_inverted(positions: &[[f32; 3]], faces: &mut [Vec<u32>]) -> usize {
+fn fix_inverted(positions: &[[f64; 3]], faces: &mut [Vec<u32>]) -> usize {
     let adj = edge_faces(faces);
     let mut visited = vec![false; faces.len()];
     let mut flipped = 0;
@@ -506,7 +506,7 @@ fn fix_inverted(positions: &[[f32; 3]], faces: &mut [Vec<u32>]) -> usize {
         let closed = component
             .iter()
             .all(|&f| ring_edges(&faces[f]).all(|(a, b)| adj.get(&key(a, b)).map_or(0, Vec::len) == 2));
-        let volume: f32 = component.iter().map(|&f| face_volume(positions, &faces[f])).sum();
+        let volume: f64 = component.iter().map(|&f| face_volume(positions, &faces[f])).sum();
         if closed && volume < 0.0 {
             for f in component {
                 faces[f].reverse();
@@ -521,7 +521,7 @@ fn fix_inverted(positions: &[[f32; 3]], faces: &mut [Vec<u32>]) -> usize {
 mod tests {
     use super::*;
 
-    const TOL: f32 = DEFAULT_TOLERANCE;
+    const TOL: f64 = DEFAULT_TOLERANCE;
 
     fn cube() -> Mesh {
         let mut m = Mesh::new();

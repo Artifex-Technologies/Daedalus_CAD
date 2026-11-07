@@ -4,7 +4,7 @@
 /// Triangulates one planar face ring (vertex indices into `positions`) by ear
 /// clipping. Triangles keep the ring's winding. Degenerate input falls back to
 /// a fan so that every face still produces `ring.len() - 2` triangles.
-pub fn triangulate(positions: &[[f32; 3]], ring: &[u32]) -> Vec<[u32; 3]> {
+pub fn triangulate(positions: &[[f64; 3]], ring: &[u32]) -> Vec<[u32; 3]> {
     let n = ring.len();
     if n < 3 {
         return Vec::new();
@@ -20,7 +20,7 @@ pub fn triangulate(positions: &[[f32; 3]], ring: &[u32]) -> Vec<[u32; 3]> {
         1 => (2, 0),
         _ => (0, 1),
     };
-    let pts: Vec<[f32; 2]> = ring
+    let pts: Vec<[f64; 2]> = ring
         .iter()
         .map(|&v| {
             let p = positions[v as usize];
@@ -61,8 +61,8 @@ pub fn triangulate(positions: &[[f32; 3]], ring: &[u32]) -> Vec<[u32; 3]> {
     out
 }
 
-fn newell(positions: &[[f32; 3]], ring: &[u32]) -> [f32; 3] {
-    let mut n = [0.0f32; 3];
+fn newell(positions: &[[f64; 3]], ring: &[u32]) -> [f64; 3] {
+    let mut n = [0.0f64; 3];
     for i in 0..ring.len() {
         let a = positions[ring[i] as usize];
         let b = positions[ring[(i + 1) % ring.len()] as usize];
@@ -73,8 +73,8 @@ fn newell(positions: &[[f32; 3]], ring: &[u32]) -> [f32; 3] {
     n
 }
 
-fn dominant_axis(n: [f32; 3]) -> usize {
-    let a = n.map(f32::abs);
+fn dominant_axis(n: [f64; 3]) -> usize {
+    let a = n.map(f64::abs);
     if a[0] >= a[1] && a[0] >= a[2] {
         0
     } else if a[1] >= a[2] {
@@ -84,7 +84,7 @@ fn dominant_axis(n: [f32; 3]) -> usize {
     }
 }
 
-fn signed_area_2d(pts: &[[f32; 2]]) -> f32 {
+fn signed_area_2d(pts: &[[f64; 2]]) -> f64 {
     let mut s = 0.0;
     for i in 0..pts.len() {
         let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
@@ -93,12 +93,12 @@ fn signed_area_2d(pts: &[[f32; 2]]) -> f32 {
     s * 0.5
 }
 
-fn cross_2d(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
+fn cross_2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
 /// Inclusive point-in-triangle test, independent of the triangle's winding.
-fn in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
+fn in_triangle(p: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> bool {
     let d1 = cross_2d(a, b, p);
     let d2 = cross_2d(b, c, p);
     let d3 = cross_2d(c, a, p);
@@ -111,7 +111,7 @@ fn in_triangle(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
 mod tests {
     use super::*;
 
-    fn area_3d(positions: &[[f32; 3]], tris: &[[u32; 3]]) -> f32 {
+    fn area_3d(positions: &[[f64; 3]], tris: &[[u32; 3]]) -> f64 {
         tris.iter()
             .map(|t| {
                 let [a, b, c] = t.map(|v| positions[v as usize]);
@@ -124,7 +124,7 @@ mod tests {
     }
 
     /// L-shape: a 2 x 2 square with the top-right 1 x 1 quarter removed, area 3.
-    fn l_shape() -> (Vec<[f32; 3]>, Vec<u32>) {
+    fn l_shape() -> (Vec<[f64; 3]>, Vec<u32>) {
         let p = vec![
             [0.0, 0.0, 0.0],
             [2.0, 0.0, 0.0],
@@ -154,7 +154,7 @@ mod tests {
     fn works_on_vertical_and_clockwise_projected_faces() {
         // The same L standing in the XZ plane, wound so its normal points -Y.
         let (p, ring) = l_shape();
-        let p: Vec<[f32; 3]> = p.iter().map(|q| [q[0], 0.0, q[1]]).collect();
+        let p: Vec<[f64; 3]> = p.iter().map(|q| [q[0], 0.0, q[1]]).collect();
         let tris = triangulate(&p, &ring);
         assert!((area_3d(&p, &tris) - 3.0).abs() < 1e-5);
     }

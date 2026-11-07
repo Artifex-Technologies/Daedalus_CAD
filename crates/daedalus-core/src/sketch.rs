@@ -9,16 +9,16 @@ pub const DEFAULT_CIRCLE_SEGMENTS: u32 = 24;
 /// SketchUp's default number of segments for an arc (and a pie).
 pub const DEFAULT_ARC_SEGMENTS: u32 = 12;
 
-const EPS: f32 = 1e-6;
+const EPS: f64 = 1e-6;
 
 /// A drawing plane: `origin` plus orthonormal in-plane axes `u`, `v` with
 /// `normal = u x v`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Plane {
-    pub origin: [f32; 3],
-    pub u: [f32; 3],
-    pub v: [f32; 3],
-    pub normal: [f32; 3],
+    pub origin: [f64; 3],
+    pub u: [f64; 3],
+    pub v: [f64; 3],
+    pub normal: [f64; 3],
 }
 
 impl Plane {
@@ -30,7 +30,7 @@ impl Plane {
     /// Plane through `origin` facing `normal`. On a wall the `u` axis is kept
     /// horizontal, on a floor or ceiling it follows X, so typed sizes read the
     /// same way they do in SketchUp. Returns None for a zero normal.
-    pub fn from_point_normal(origin: [f32; 3], normal: [f32; 3]) -> Option<Self> {
+    pub fn from_point_normal(origin: [f64; 3], normal: [f64; 3]) -> Option<Self> {
         let n = normalize(normal)?;
         let u = if n[2].abs() > 0.999 {
             normalize(sub([1.0, 0.0, 0.0], scale(n, n[0])))?
@@ -41,7 +41,7 @@ impl Plane {
     }
 
     /// Where a ray meets the plane, from either side; None if parallel or behind.
-    pub fn intersect_ray(&self, origin: [f32; 3], dir: [f32; 3]) -> Option<[f32; 3]> {
+    pub fn intersect_ray(&self, origin: [f64; 3], dir: [f64; 3]) -> Option<[f64; 3]> {
         let denom = dot(self.normal, dir);
         if denom.abs() < EPS {
             return None;
@@ -51,19 +51,19 @@ impl Plane {
     }
 
     /// In-plane coordinates of a point (its offset along the normal is dropped).
-    pub fn to_local(&self, p: [f32; 3]) -> [f32; 2] {
+    pub fn to_local(&self, p: [f64; 3]) -> [f64; 2] {
         let d = sub(p, self.origin);
         [dot(d, self.u), dot(d, self.v)]
     }
 
-    pub fn to_world(&self, x: f32, y: f32) -> [f32; 3] {
+    pub fn to_world(&self, x: f64, y: f64) -> [f64; 3] {
         add(self.origin, add(scale(self.u, x), scale(self.v, y)))
     }
 }
 
 /// Rectangle with opposite corners `a` and `b`, edges along the plane axes.
 /// None if it has no width or height.
-pub fn rectangle(plane: &Plane, a: [f32; 3], b: [f32; 3]) -> Option<Vec<[f32; 3]>> {
+pub fn rectangle(plane: &Plane, a: [f64; 3], b: [f64; 3]) -> Option<Vec<[f64; 3]>> {
     let (pa, pb) = (plane.to_local(a), plane.to_local(b));
     let (x0, x1) = (pa[0].min(pb[0]), pa[0].max(pb[0]));
     let (y0, y1) = (pa[1].min(pb[1]), pa[1].max(pb[1]));
@@ -76,7 +76,7 @@ pub fn rectangle(plane: &Plane, a: [f32; 3], b: [f32; 3]) -> Option<Vec<[f32; 3]
 /// Regular polygon centred at `center` with its first corner towards `rim`
 /// (SketchUp's Polygon tool; with [`DEFAULT_CIRCLE_SEGMENTS`] it is the Circle tool).
 /// None for fewer than 3 sides or a zero radius.
-pub fn regular_polygon(plane: &Plane, center: [f32; 3], rim: [f32; 3], sides: u32) -> Option<Vec<[f32; 3]>> {
+pub fn regular_polygon(plane: &Plane, center: [f64; 3], rim: [f64; 3], sides: u32) -> Option<Vec<[f64; 3]>> {
     let c = plane.to_local(center);
     let r = plane.to_local(rim);
     let (dx, dy) = (r[0] - c[0], r[1] - c[1]);
@@ -85,11 +85,11 @@ pub fn regular_polygon(plane: &Plane, center: [f32; 3], rim: [f32; 3], sides: u3
         return None;
     }
     let start = dy.atan2(dx);
-    let step = std::f32::consts::TAU / sides as f32;
+    let step = std::f64::consts::TAU / sides as f64;
     Some(
         (0..sides)
             .map(|i| {
-                let a = start + step * i as f32;
+                let a = start + step * i as f64;
                 plane.to_world(c[0] + radius * a.cos(), c[1] + radius * a.sin())
             })
             .collect(),
@@ -98,7 +98,7 @@ pub fn regular_polygon(plane: &Plane, center: [f32; 3], rim: [f32; 3], sides: u3
 
 /// Rotated Rectangle: the first side from `a` to `b` (any direction in the plane), the opposite side through `c`'s
 /// distance from that line, on `c`'s side. None if a side has no length.
-pub fn rotated_rectangle(plane: &Plane, a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<Vec<[f32; 3]>> {
+pub fn rotated_rectangle(plane: &Plane, a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> Option<Vec<[f64; 3]>> {
     let (la, lb, lc) = (plane.to_local(a), plane.to_local(b), plane.to_local(c));
     let (dx, dy) = (lb[0] - la[0], lb[1] - la[1]);
     let len = (dx * dx + dy * dy).sqrt();
@@ -111,7 +111,7 @@ pub fn rotated_rectangle(plane: &Plane, a: [f32; 3], b: [f32; 3], c: [f32; 3]) -
     if h.abs() < EPS {
         return None;
     }
-    let w = |x: f32, y: f32| plane.to_world(x, y);
+    let w = |x: f64, y: f64| plane.to_world(x, y);
     let pts = vec![w(la[0], la[1]), w(lb[0], lb[1]), w(lb[0] + nx * h, lb[1] + ny * h), w(la[0] + nx * h, la[1] + ny * h)];
     // counter-clockwise around the normal: reversed when c is on the right of a -> b
     Some(if h > 0.0 { pts } else { pts.into_iter().rev().collect() })
@@ -119,7 +119,7 @@ pub fn rotated_rectangle(plane: &Plane, a: [f32; 3], b: [f32; 3], c: [f32; 3]) -
 
 /// The angle (radians, counter-clockwise about the plane normal) from the direction `center -> from` to `center -> to`,
 /// in (-pi, pi]. None when either point is on the centre.
-pub fn angle_between(plane: &Plane, center: [f32; 3], from: [f32; 3], to: [f32; 3]) -> Option<f32> {
+pub fn angle_between(plane: &Plane, center: [f64; 3], from: [f64; 3], to: [f64; 3]) -> Option<f64> {
     let (c, f, t) = (plane.to_local(center), plane.to_local(from), plane.to_local(to));
     let (a, b) = ([f[0] - c[0], f[1] - c[1]], [t[0] - c[0], t[1] - c[1]]);
     if a[0].hypot(a[1]) < EPS || b[0].hypot(b[1]) < EPS {
@@ -131,21 +131,21 @@ pub fn angle_between(plane: &Plane, center: [f32; 3], from: [f32; 3], to: [f32; 
 /// Pie: the slice of a circle around `center`, starting at `start` (which sets the radius) and turning `sweep` radians
 /// counter-clockwise about the plane normal (negative: clockwise), in `segments` straight pieces. None for no radius or
 /// no sweep.
-pub fn pie(plane: &Plane, center: [f32; 3], start: [f32; 3], sweep: f32, segments: u32) -> Option<Vec<[f32; 3]>> {
+pub fn pie(plane: &Plane, center: [f64; 3], start: [f64; 3], sweep: f64, segments: u32) -> Option<Vec<[f64; 3]>> {
     let (c, s) = (plane.to_local(center), plane.to_local(start));
     let radius = (s[0] - c[0]).hypot(s[1] - c[1]);
     if radius < EPS || sweep.abs() < 1e-4 || segments == 0 {
         return None;
     }
-    let sweep = sweep.clamp(-std::f32::consts::TAU, std::f32::consts::TAU);
+    let sweep = sweep.clamp(-std::f64::consts::TAU, std::f64::consts::TAU);
     let a0 = (s[1] - c[1]).atan2(s[0] - c[0]);
     let mut pts = vec![center];
     pts.extend((0..=segments).map(|i| {
-        let a = a0 + sweep * i as f32 / segments as f32;
+        let a = a0 + sweep * i as f64 / segments as f64;
         plane.to_world(c[0] + radius * a.cos(), c[1] + radius * a.sin())
     }));
     // a full turn ends on its start: no zero-length side
-    if (sweep.abs() - std::f32::consts::TAU).abs() < 1e-4 {
+    if (sweep.abs() - std::f64::consts::TAU).abs() < 1e-4 {
         pts.pop();
     }
     Some(if sweep > 0.0 { pts } else { pts.into_iter().rev().collect() })
@@ -154,7 +154,7 @@ pub fn pie(plane: &Plane, center: [f32; 3], start: [f32; 3], sweep: f32, segment
 /// 2 Point Arc: from `a` to `b`, bowed out by `bulge` (the height of its middle above the chord, measured along the plane's
 /// normal turned onto the chord's left; negative bows the other way), in `segments` straight pieces. Points from `a` to
 /// `b`. None for a zero chord; a zero bulge is the straight line.
-pub fn arc_by_bulge(plane: &Plane, a: [f32; 3], b: [f32; 3], bulge: f32, segments: u32) -> Option<Vec<[f32; 3]>> {
+pub fn arc_by_bulge(plane: &Plane, a: [f64; 3], b: [f64; 3], bulge: f64, segments: u32) -> Option<Vec<[f64; 3]>> {
     let (la, lb) = (plane.to_local(a), plane.to_local(b));
     let (dx, dy) = (lb[0] - la[0], lb[1] - la[1]);
     let chord = dx.hypot(dy);
@@ -176,7 +176,7 @@ pub fn arc_by_bulge(plane: &Plane, a: [f32; 3], b: [f32; 3], bulge: f32, segment
     let a1 = (lb[1] - cy).atan2(lb[0] - cx);
     // the sweep that passes through the bulge's side
     let mut sweep = a1 - a0;
-    let tau = std::f32::consts::TAU;
+    let tau = std::f64::consts::TAU;
     let want_ccw = side < 0.0; // bulging left of a -> b goes clockwise round the centre
     if want_ccw && sweep < 0.0 {
         sweep += tau;
@@ -187,7 +187,7 @@ pub fn arc_by_bulge(plane: &Plane, a: [f32; 3], b: [f32; 3], bulge: f32, segment
     Some(
         (0..=segments)
             .map(|i| {
-                let t = a0 + sweep * i as f32 / segments as f32;
+                let t = a0 + sweep * i as f64 / segments as f64;
                 plane.to_world(cx + r * t.cos(), cy + r * t.sin())
             })
             .collect(),
@@ -195,26 +195,26 @@ pub fn arc_by_bulge(plane: &Plane, a: [f32; 3], b: [f32; 3], bulge: f32, segment
 }
 
 /// 3 Point Arc: the arc from `a` through `m` to `b`, in `segments` pieces. None when the three points are in a line.
-pub fn arc_three_points(plane: &Plane, a: [f32; 3], m: [f32; 3], b: [f32; 3], segments: u32) -> Option<Vec<[f32; 3]>> {
+pub fn arc_three_points(plane: &Plane, a: [f64; 3], m: [f64; 3], b: [f64; 3], segments: u32) -> Option<Vec<[f64; 3]>> {
     let (p, q, r) = (plane.to_local(a), plane.to_local(m), plane.to_local(b));
     let d = 2.0 * (p[0] * (q[1] - r[1]) + q[0] * (r[1] - p[1]) + r[0] * (p[1] - q[1]));
     if d.abs() < EPS || segments == 0 {
         return None;
     }
-    let sq = |v: [f32; 2]| v[0] * v[0] + v[1] * v[1];
+    let sq = |v: [f64; 2]| v[0] * v[0] + v[1] * v[1];
     let cx = (sq(p) * (q[1] - r[1]) + sq(q) * (r[1] - p[1]) + sq(r) * (p[1] - q[1])) / d;
     let cy = (sq(p) * (r[0] - q[0]) + sq(q) * (p[0] - r[0]) + sq(r) * (q[0] - p[0])) / d;
     let rad = (p[0] - cx).hypot(p[1] - cy);
-    let ang = |v: [f32; 2]| (v[1] - cy).atan2(v[0] - cx);
-    let tau = std::f32::consts::TAU;
+    let ang = |v: [f64; 2]| (v[1] - cy).atan2(v[0] - cx);
+    let tau = std::f64::consts::TAU;
     let (a0, am, a1) = (ang(p), ang(q), ang(r));
     // counter-clockwise from a: does it meet m before b? if not, go the other way round
-    let ccw = |x: f32| (x - a0).rem_euclid(tau);
+    let ccw = |x: f64| (x - a0).rem_euclid(tau);
     let sweep = if ccw(am) <= ccw(a1) { ccw(a1) } else { ccw(a1) - tau };
     Some(
         (0..=segments)
             .map(|i| {
-                let t = a0 + sweep * i as f32 / segments as f32;
+                let t = a0 + sweep * i as f64 / segments as f64;
                 plane.to_world(cx + rad * t.cos(), cy + rad * t.sin())
             })
             .collect(),
@@ -223,7 +223,7 @@ pub fn arc_three_points(plane: &Plane, a: [f32; 3], m: [f32; 3], b: [f32; 3], se
 
 /// Arc (by its centre): around `center` from `start` (which sets the radius), turning `sweep` radians counter-clockwise
 /// about the normal. Points along the arc only (a pie without its two radii).
-pub fn arc_from_center(plane: &Plane, center: [f32; 3], start: [f32; 3], sweep: f32, segments: u32) -> Option<Vec<[f32; 3]>> {
+pub fn arc_from_center(plane: &Plane, center: [f64; 3], start: [f64; 3], sweep: f64, segments: u32) -> Option<Vec<[f64; 3]>> {
     let mut v = pie(plane, center, start, sweep, segments)?;
     // pie() puts the centre first (or last when it turned the ring round)
     if sweep > 0.0 {
@@ -237,15 +237,15 @@ pub fn arc_from_center(plane: &Plane, center: [f32; 3], start: [f32; 3], sweep: 
 
 /// Offset: the outline `ring` (counter-clockwise about `normal`) moved `d` inward (negative: outward), each corner where its
 /// two moved sides meet. None when it collapses (a side would turn round) or the outline has no area.
-pub fn offset_ring(ring: &[[f32; 3]], normal: [f32; 3], d: f32) -> Option<Vec<[f32; 3]>> {
+pub fn offset_ring(ring: &[[f64; 3]], normal: [f64; 3], d: f64) -> Option<Vec<[f64; 3]>> {
     let n = ring.len();
     if n < 3 {
         return None;
     }
     let plane = Plane::from_point_normal(ring[0], normal)?;
-    let pts: Vec<[f32; 2]> = ring.iter().map(|&p| plane.to_local(p)).collect();
+    let pts: Vec<[f64; 2]> = ring.iter().map(|&p| plane.to_local(p)).collect();
     // the inward side of each edge (left of a counter-clockwise ring)
-    let side = |i: usize| -> Option<([f32; 2], [f32; 2])> {
+    let side = |i: usize| -> Option<([f64; 2], [f64; 2])> {
         let (a, b) = (pts[i], pts[(i + 1) % n]);
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let l = dx.hypot(dy);
@@ -276,27 +276,27 @@ pub fn offset_ring(ring: &[[f32; 3]], normal: [f32; 3], d: f32) -> Option<Vec<[f
     Some(out.into_iter().map(|q| plane.to_world(q[0], q[1])).collect())
 }
 
-fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-fn scale(a: [f32; 3], s: f32) -> [f32; 3] {
+fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
-fn normalize(a: [f32; 3]) -> Option<[f32; 3]> {
+fn normalize(a: [f64; 3]) -> Option<[f64; 3]> {
     let len = dot(a, a).sqrt();
     (len > EPS).then(|| scale(a, 1.0 / len))
 }
@@ -306,12 +306,12 @@ mod tests {
     use super::*;
     use crate::HalfEdgeMesh;
 
-    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+    fn close(a: [f64; 3], b: [f64; 3]) -> bool {
         (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5)
     }
 
     /// Area and normal of a ring, via a one-face half-edge mesh.
-    fn face_of(points: &[[f32; 3]]) -> HalfEdgeMesh {
+    fn face_of(points: &[[f64; 3]]) -> HalfEdgeMesh {
         let mut h = HalfEdgeMesh::default();
         h.add_polygon(points).unwrap();
         h
@@ -367,7 +367,7 @@ mod tests {
         assert!(c.iter().all(|p| ((p[0] * p[0] + p[1] * p[1]).sqrt() - 2.0).abs() < 1e-5));
         // Inscribed 24-gon: area = n/2 r^2 sin(2 pi / n).
         let mut h = face_of(&c);
-        let expected = 12.0 * 4.0 * (std::f32::consts::TAU / 24.0).sin();
+        let expected = 12.0 * 4.0 * (std::f64::consts::TAU / 24.0).sin();
         h.push_pull(0, 1.0).unwrap();
         assert!((h.signed_volume() - expected).abs() < 1e-3);
         assert!(close(h.face_normal(h.face_count() - 1), [0.0, 0.0, 1.0]));
@@ -391,19 +391,19 @@ mod tests {
     fn pie_is_a_slice_with_the_right_area() {
         let g = Plane::ground();
         // a quarter of a 2 m circle, either way round
-        for sweep in [std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_2] {
+        for sweep in [std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2] {
             let p = pie(&g, [0.0; 3], [2.0, 0.0, 0.0], sweep, 12).unwrap();
             assert_eq!(p.len(), 14, "centre plus 13 points on the arc");
             let mut h = face_of(&p);
             assert!(close(h.face_normal(0), [0.0, 0.0, 1.0]));
             h.push_pull(0, 1.0).unwrap();
             // 12 triangles of the slice: 12 * 1/2 r^2 sin(step)
-            let expected = 12.0 * 0.5 * 4.0 * (std::f32::consts::FRAC_PI_2 / 12.0).sin();
+            let expected = 12.0 * 0.5 * 4.0 * (std::f64::consts::FRAC_PI_2 / 12.0).sin();
             assert!((h.signed_volume() - expected).abs() < 1e-3);
         }
         assert!(pie(&g, [0.0; 3], [0.0; 3], 1.0, 12).is_none());
         let a = angle_between(&g, [0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
-        assert!((a - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!((a - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
     }
 
     #[test]
@@ -423,7 +423,7 @@ mod tests {
         assert!(close(arc[12], [2.0, 0.0, 0.0]));
         assert!(arc_three_points(&g, [0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], 12).is_none(), "in a line");
         // by its centre: a quarter
-        let q = arc_from_center(&g, [0.0; 3], [1.0, 0.0, 0.0], std::f32::consts::FRAC_PI_2, 6).unwrap();
+        let q = arc_from_center(&g, [0.0; 3], [1.0, 0.0, 0.0], std::f64::consts::FRAC_PI_2, 6).unwrap();
         assert_eq!(q.len(), 7);
         assert!(close(q[0], [1.0, 0.0, 0.0]) && close(q[6], [0.0, 1.0, 0.0]));
     }

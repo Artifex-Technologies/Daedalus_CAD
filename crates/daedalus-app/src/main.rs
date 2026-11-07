@@ -1,4 +1,4 @@
-use daedalus_core::inspect::{self, DEFAULT_TOLERANCE};
+use daedalus_core::inspect;
 use daedalus_core::Mesh;
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -35,7 +35,7 @@ fn inspect_command(args: &[String]) {
     };
     let mesh = load(&PathBuf::from(model));
     println!("{model}: {} vertices, {} faces", mesh.positions.len(), mesh.faces.len());
-    let report = inspect::inspect(&mesh, DEFAULT_TOLERANCE);
+    let report = inspect::inspect(&mesh, mesh.tolerance() * 10.0);
     print_report(&report);
 
     match args.get(1).map(String::as_str) {
@@ -45,10 +45,10 @@ fn inspect_command(args: &[String]) {
                 eprintln!("{USAGE}");
                 exit(2)
             };
-            let (fixed, summary) = inspect::repair(&mesh, DEFAULT_TOLERANCE);
+            let (fixed, summary) = inspect::repair(&mesh, mesh.tolerance() * 10.0);
             println!("\nrepair: {summary:#?}");
             println!("after repair:");
-            let after = inspect::inspect(&fixed, DEFAULT_TOLERANCE);
+            let after = inspect::inspect(&fixed, fixed.tolerance() * 10.0);
             print_report(&after);
             if let Err(e) = daedalus_io::export_mesh(&fixed, Path::new(out)) {
                 eprintln!("error: could not write {out}: {e}");
@@ -69,7 +69,7 @@ fn fail(msg: &str) -> ! {
     exit(2)
 }
 
-fn number(s: &str, what: &str) -> f32 {
+fn number(s: &str, what: &str) -> f64 {
     s.parse().unwrap_or_else(|_| fail(&format!("{what}: '{s}' is not a number")))
 }
 

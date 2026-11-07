@@ -224,7 +224,7 @@ const PROTRACTOR: [f32; 4] = [0.3, 0.3, 0.75, 1.0];
 /// The mouse resolved by the viewer: hits on geometry, snaps, or the ground.
 #[derive(Debug, Clone, Copy)]
 pub struct Hit {
-    pub point: [f32; 3],
+    pub point: [f64; 3],
     /// Plane a drawing started here would use (the face's plane, or the ground).
     pub plane: Plane,
     pub face: Option<usize>,
@@ -245,16 +245,16 @@ pub struct Target {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Cursor {
-    pub origin: [f32; 3],
-    pub dir: [f32; 3],
+    pub origin: [f64; 3],
+    pub dir: [f64; 3],
     pub hit: Option<Hit>,
 }
 
 /// A value typed into the Measurements box.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Entry {
-    Value(f32),
-    Pair(f32, f32),
+    Value(f64),
+    Pair(f64, f64),
     Sides(u32),
 }
 
@@ -277,43 +277,43 @@ pub fn parse_entry(text: &str, units: Units) -> Option<Entry> {
 enum Op {
     Idle,
     /// Line: each click adds a loose line from `last` to the new point (in the model at once, so Esc keeps what is drawn).
-    Line { plane: Plane, last: [f32; 3], cursor: Option<[f32; 3]>, axis: Option<u8> },
-    Rect { plane: Plane, start: [f32; 3], cursor: Option<[f32; 3]> },
-    Round { plane: Plane, center: [f32; 3], cursor: Option<[f32; 3]> },
-    Push { face: usize, base: [f32; 3], normal: [f32; 3], distance: f32 },
+    Line { plane: Plane, last: [f64; 3], cursor: Option<[f64; 3]>, axis: Option<u8> },
+    Rect { plane: Plane, start: [f64; 3], cursor: Option<[f64; 3]> },
+    Round { plane: Plane, center: [f64; 3], cursor: Option<[f64; 3]> },
+    Push { face: usize, base: [f64; 3], normal: [f64; 3], distance: f64 },
     /// 2 Point Arc: the ends `a` and `b` (once set), then the bulge toward the cursor.
-    Arc2 { plane: Plane, a: [f32; 3], b: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
+    Arc2 { plane: Plane, a: [f64; 3], b: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// 3 Point Arc: the start, a point the arc passes through (once set), then the end at the cursor.
-    Arc3 { plane: Plane, a: [f32; 3], m: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
+    Arc3 { plane: Plane, a: [f64; 3], m: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// Offset: the face's outline (counter-clockwise about `normal`) and how far in to copy it.
-    Offset { ring: Vec<[f32; 3]>, normal: [f32; 3], d: f32 },
+    Offset { ring: Vec<[f64; 3]>, normal: [f64; 3], d: f64 },
     /// Dimensions: the two points measured (the second once set), then where the dimension line sits.
-    Dim { a: [f32; 3], b: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
+    Dim { a: [f64; 3], b: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// Follow Me: the profile face chosen; next, a line of the path.
     Follow { face: usize },
     /// Freehand: the points of the stroke while the button is held.
-    Free { plane: Plane, points: Vec<[f32; 3]> },
+    Free { plane: Plane, points: Vec<[f64; 3]> },
     /// Rotated Rectangle: the first side from `a` to `b` (once set), then the height toward the cursor.
-    RotRect { plane: Plane, a: [f32; 3], b: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
+    RotRect { plane: Plane, a: [f64; 3], b: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// Pie: the centre, the start of the arc (once set, it gives the radius), then the angle.
-    Pie { plane: Plane, center: [f32; 3], start: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
+    Pie { plane: Plane, center: [f64; 3], start: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// Move: these vertices go from `base` to the cursor.
-    Move { t: Target, base: [f32; 3], cursor: Option<[f32; 3]>, axis: Option<u8> },
+    Move { t: Target, base: [f64; 3], cursor: Option<[f64; 3]>, axis: Option<u8> },
     /// Rotate: about the plane's normal through `center`, from the `start` direction (once set) by `angle` radians.
-    Rotate { t: Target, plane: Plane, center: [f32; 3], start: Option<[f32; 3]>, angle: f32 },
+    Rotate { t: Target, plane: Plane, center: [f64; 3], start: Option<[f64; 3]>, angle: f64 },
     /// Scale: uniformly about `anchor` (the corner of the bounding box opposite the grip), `start` being the grip.
-    Scale { t: Target, anchor: [f32; 3], start: [f32; 3], factor: f32 },
+    Scale { t: Target, anchor: [f64; 3], start: [f64; 3], factor: f64 },
     /// Tape Measure: from `start` to the cursor.
-    Tape { start: [f32; 3], cursor: Option<[f32; 3]> },
+    Tape { start: [f64; 3], cursor: Option<[f64; 3]> },
     /// Protractor: a guide through `center` turned `angle` radians from the `start` direction (once set).
-    Protract { plane: Plane, center: [f32; 3], start: Option<[f32; 3]>, angle: f32 },
+    Protract { plane: Plane, center: [f64; 3], start: Option<[f64; 3]>, angle: f64 },
     /// Text: the point it is about and the words it starts with; next, where it is shown.
-    Text { point: [f32; 3], text: String, cursor: Option<[f32; 3]> },
+    Text { point: [f64; 3], text: String, cursor: Option<[f64; 3]> },
     /// Axes: the new origin, then the red direction (once set), then the green.
-    Axes { origin: [f32; 3], red: Option<[f32; 3]>, cursor: Option<[f32; 3]> },
+    Axes { origin: [f64; 3], red: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// 3D Text being placed: the words, how tall, how deep (None: flat), their outlines (for the preview), and where they
     /// would go now (on the plane under the mouse).
-    Place3D { text: String, height: f32, depth: Option<f32>, letters: Vec<Vec<Vec<[f32; 2]>>>, at: Option<Plane> },
+    Place3D { text: String, height: f64, depth: Option<f64>, letters: Vec<Vec<Vec<[f64; 2]>>>, at: Option<Plane> },
 }
 
 pub struct Tools {
@@ -335,7 +335,7 @@ pub struct Tools {
     /// Move makes a copy (Ctrl toggles it while moving, as in SketchUp).
     pub copy: bool,
     /// The last copy made by Move (what was copied and how far), so `x5` or `/5` typed right after makes an array.
-    last_copy: Option<(Target, [f32; 3])>,
+    last_copy: Option<(Target, [f64; 3])>,
     hover_face: Option<usize>,
     hover_instance: Option<usize>,
     /// The drawing axes (a copy of the model's, kept up to date by the viewer): axis locks follow them.
@@ -345,7 +345,7 @@ pub struct Tools {
     op: Op,
     /// Last push/pull (original face, distance), so a value typed right after
     /// it re-does it at that distance, as in SketchUp.
-    last_push: Option<(usize, f32)>,
+    last_push: Option<(usize, f64)>,
 }
 
 impl Default for Tools {
@@ -504,7 +504,7 @@ impl Tools {
 
     /// Ends a Move, Rotate or Scale: the faces keep their numbers, so the selection stays. With `copy` (Move with Ctrl),
     /// a copy is moved instead and becomes the selection.
-    fn transform(&mut self, model: &mut Model, t: &Target, f: impl Fn([f32; 3]) -> [f32; 3]) -> Result<(), String> {
+    fn transform(&mut self, model: &mut Model, t: &Target, f: impl Fn([f64; 3]) -> [f64; 3]) -> Result<(), String> {
         let xf = Xform::from_fn(f);
         if self.copy && self.tool == Tool::Move {
             let (faces, inst) = model.copy_all(&t.faces, &t.inst, &[xf]).map_err(|e| e.to_string())?;
@@ -520,7 +520,7 @@ impl Tools {
     }
 
     /// 3D Text: the words chosen in its window; the mouse now places them.
-    pub fn begin_text3d(&mut self, text: &str, height: f32, depth: Option<f32>) -> Result<(), String> {
+    pub fn begin_text3d(&mut self, text: &str, height: f64, depth: Option<f64>) -> Result<(), String> {
         if !(height > 0.0) {
             return Err("the letters need a height".into());
         }
@@ -558,9 +558,9 @@ impl Tools {
             return Some(Err("an array needs 2 to 1000 copies".into()));
         }
         let steps: Vec<Xform> = if divide {
-            (1..n).map(|k| Xform::translation(scale(d, k as f32 / n as f32))).collect()
+            (1..n).map(|k| Xform::translation(scale(d, k as f64 / n as f64))).collect()
         } else {
-            (2..=n).map(|k| Xform::translation(scale(d, k as f32))).collect()
+            (2..=n).map(|k| Xform::translation(scale(d, k as f64))).collect()
         };
         Some(match model.copy_all(&src.faces, &src.inst, &steps) {
             Ok((faces, inst)) => {
@@ -596,7 +596,7 @@ impl Tools {
     }
 
     /// The section plane's outline, drawn while it is placed: a square in its plane around its point, `size` across.
-    pub fn section_outline(&self, model: &Model, size: f32) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
+    pub fn section_outline(&self, model: &Model, size: f64) -> Vec<([f64; 3], [f64; 3], [f32; 4])> {
         let Some(Section { point: o, normal: n, .. }) = model.notes().section else { return Vec::new() };
         let Some(p) = Plane::from_point_normal(o, n) else { return Vec::new() };
         let h = size / 2.0;
@@ -609,12 +609,12 @@ impl Tools {
     }
 
     /// The placed dimensions' lines (extension lines and the dimension line), in `color`.
-    pub fn dim_lines(&self, model: &Model, color: [f32; 4]) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
+    pub fn dim_lines(&self, model: &Model, color: [f32; 4]) -> Vec<([f64; 3], [f64; 3], [f32; 4])> {
         model.notes().dims.iter().flat_map(|d| dim_lines(d.a, d.b, d.offset, color)).collect()
     }
 
     /// Each placed dimension's label: where it goes (the middle of its dimension line) and the length, in the units shown.
-    pub fn dim_labels(&self, model: &Model) -> Vec<([f32; 3], String)> {
+    pub fn dim_labels(&self, model: &Model) -> Vec<([f64; 3], String)> {
         model.notes().dims.iter().map(|d| (add(scale(add(d.a, d.b), 0.5), d.offset), fmt(dist(d.a, d.b), self.units))).collect()
     }
 
@@ -625,7 +625,7 @@ impl Tools {
 
     /// Points that are not in the model yet but should still be snap targets
     /// (the Line tool's own corners, so the loop can be closed).
-    pub fn pending_points(&self) -> Vec<[f32; 3]> {
+    pub fn pending_points(&self) -> Vec<[f64; 3]> {
         match &self.op {
             Op::Line { last, .. } => vec![*last],
             Op::Rect { start, .. } => vec![*start],
@@ -660,7 +660,7 @@ impl Tools {
 
     /// Cursor position and snap after the tool's own inference (axis locks,
     /// keeping to the workplane), for the marker and tooltip.
-    pub fn marker(&self, c: &Cursor) -> Option<([f32; 3], Snap)> {
+    pub fn marker(&self, c: &Cursor) -> Option<([f64; 3], Snap)> {
         match &self.op {
             Op::Line { plane, last, .. } => {
                 // a snap wins; then the red, green or blue axis through the last point; then the face or ground under the
@@ -796,11 +796,11 @@ impl Tools {
                 let mesh = model.mesh();
                 let centre = {
                     let vs = mesh.face_vertices(face);
-                    let mut c = [0.0f32; 3];
+                    let mut c = [0.0f64; 3];
                     for &v in &vs {
                         c = add(c, mesh.positions[v as usize]);
                     }
-                    scale(c, 1.0 / vs.len().max(1) as f32)
+                    scale(c, 1.0 / vs.len().max(1) as f64)
                 };
                 let (path, closed) = path_through(&mesh.lines, &mesh.positions, line, centre).ok_or("that line is not part of a path")?;
                 model.follow_me(face, &path, closed).map_err(|e| e.to_string())?;
@@ -836,7 +836,7 @@ impl Tools {
             }
             (Tool::Offset, Op::Idle) => {
                 let face = c.hit.and_then(|h| h.face).ok_or("click a face to offset its edges")?;
-                let ring: Vec<[f32; 3]> = model.mesh().face_vertices(face).iter().map(|&v| model.mesh().positions[v as usize]).collect();
+                let ring: Vec<[f64; 3]> = model.mesh().face_vertices(face).iter().map(|&v| model.mesh().positions[v as usize]).collect();
                 let normal = model.mesh().face_normal(face);
                 if normal != [0.0; 3] {
                     self.op = Op::Offset { ring, normal, d: 0.0 };
@@ -1172,7 +1172,7 @@ impl Tools {
     /// None when the text is not that, so it is read as a length.
     fn type_number(&mut self, model: &mut Model, text: &str) -> Option<Result<(), String>> {
         let t = text.trim().trim_end_matches('°');
-        let n: f32 = t.parse().ok().filter(|n: &f32| n.is_finite())?;
+        let n: f64 = t.parse().ok().filter(|n: &f64| n.is_finite())?;
         let rad = n.to_radians();
         Some(match std::mem::replace(&mut self.op, Op::Idle) {
             Op::Rotate { t, plane, center, start: Some(_), .. } => self.transform(model, &t, |q| rotate_about(q, center, plane.normal, rad)),
@@ -1194,7 +1194,7 @@ impl Tools {
     }
 
     /// Offset: the face's outline copied `d` inside it, as lines (so the face gets an inner face and a ring around it).
-    fn offset(&mut self, model: &mut Model, ring: &[[f32; 3]], normal: [f32; 3], d: f32) -> Result<(), String> {
+    fn offset(&mut self, model: &mut Model, ring: &[[f64; 3]], normal: [f64; 3], d: f64) -> Result<(), String> {
         if d < 0.0 {
             self.op = Op::Idle;
             return Err("offsetting outward is not built yet; move the mouse inside the face".into());
@@ -1205,7 +1205,7 @@ impl Tools {
     }
 
     /// Draws an arc (open, as lines) into the model.
-    fn draw_arc(&mut self, model: &mut Model, arc: Option<Vec<[f32; 3]>>) -> Result<(), String> {
+    fn draw_arc(&mut self, model: &mut Model, arc: Option<Vec<[f64; 3]>>) -> Result<(), String> {
         let arc = arc.ok_or("the arc has no size")?;
         model.add_polyline(&arc).map_err(|e| e.to_string())?;
         self.op = Op::Idle;
@@ -1231,14 +1231,14 @@ impl Tools {
         Ok(())
     }
 
-    fn add_tape_guides(&mut self, model: &mut Model, start: [f32; 3], end: [f32; 3]) {
+    fn add_tape_guides(&mut self, model: &mut Model, start: [f64; 3], end: [f64; 3]) {
         if let Some(dir) = normalize(sub(end, start)) {
             model.edit_notes(|n| n.guides.extend([Guide::Line(start, dir), Guide::Point(end)]));
         }
         self.op = Op::Idle;
     }
 
-    fn add_protractor_guide(&mut self, model: &mut Model, plane: &Plane, center: [f32; 3], start: [f32; 3], angle: f32) {
+    fn add_protractor_guide(&mut self, model: &mut Model, plane: &Plane, center: [f64; 3], start: [f64; 3], angle: f64) {
         if let Some(dir) = normalize(sub(start, center)) {
             let g = Guide::Line(center, rotate_about(dir, [0.0; 3], plane.normal, angle));
             model.edit_notes(|n| n.guides.push(g));
@@ -1248,7 +1248,7 @@ impl Tools {
 
     /// Mesh to draw instead of the model while push/pull, Move, Rotate or Scale is live.
     pub fn preview_mesh(&self, model: &Model) -> Option<HalfEdgeMesh> {
-        let moved = |verts: &[u32], f: &dyn Fn([f32; 3]) -> [f32; 3]| {
+        let moved = |verts: &[u32], f: &dyn Fn([f64; 3]) -> [f64; 3]| {
             let mut m = model.mesh().clone();
             for &v in verts {
                 if let Some(p) = m.positions.get_mut(v as usize) {
@@ -1294,13 +1294,13 @@ impl Tools {
     }
 
     /// Rubber-band lines drawn over the scene.
-    pub fn preview_lines(&self) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
+    pub fn preview_lines(&self) -> Vec<([f64; 3], [f64; 3], [f32; 4])> {
         let mut out = Vec::new();
         match &self.op {
             Op::Text { point, cursor: Some(c), .. } => out.push((*point, *c, RUBBER_BAND)),
             Op::Place3D { letters, at: Some(plane), .. } => {
                 for ring in letters.iter().flatten() {
-                    let r: Vec<[f32; 3]> = ring.iter().map(|p| plane.to_world(p[0], p[1])).collect();
+                    let r: Vec<[f64; 3]> = ring.iter().map(|p| plane.to_world(p[0], p[1])).collect();
                     ring_lines(&r, &mut out);
                 }
             }
@@ -1396,9 +1396,9 @@ impl Tools {
             Op::Rotate { plane, center, start, angle, .. } | Op::Protract { plane, center, start, angle } => {
                 // the protractor: a circle in the plane, the start direction and the turned one
                 let r = start.map(|s| dist(s, *center)).unwrap_or(0.25).max(0.05);
-                let ring: Vec<[f32; 3]> = (0..36)
+                let ring: Vec<[f64; 3]> = (0..36)
                     .map(|i| {
-                        let a = std::f32::consts::TAU * i as f32 / 36.0;
+                        let a = std::f64::consts::TAU * i as f64 / 36.0;
                         add(*center, add(scale(plane.u, r * a.cos()), scale(plane.v, r * a.sin())))
                     })
                     .collect();
@@ -1546,7 +1546,7 @@ impl Tools {
         }
         if let Some(f) = h.face.filter(|&f| f < model.mesh().face_count()) {
             let mesh = model.mesh();
-            let ring: Vec<[f32; 3]> = mesh.face_vertices(f).iter().map(|&v| mesh.positions[v as usize]).collect();
+            let ring: Vec<[f64; 3]> = mesh.face_vertices(f).iter().map(|&v| mesh.positions[v as usize]).collect();
             return units::format_area(polygon_area(&ring), self.units);
         }
         "Enter text".into()
@@ -1562,7 +1562,7 @@ impl Tools {
 
     /// Draws the line from `last` to `p` into the model and goes on from `p`; when it closes a face the chain ends, as
     /// in SketchUp.
-    fn add_line_point(&mut self, model: &mut Model, plane: Plane, last: [f32; 3], p: [f32; 3]) -> Result<(), String> {
+    fn add_line_point(&mut self, model: &mut Model, plane: Plane, last: [f64; 3], p: [f64; 3]) -> Result<(), String> {
         if dist(last, p) <= 1e-6 * (1.0 + len(p)) {
             self.op = Op::Line { plane, last, cursor: None, axis: None };
             return Ok(());
@@ -1578,7 +1578,7 @@ impl Tools {
         Ok(())
     }
 
-    fn commit(&mut self, model: &mut Model, outline: Option<Vec<[f32; 3]>>) -> Result<(), String> {
+    fn commit(&mut self, model: &mut Model, outline: Option<Vec<[f64; 3]>>) -> Result<(), String> {
         let outline = outline.ok_or("the shape has no area")?;
         // drawn as lines, so a shape on a face splits it or cuts a hole in it, as in SketchUp
         model.add_outline(&outline).map_err(|e| e.to_string())?;
@@ -1586,7 +1586,7 @@ impl Tools {
         Ok(())
     }
 
-    fn push(&mut self, model: &mut Model, face: usize, distance: f32) -> Result<(), String> {
+    fn push(&mut self, model: &mut Model, face: usize, distance: f64) -> Result<(), String> {
         if distance == 0.0 {
             return Ok(());
         }
@@ -1598,7 +1598,7 @@ impl Tools {
 }
 
 /// The cursor on a workplane: a snap that lies on it, else the ray's crossing.
-fn on_plane(plane: &Plane, c: &Cursor) -> Option<([f32; 3], Snap)> {
+fn on_plane(plane: &Plane, c: &Cursor) -> Option<([f64; 3], Snap)> {
     if let Some(h) = c.hit {
         let off = dot(sub(h.point, plane.origin), plane.normal).abs();
         if matches!(h.snap, Snap::Endpoint | Snap::Midpoint) && off <= 1e-4 * (1.0 + len(h.point)) {
@@ -1609,8 +1609,8 @@ fn on_plane(plane: &Plane, c: &Cursor) -> Option<([f32; 3], Snap)> {
 }
 
 /// Locks `p` onto the plane axis through `from` when within about 3 degrees of it.
-fn axis_lock(plane: &Plane, from: [f32; 3], p: [f32; 3], axes: &[[f32; 3]; 3]) -> ([f32; 3], Option<u8>) {
-    let tol = 3f32.to_radians().tan();
+fn axis_lock(plane: &Plane, from: [f64; 3], p: [f64; 3], axes: &[[f64; 3]; 3]) -> ([f64; 3], Option<u8>) {
+    let tol = 3f64.to_radians().tan();
     let d = sub(p, from);
     for axis in [plane.u, plane.v] {
         let along = dot(d, axis);
@@ -1624,10 +1624,10 @@ fn axis_lock(plane: &Plane, from: [f32; 3], p: [f32; 3], axes: &[[f32; 3]; 3]) -
 }
 
 /// Rounds an angle to a multiple of 15 degrees when within 2 degrees of it, as the protractor does in SketchUp.
-fn snap_angle(a: f32) -> f32 {
-    let step = 15f32.to_radians();
+fn snap_angle(a: f64) -> f64 {
+    let step = 15f64.to_radians();
     let near = (a / step).round() * step;
-    if (a - near).abs() <= 2f32.to_radians() {
+    if (a - near).abs() <= 2f64.to_radians() {
         near
     } else {
         a
@@ -1635,7 +1635,7 @@ fn snap_angle(a: f32) -> f32 {
 }
 
 /// `p` turned `angle` radians about the line through `center` along unit `axis` (right-handed).
-fn rotate_about(p: [f32; 3], center: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 3] {
+fn rotate_about(p: [f64; 3], center: [f64; 3], axis: [f64; 3], angle: f64) -> [f64; 3] {
     let v = sub(p, center);
     let (s, c) = angle.sin_cos();
     // Rodrigues: v cos + (k x v) sin + k (k . v)(1 - cos)
@@ -1643,17 +1643,17 @@ fn rotate_about(p: [f32; 3], center: [f32; 3], axis: [f32; 3], angle: f32) -> [f
     add(center, r)
 }
 
-fn scale_about(p: [f32; 3], anchor: [f32; 3], factor: f32) -> [f32; 3] {
+fn scale_about(p: [f64; 3], anchor: [f64; 3], factor: f64) -> [f64; 3] {
     add(anchor, scale(sub(p, anchor), factor))
 }
 
 /// The corner of the vertices' bounding box opposite `grip`: on each axis, the far side from it (or the grip's own
 /// coordinate when the box has no size that way, so a flat shape scales in its plane).
-fn opposite_corner(pts: &[[f32; 3]], grip: [f32; 3]) -> [f32; 3] {
+fn opposite_corner(pts: &[[f64; 3]], grip: [f64; 3]) -> [f64; 3] {
     let mut out = grip;
     for i in 0..3 {
-        let lo = pts.iter().map(|p| p[i]).fold(f32::INFINITY, f32::min);
-        let hi = pts.iter().map(|p| p[i]).fold(f32::NEG_INFINITY, f32::max);
+        let lo = pts.iter().map(|p| p[i]).fold(f64::INFINITY, f64::min);
+        let hi = pts.iter().map(|p| p[i]).fold(f64::NEG_INFINITY, f64::max);
         if hi - lo > 1e-6 {
             out[i] = if (grip[i] - lo).abs() < (grip[i] - hi).abs() { hi } else { lo };
         }
@@ -1662,8 +1662,8 @@ fn opposite_corner(pts: &[[f32; 3]], grip: [f32; 3]) -> [f32; 3] {
 }
 
 /// The points of what is transformed: its vertices, and the corners of its groups as they stand in the model.
-fn target_points(model: &Model, t: &Target) -> Vec<[f32; 3]> {
-    let mut pts: Vec<[f32; 3]> = t.verts.iter().filter_map(|&v| model.mesh().positions.get(v as usize).copied()).collect();
+fn target_points(model: &Model, t: &Target) -> Vec<[f64; 3]> {
+    let mut pts: Vec<[f64; 3]> = t.verts.iter().filter_map(|&v| model.mesh().positions.get(v as usize).copied()).collect();
     let (inside, _) = if t.inst.is_empty() { (Vec::new(), daedalus_core::Mesh::new()) } else { model.parts() };
     for (i, m) in inside {
         if t.inst.contains(&i) {
@@ -1704,9 +1704,9 @@ fn connected_faces(mesh: &HalfEdgeMesh, face: usize) -> Vec<usize> {
 
 /// Locks the mouse onto the red, green or blue axis through `from` when the ray passes close to it (within about 1.5
 /// degrees as seen from the eye): the point on the axis, and which axis.
-fn ray_axis_lock(from: [f32; 3], c: &Cursor, axes: &[[f32; 3]; 3]) -> Option<([f32; 3], u8)> {
-    let tol = 1.5f32.to_radians().tan();
-    let mut best: Option<([f32; 3], u8, f32)> = None;
+fn ray_axis_lock(from: [f64; 3], c: &Cursor, axes: &[[f64; 3]; 3]) -> Option<([f64; 3], u8)> {
+    let tol = 1.5f64.to_radians().tan();
+    let mut best: Option<([f64; 3], u8, f64)> = None;
     for (i, &axis) in axes.iter().enumerate() {
         let Some(t) = closest_on_line(from, axis, c.origin, c.dir) else { continue };
         let p = add(from, scale(axis, t));
@@ -1724,7 +1724,7 @@ fn ray_axis_lock(from: [f32; 3], c: &Cursor, axes: &[[f32; 3]; 3]) -> Option<([f
 }
 
 /// Parameter along the line `base + s * dir_line` closest to the ray.
-fn closest_on_line(base: [f32; 3], dir_line: [f32; 3], origin: [f32; 3], dir: [f32; 3]) -> Option<f32> {
+fn closest_on_line(base: [f64; 3], dir_line: [f64; 3], origin: [f64; 3], dir: [f64; 3]) -> Option<f64> {
     let w0 = sub(base, origin);
     let b = dot(dir_line, dir);
     let denom = 1.0 - b * b;
@@ -1736,7 +1736,7 @@ fn closest_on_line(base: [f32; 3], dir_line: [f32; 3], origin: [f32; 3], dir: [f
 
 /// Follow Me's path: the chain of loose lines through line `line` (as far as it runs without branching), as points in
 /// order starting from the end nearest `near` (the profile), and whether it closes on itself.
-fn path_through(lines: &[[u32; 2]], positions: &[[f32; 3]], line: usize, near: [f32; 3]) -> Option<(Vec<[f32; 3]>, bool)> {
+fn path_through(lines: &[[u32; 2]], positions: &[[f64; 3]], line: usize, near: [f64; 3]) -> Option<(Vec<[f64; 3]>, bool)> {
     let &[a, b] = lines.get(line)?;
     let mut by_vertex: std::collections::HashMap<u32, Vec<usize>> = std::collections::HashMap::new();
     for (i, &[x, y]) in lines.iter().enumerate() {
@@ -1764,7 +1764,7 @@ fn path_through(lines: &[[u32; 2]], positions: &[[f32; 3]], line: usize, near: [
     };
     let (ahead, closed) = walk(b, a);
     if closed {
-        let mut pts: Vec<[f32; 3]> = [a, b].iter().chain(ahead.iter()).map(|&v| positions[v as usize]).collect();
+        let mut pts: Vec<[f64; 3]> = [a, b].iter().chain(ahead.iter()).map(|&v| positions[v as usize]).collect();
         // start at the corner nearest the profile
         let start = (0..pts.len()).min_by(|&i, &j| dist(pts[i], near).total_cmp(&dist(pts[j], near)))?;
         pts.rotate_left(start);
@@ -1775,7 +1775,7 @@ fn path_through(lines: &[[u32; 2]], positions: &[[f32; 3]], line: usize, near: [
     chain.push(a);
     chain.push(b);
     chain.extend(ahead);
-    let mut pts: Vec<[f32; 3]> = chain.iter().map(|&v| positions[v as usize]).collect();
+    let mut pts: Vec<[f64; 3]> = chain.iter().map(|&v| positions[v as usize]).collect();
     if dist(*pts.last()?, near) < dist(pts[0], near) {
         pts.reverse();
     }
@@ -1783,7 +1783,7 @@ fn path_through(lines: &[[u32; 2]], positions: &[[f32; 3]], line: usize, near: [
 }
 
 /// Where a dimension's line sits: the part of `p - a` square to the measured line `a`-`b`.
-fn dim_offset(a: [f32; 3], b: [f32; 3], p: [f32; 3]) -> [f32; 3] {
+fn dim_offset(a: [f64; 3], b: [f64; 3], p: [f64; 3]) -> [f64; 3] {
     let v = sub(p, a);
     match normalize(sub(b, a)) {
         Some(d) => sub(v, scale(d, dot(v, d))),
@@ -1792,7 +1792,7 @@ fn dim_offset(a: [f32; 3], b: [f32; 3], p: [f32; 3]) -> [f32; 3] {
 }
 
 /// A dimension's lines: one out from each point, and the dimension line between them with small ticks at its ends.
-fn dim_lines(a: [f32; 3], b: [f32; 3], off: [f32; 3], color: [f32; 4]) -> Vec<([f32; 3], [f32; 3], [f32; 4])> {
+fn dim_lines(a: [f64; 3], b: [f64; 3], off: [f64; 3], color: [f32; 4]) -> Vec<([f64; 3], [f64; 3], [f32; 4])> {
     let (a2, b2) = (add(a, off), add(b, off));
     let mut out = vec![(a, a2, color), (b, b2, color), (a2, b2, color)];
     if let (Some(d), Some(o)) = (normalize(sub(b, a)), normalize(off)) {
@@ -1805,12 +1805,12 @@ fn dim_lines(a: [f32; 3], b: [f32; 3], off: [f32; 3], color: [f32; 4]) -> Vec<([
 }
 
 /// How far `p` lies inside the outline `ring` (in its plane): the distance to the nearest side, negative outside.
-fn inside_distance(ring: &[[f32; 3]], normal: [f32; 3], p: [f32; 3]) -> f32 {
+fn inside_distance(ring: &[[f64; 3]], normal: [f64; 3], p: [f64; 3]) -> f64 {
     let Some(plane) = Plane::from_point_normal(ring[0], normal) else { return 0.0 };
-    let pts: Vec<[f32; 2]> = ring.iter().map(|&q| plane.to_local(q)).collect();
+    let pts: Vec<[f64; 2]> = ring.iter().map(|&q| plane.to_local(q)).collect();
     let q = plane.to_local(p);
     let n = pts.len();
-    let mut nearest = f32::INFINITY;
+    let mut nearest = f64::INFINITY;
     let mut inside = false;
     for i in 0..n {
         let (a, b) = (pts[i], pts[(i + 1) % n]);
@@ -1830,22 +1830,22 @@ fn inside_distance(ring: &[[f32; 3]], normal: [f32; 3], p: [f32; 3]) -> f32 {
 }
 
 /// The area of a flat polygon.
-fn polygon_area(ring: &[[f32; 3]]) -> f32 {
-    let mut n = [0.0f32; 3];
+fn polygon_area(ring: &[[f64; 3]]) -> f64 {
+    let mut n = [0.0f64; 3];
     for i in 0..ring.len() {
         n = add(n, cross(ring[i], ring[(i + 1) % ring.len()]));
     }
     len(n) / 2.0
 }
 
-fn chain_lines(r: &[[f32; 3]], out: &mut Vec<([f32; 3], [f32; 3], [f32; 4])>) {
+fn chain_lines(r: &[[f64; 3]], out: &mut Vec<([f64; 3], [f64; 3], [f32; 4])>) {
     for w in r.windows(2) {
         out.push((w[0], w[1], RUBBER_BAND));
     }
 }
 
 /// The bulge of a 2 Point Arc from `a` to `b` toward `p`: how far `p` is from the chord, positive on its left.
-fn bulge_toward(plane: &Plane, a: [f32; 3], b: [f32; 3], p: [f32; 3]) -> f32 {
+fn bulge_toward(plane: &Plane, a: [f64; 3], b: [f64; 3], p: [f64; 3]) -> f64 {
     let (la, lb, lp) = (plane.to_local(a), plane.to_local(b), plane.to_local(p));
     let (dx, dy) = (lb[0] - la[0], lb[1] - la[1]);
     let l = dx.hypot(dy);
@@ -1855,17 +1855,17 @@ fn bulge_toward(plane: &Plane, a: [f32; 3], b: [f32; 3], p: [f32; 3]) -> f32 {
     ((lp[0] - la[0]) * -dy + (lp[1] - la[1]) * dx) / l
 }
 
-fn ring_lines(r: &[[f32; 3]], out: &mut Vec<([f32; 3], [f32; 3], [f32; 4])>) {
+fn ring_lines(r: &[[f64; 3]], out: &mut Vec<([f64; 3], [f64; 3], [f32; 4])>) {
     for i in 0..r.len() {
         out.push((r[i], r[(i + 1) % r.len()], RUBBER_BAND));
     }
 }
 
-fn fmt(v: f32, u: Units) -> String {
+fn fmt(v: f64, u: Units) -> String {
     units::format(v, u)
 }
 
-fn sign(v: f32) -> f32 {
+fn sign(v: f64) -> f64 {
     if v < 0.0 {
         -1.0
     } else {
@@ -1873,35 +1873,35 @@ fn sign(v: f32) -> f32 {
     }
 }
 
-fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-fn scale(a: [f32; 3], s: f32) -> [f32; 3] {
+fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn len(a: [f32; 3]) -> f32 {
+fn len(a: [f64; 3]) -> f64 {
     dot(a, a).sqrt()
 }
 
-fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
+fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     len(sub(a, b))
 }
 
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
-fn normalize(a: [f32; 3]) -> Option<[f32; 3]> {
+fn normalize(a: [f64; 3]) -> Option<[f64; 3]> {
     let l = len(a);
     (l > 1e-9).then(|| scale(a, 1.0 / l))
 }
@@ -1911,11 +1911,11 @@ mod tests {
     use super::*;
 
     /// A cursor looking straight down at (x, y) on the ground.
-    fn at(x: f32, y: f32) -> Cursor {
+    fn at(x: f64, y: f64) -> Cursor {
         ground_hit([x, y, 0.0], Snap::Ground)
     }
 
-    fn ground_hit(point: [f32; 3], snap: Snap) -> Cursor {
+    fn ground_hit(point: [f64; 3], snap: Snap) -> Cursor {
         Cursor {
             origin: [point[0], point[1], 10.0],
             dir: [0.0, 0.0, -1.0],
@@ -1974,7 +1974,7 @@ mod tests {
         (m, c)
     }
 
-    fn bounds(m: &Model) -> ([f32; 3], [f32; 3]) {
+    fn bounds(m: &Model) -> ([f64; 3], [f64; 3]) {
         let mesh = m.mesh().to_mesh();
         mesh.bounds().unwrap()
     }
@@ -2061,8 +2061,8 @@ mod tests {
 
     #[test]
     fn rotate_snaps_to_15_degrees() {
-        assert!((snap_angle(44.0f32.to_radians()) - 45f32.to_radians()).abs() < 1e-6);
-        assert!((snap_angle(40.0f32.to_radians()) - 40f32.to_radians()).abs() < 1e-6);
+        assert!((snap_angle(44.0f64.to_radians()) - 45f64.to_radians()).abs() < 1e-6);
+        assert!((snap_angle(40.0f64.to_radians()) - 40f64.to_radians()).abs() < 1e-6);
     }
 
     #[test]
@@ -2105,7 +2105,7 @@ mod tests {
         match m.notes().guides[0] {
             Guide::Line(p, d) => {
                 assert_eq!(p, [0.0; 3]);
-                assert!((d[0] - 30f32.to_radians().cos()).abs() < 1e-5 && (d[1] - 0.5).abs() < 1e-5);
+                assert!((d[0] - 30f64.to_radians().cos()).abs() < 1e-5 && (d[1] - 0.5).abs() < 1e-5);
             }
             g => panic!("{g:?}"),
         }
@@ -2186,7 +2186,7 @@ mod tests {
         let (mut t, mut m) = with(Tool::Line);
         t.click(&mut m, &at(0.0, 0.0)).unwrap();
         // 1 degree off the red axis locks onto it.
-        let c = at(5.0, 5.0 * 1f32.to_radians().tan());
+        let c = at(5.0, 5.0 * 1f64.to_radians().tan());
         assert_eq!(t.marker(&c).unwrap(), ([5.0, 0.0, 0.0], Snap::OnAxis(0)));
         t.hover(&c);
         t.type_entry(&mut m, "2").unwrap();
@@ -2302,7 +2302,7 @@ mod tests {
         t.click(&mut m, &ground_hit([0.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
         assert_eq!(m.mesh().face_count(), 1);
         m.push_pull(0, 1.0).unwrap();
-        let half_disc = 0.5 * 12.0 * (std::f32::consts::PI / 12.0).sin();
+        let half_disc = 0.5 * 12.0 * (std::f64::consts::PI / 12.0).sin();
         assert!((m.mesh().signed_volume() - half_disc).abs() < 1e-3, "{}", m.mesh().signed_volume());
     }
 
@@ -2317,7 +2317,7 @@ mod tests {
         let (mut t, mut m) = with(Tool::Freehand);
         t.freehand_press(&at(0.0, 0.0));
         for i in 1..=50 {
-            let x = i as f32 * 0.05;
+            let x = i as f64 * 0.05;
             t.hover(&at(x, (x * 3.0).sin()));
         }
         t.freehand_release(&mut m).unwrap();
@@ -2346,7 +2346,7 @@ mod tests {
         let middle = middle.expect("the 2 x 2 middle face");
         m.push_pull(middle, 1.0).unwrap();
         // the ring stays flat; the middle is a 2 x 2 x 1 block standing on it
-        let up: f32 = m.mesh().positions.iter().filter(|p| p[2] > 0.5).count() as f32;
+        let up: f64 = m.mesh().positions.iter().filter(|p| p[2] > 0.5).count() as f64;
         assert_eq!(up, 4.0);
         // too far in
         t.click(&mut m, &c).unwrap();
@@ -2461,8 +2461,8 @@ mod tests {
         t.copy = true;
         t.click(&mut m, &ground_hit([9.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
         t.type_entry(&mut m, "/3").unwrap();
-        let mut xs: Vec<f32> = m.instances().iter().map(|i| i.xf.origin()[0]).collect();
-        xs.sort_by(f32::total_cmp);
+        let mut xs: Vec<f64> = m.instances().iter().map(|i| i.xf.origin()[0]).collect();
+        xs.sort_by(f64::total_cmp);
         assert_eq!(xs, vec![0.0, 3.0, 6.0, 9.0]);
     }
 

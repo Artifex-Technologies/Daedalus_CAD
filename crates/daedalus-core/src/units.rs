@@ -63,8 +63,8 @@ fn trim_zeros(s: String) -> String {
 }
 
 /// A length in metres, written in `units`: `300 mm`, `1.25 m`, `6.5"`, `4' 6 1/2"` (feet and inches to the nearest 1/16").
-pub fn format(metres: f32, units: Units) -> String {
-    let m = metres as f64;
+pub fn format(metres: f64, units: Units) -> String {
+    let m = metres;
     let sign = if m < 0.0 { "-" } else { "" };
     let a = m.abs();
     match units {
@@ -126,8 +126,8 @@ fn number(t: &str) -> Option<f64> {
 /// A typed length in metres. A bare number is in `units`; a written unit wins.
 /// An area (square metres) as shown in `units`: square millimetres, centimetres, metres, inches, or feet for feet and
 /// inches, to a sensible number of places.
-pub fn format_area(square_metres: f32, units: Units) -> String {
-    let a = square_metres as f64;
+pub fn format_area(square_metres: f64, units: Units) -> String {
+    let a = square_metres;
     let (v, name) = match units {
         Units::Millimetres => (a * 1e6, "mm²"),
         Units::Centimetres => (a * 1e4, "cm²"),
@@ -139,7 +139,7 @@ pub fn format_area(square_metres: f32, units: Units) -> String {
     format!("{v:.places$} {name}")
 }
 
-pub fn parse(text: &str, units: Units) -> Option<f32> {
+pub fn parse(text: &str, units: Units) -> Option<f64> {
     let t = text.trim();
     let (neg, t) = match t.strip_prefix('-') {
         Some(r) => (true, r.trim_start()),
@@ -160,7 +160,7 @@ pub fn parse(text: &str, units: Units) -> Option<f32> {
         }
     };
     let v = if neg { -v } else { v };
-    (v.is_finite()).then_some(v as f32)
+    (v.is_finite()).then_some(v)
 }
 
 #[cfg(test)]
@@ -175,8 +175,8 @@ mod tests {
 
     use super::*;
 
-    fn close(a: Option<f32>, b: f64) -> bool {
-        a.is_some_and(|a| (a as f64 - b).abs() < 1e-6)
+    fn close(a: Option<f64>, b: f64) -> bool {
+        a.is_some_and(|a| (a - b).abs() < 1e-6)
     }
 
     #[test]
@@ -214,10 +214,10 @@ mod tests {
     #[test]
     fn a_shown_value_types_back_the_same() {
         for u in ALL {
-            for v in [0.3_f32, 1.5, 0.0127, 3.0] {
+            for v in [0.3_f64, 1.5, 0.0127, 3.0] {
                 let back = parse(&format(v, u), Units::Metres).unwrap();
                 let step = if u == Units::FeetInches { 0.0254 / 16.0 } else { 1e-4 };
-                assert!((back - v).abs() <= step as f32, "{} in {:?} came back as {back}", v, u);
+                assert!((back - v).abs() <= step, "{} in {:?} came back as {back}", v, u);
             }
         }
     }

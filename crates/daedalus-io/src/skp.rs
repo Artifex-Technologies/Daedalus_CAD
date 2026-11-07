@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Default)]
 struct FaceIn {
     material: i64,
-    normal: [f32; 3],
+    normal: [f64; 3],
     rings: Vec<Vec<u32>>,
 }
 
@@ -37,11 +37,11 @@ struct FaceIn {
 struct Block {
     name: String,
     component: bool,
-    positions: Vec<[f32; 3]>,
+    positions: Vec<[f64; 3]>,
     faces: Vec<FaceIn>,
     lines: Vec<[u32; 2]>,
     soft: Vec<[u32; 2]>,
-    instances: Vec<(i64, [f32; 12])>,
+    instances: Vec<(i64, [f64; 12])>,
 }
 
 /// Words of a line, "quoted text" as one word.
@@ -128,7 +128,7 @@ pub fn read(bytes: &[u8]) -> Result<Scene, IoError> {
             }
             ("end", Some(_)) => open = None,
             ("v", Some(b)) => {
-                let c: Vec<f32> = (1..4).map(|i| num::<f32>(w.get(i), n)).collect::<Result<_, _>>()?;
+                let c: Vec<f64> = (1..4).map(|i| num::<f64>(w.get(i), n)).collect::<Result<_, _>>()?;
                 if c.iter().any(|x| !x.is_finite()) {
                     return Err(IoError::Parse(format!("line {n}: not a finite number")));
                 }
@@ -136,7 +136,7 @@ pub fn read(bytes: &[u8]) -> Result<Scene, IoError> {
             }
             ("f", Some(b)) => {
                 let material: i64 = num(w.get(1), n)?;
-                let normal = [num::<f32>(w.get(2), n)?, num::<f32>(w.get(3), n)?, num::<f32>(w.get(4), n)?];
+                let normal = [num::<f64>(w.get(2), n)?, num::<f64>(w.get(3), n)?, num::<f64>(w.get(4), n)?];
                 let loops: usize = num(w.get(5), n)?;
                 let mut at = 6;
                 let mut rings = Vec::new();
@@ -161,7 +161,7 @@ pub fn read(bytes: &[u8]) -> Result<Scene, IoError> {
             }
             ("i", Some(b)) => {
                 let def: i64 = num(w.get(1), n)?;
-                let mut m = [0.0f32; 12];
+                let mut m = [0.0f64; 12];
                 for (k, v) in m.iter_mut().enumerate() {
                     *v = num(w.get(2 + k), n)?;
                 }
@@ -183,12 +183,12 @@ struct Poly {
 /// Shared vertex list that joins points closer than a hundredth of a millimetre.
 #[derive(Default)]
 struct Points {
-    positions: Vec<[f32; 3]>,
+    positions: Vec<[f64; 3]>,
     at: HashMap<[i64; 3], u32>,
 }
 
 impl Points {
-    fn add(&mut self, p: [f32; 3]) -> u32 {
+    fn add(&mut self, p: [f64; 3]) -> u32 {
         let key = p.map(|c| (c / 1e-5).round() as i64);
         if let Some(&i) = self.at.get(&key) {
             return i;
@@ -200,8 +200,8 @@ impl Points {
     }
 }
 
-fn newell(positions: &[[f32; 3]], ring: &[u32]) -> [f32; 3] {
-    let mut n = [0.0f32; 3];
+fn newell(positions: &[[f64; 3]], ring: &[u32]) -> [f64; 3] {
+    let mut n = [0.0f64; 3];
     for i in 0..ring.len() {
         let (p, q) = (positions[ring[i] as usize], positions[ring[(i + 1) % ring.len()] as usize]);
         n[0] += (p[1] - q[1]) * (p[2] + q[2]);
@@ -238,7 +238,7 @@ fn face_polys(b: &Block, f: &FaceIn, points: &mut Points, colors: &HashMap<i64, 
     let first = b.positions[f.rings[0][0] as usize];
     let normal = if f.normal == [0.0; 3] { newell(&b.positions, &f.rings[0]) } else { f.normal };
     let Some(plane) = Plane::from_point_normal(first, normal) else { return Vec::new() };
-    let outlines: Vec<Vec<[f32; 2]>> = f.rings.iter().map(|r| r.iter().map(|&i| plane.to_local(b.positions[i as usize])).collect()).collect();
+    let outlines: Vec<Vec<[f64; 2]>> = f.rings.iter().map(|r| r.iter().map(|&i| plane.to_local(b.positions[i as usize])).collect()).collect();
     let Ok(cap) = daedalus_core::profile::faces(&outlines, &plane) else { return Vec::new() };
     let map: Vec<u32> = cap.positions.iter().map(|&p| points.add(p)).collect();
     seams.extend(cap.seams.iter().map(|s| s.map(|v| map[v as usize])));
@@ -503,7 +503,7 @@ end
         assert_eq!(model.mesh().lines.len(), 1, "the loose line");
         assert!(!model.mesh().seams.is_empty(), "the hole's seams are hidden");
         // the front (with the hole) is red
-        assert!(model.mesh().colors.iter().any(|c| *c == Some([200, 40, 40])));
+        assert!(model.mesh().colors.contains(&Some([200, 40, 40])));
         // the post component is placed twice, sharing one definition
         let posts: Vec<_> = s.root.instances.iter().filter(|i| s.defs[i.def].name == "Post").collect();
         assert_eq!(posts.len(), 2);
@@ -611,13 +611,13 @@ mod holes_check {
                         at += n;
                     }
                     let f = FaceIn { material: -1, normal: [w[2].parse().unwrap(), w[3].parse().unwrap(), w[4].parse().unwrap()], rings };
-                    let area = |pts: &[[f32; 3]]| {
+                    let area = |pts: &[[f64; 3]]| {
                         let mut n = [0.0f64; 3];
                         for i in 0..pts.len() {
                             let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
-                            n[0] += ((p[1] - q[1]) * (p[2] + q[2])) as f64;
-                            n[1] += ((p[2] - q[2]) * (p[0] + q[0])) as f64;
-                            n[2] += ((p[0] - q[0]) * (p[1] + q[1])) as f64;
+                            n[0] += (p[1] - q[1]) * (p[2] + q[2]);
+                            n[1] += (p[2] - q[2]) * (p[0] + q[0]);
+                            n[2] += (p[0] - q[0]) * (p[1] + q[1]);
                         }
                         (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0
                     };
