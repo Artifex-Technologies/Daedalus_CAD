@@ -550,6 +550,9 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull, Tool::Offset, Tool::FollowMe], &mut actions);
                 ui.separator();
                 tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor, Tool::Dimensions, Tool::Text, Tool::Axes, Tool::Text3D], &mut actions);
+                ui.menu_button("Solid Tools", |ui| {
+                    tool_items(ui, v, &[Tool::OuterShell, Tool::SolidIntersect, Tool::SolidUnion, Tool::SolidSubtract, Tool::SolidTrim, Tool::SolidSplit], &mut actions);
+                });
                 if ui.button("Reset Axes").clicked() {
                     actions.push(UiAction::ResetAxes);
                     ui.close_menu();
@@ -845,7 +848,7 @@ enum Slot {
 
 /// The toolbar, in groups. The first group is SketchUp's Large Tool Set in its order (pairs of two, left then right
 /// column), with tools still to come greyed out in their place; then the camera views and the face styles.
-fn toolbar_groups() -> [Vec<Slot>; 3] {
+fn toolbar_groups() -> [Vec<Slot>; 4] {
     use Slot::{Act, Empty};
     let t = Slot::Tool;
     [
@@ -886,6 +889,14 @@ fn toolbar_groups() -> [Vec<Slot>; 3] {
             t(Tool::Walk),
             t(Tool::LookAround),
             t(Tool::SectionPlane),
+        ],
+        vec![
+            t(Tool::OuterShell),
+            t(Tool::SolidIntersect),
+            t(Tool::SolidUnion),
+            t(Tool::SolidSubtract),
+            t(Tool::SolidTrim),
+            t(Tool::SolidSplit),
         ],
         vec![
             Act(Icon::Iso, UiAction::Iso),

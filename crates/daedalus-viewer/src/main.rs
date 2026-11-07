@@ -1015,6 +1015,44 @@ impl State {
                 return;
             }
         }
+        // Solid Tools: a solid group or component, then another
+        if let Some(kind) = self.tools.tool.solid() {
+            if self.readonly.is_some() {
+                return;
+            }
+            let Some(inst) = c.hit.and_then(|h| h.instance) else {
+                self.message = Some("Click a group or component that is a solid.".into());
+                return;
+            };
+            match self.tools.solid_first {
+                None => {
+                    self.tools.solid_first = Some(inst);
+                    self.tools.selected.clear();
+                    self.tools.edges.clear();
+                    self.tools.instances = vec![inst];
+                    self.message = None;
+                }
+                Some(first) => {
+                    self.tools.solid_first = None;
+                    match self.model.solid_tool(first, inst, kind) {
+                        Ok(made) => {
+                            self.tools.model_changed();
+                            self.tools.instances = made.clone();
+                            self.message = Some(match made.len() {
+                                1 => format!("{}: one solid group.", self.tools.tool.label()),
+                                n => format!("{}: {n} solid groups.", self.tools.tool.label()),
+                            });
+                        }
+                        Err(e) => {
+                            self.tools.instances.clear();
+                            self.message = Some(format!("{}: {e}.", self.tools.tool.label()));
+                        }
+                    }
+                }
+            }
+            self.after_edit();
+            return;
+        }
         // Eraser near an edge or loose line: it goes (and the faces on it, or two faces in one plane become one), as in SketchUp
         if self.tools.tool == Tool::Eraser && self.readonly.is_none() {
             if let Some(e) = self.edge_at() {

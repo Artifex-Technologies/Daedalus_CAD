@@ -44,10 +44,17 @@ pub enum Tool {
     Text,
     Axes,
     Text3D,
+    /// Solid Tools: click one solid group or component, then another.
+    OuterShell,
+    SolidIntersect,
+    SolidUnion,
+    SolidSubtract,
+    SolidTrim,
+    SolidSplit,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 33] = [
+    pub const ALL: [Tool; 39] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -81,6 +88,12 @@ impl Tool {
         Tool::Text,
         Tool::Axes,
         Tool::Text3D,
+        Tool::OuterShell,
+        Tool::SolidIntersect,
+        Tool::SolidUnion,
+        Tool::SolidSubtract,
+        Tool::SolidTrim,
+        Tool::SolidSplit,
     ];
 
     pub fn label(self) -> &'static str {
@@ -118,6 +131,12 @@ impl Tool {
             Tool::Text => "Text",
             Tool::Axes => "Axes",
             Tool::Text3D => "3D Text",
+            Tool::OuterShell => "Outer Shell",
+            Tool::SolidIntersect => "Intersect",
+            Tool::SolidUnion => "Union",
+            Tool::SolidSubtract => "Subtract",
+            Tool::SolidTrim => "Trim",
+            Tool::SolidSplit => "Split",
         }
     }
 
@@ -156,7 +175,13 @@ impl Tool {
             | Tool::Walk
             | Tool::Text
             | Tool::Axes
-            | Tool::Text3D => None,
+            | Tool::Text3D
+            | Tool::OuterShell
+            | Tool::SolidIntersect
+            | Tool::SolidUnion
+            | Tool::SolidSubtract
+            | Tool::SolidTrim
+            | Tool::SolidSplit => None,
         }
     }
 
@@ -173,6 +198,20 @@ impl Tool {
     /// Tools where a left-drag moves the camera instead of picking.
     pub fn navigates(self) -> bool {
         matches!(self, Tool::Orbit | Tool::Pan | Tool::Zoom | Tool::ZoomWindow | Tool::LookAround | Tool::Walk)
+    }
+
+    /// The Solid Tool this is, if it is one.
+    pub fn solid(self) -> Option<daedalus_core::model::SolidTool> {
+        use daedalus_core::model::SolidTool as S;
+        Some(match self {
+            Tool::OuterShell => S::OuterShell,
+            Tool::SolidIntersect => S::Intersect,
+            Tool::SolidUnion => S::Union,
+            Tool::SolidSubtract => S::Subtract,
+            Tool::SolidTrim => S::Trim,
+            Tool::SolidSplit => S::Split,
+            _ => return None,
+        })
     }
 
     /// Tools that work on what is selected (or, with nothing selected, on the face under the mouse).
@@ -340,6 +379,8 @@ pub struct Tools {
     hover_instance: Option<usize>,
     /// The drawing axes (a copy of the model's, kept up to date by the viewer): axis locks follow them.
     pub axes: Axes,
+    /// Solid Tools: the first solid clicked (an instance of the open context), waiting for the second.
+    pub solid_first: Option<usize>,
     /// Text just placed (its number in the notes): the viewer opens it for typing.
     pub edit_label: Option<usize>,
     op: Op,
@@ -366,6 +407,7 @@ impl Default for Tools {
             hover_instance: None,
             axes: Axes::default(),
             edit_label: None,
+            solid_first: None,
             op: Op::Idle,
             last_push: None,
         }
@@ -375,6 +417,7 @@ impl Default for Tools {
 impl Tools {
     pub fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
+        self.solid_first = None;
         self.op = Op::Idle;
         self.hover_face = None;
         self.hover_instance = None;
@@ -1508,6 +1551,14 @@ impl Tools {
             (Tool::Axes, Op::Axes { red: None, .. }) => "Pick the direction of the red axis.",
             (Tool::Axes, _) => "Pick the direction of the green axis (blue follows).",
             (Tool::Text3D, Op::Idle) => "Type the words in the 3D Text window, then Place.",
+            (t, _) if t.solid().is_some() && self.solid_first.is_none() => match t {
+                Tool::SolidSubtract => "Click the solid to take away (it goes), then the solid to take it from.",
+                Tool::SolidTrim => "Click the solid to trim with (it stays), then the solid to trim.",
+                _ => "Click a solid group or component, then another.",
+            },
+            (Tool::OuterShell | Tool::SolidIntersect | Tool::SolidUnion | Tool::SolidSubtract | Tool::SolidTrim | Tool::SolidSplit, _) => {
+                "Now click the second solid."
+            }
             (Tool::Text3D, _) => "Click a face or the ground to place the text. It lies on the face and becomes a group.",
             (Tool::PositionCamera, _) => "Click where to stand. The eye goes 1.68 m above it.",
             (Tool::LookAround, _) => "Drag to look around. The eye stays where it is.",

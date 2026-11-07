@@ -30,6 +30,17 @@ fn uncut_openings(m: &mut HalfEdgeMesh, s: &Scene, open: &[usize], ids: &[usize]
     Ok(())
 }
 
+/// The Solid Tools (see [`Model::solid_tool`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolidTool {
+    OuterShell,
+    Intersect,
+    Union,
+    Subtract,
+    Trim,
+    Split,
+}
+
 /// The editable document: the geometry being edited, the rest of the scene (groups, components, notes), and an undo/redo
 /// history.
 ///
@@ -280,6 +291,71 @@ impl Model {
             ctx.instances.push(Instance { def, xf });
             Ok(ctx.instances.len() - 1)
         })
+    }
+
+    /// Solid Tools on instances `first` and `second` of the open context (both must be closed solids), as SketchUp's: Union
+    /// and Outer Shell join them; Intersect keeps what they share; Subtract takes `first` away from `second` (and `first`
+    /// goes); Trim does the same but keeps `first`; Split leaves the three parts (each alone, and the shared part). The
+    /// results are new groups, all as one undo step. Returns their instance numbers.
+    pub fn solid_tool(&mut self, first: usize, second: usize, tool: SolidTool) -> Result<Vec<usize>, String> {
+        use crate::csg::{boolean, Op};
+        if first == second {
+            return Err("pick two different solids".into());
+        }
+        let w = self.scene.world(&self.open);
+        let solid = |i: usize| -> Result<Mesh, String> {
+            let inst = *self.instances().get(i).ok_or("that is not a group or component here")?;
+            let name = self.scene.defs.get(inst.def).map(|d| d.name.clone()).unwrap_or_default();
+            let mut m = Mesh::new();
+            self.scene.flatten_instance(&inst, &w, &mut m);
+            let closed = HalfEdgeMesh::from_mesh(&m).map(|h| h.is_closed()).unwrap_or(false);
+            if !closed || m.faces.is_empty() {
+                return Err(format!("{name} is not a solid (it must be closed all round, every edge between two faces)"));
+            }
+            Ok(m)
+        };
+        let (a, b) = (solid(first)?, solid(second)?);
+        let results: Vec<Mesh> = match tool {
+            SolidTool::Union | SolidTool::OuterShell => vec![boolean(&a, &b, Op::Union)],
+            SolidTool::Intersect => vec![boolean(&a, &b, Op::Intersect)],
+            SolidTool::Subtract | SolidTool::Trim => vec![boolean(&b, &a, Op::Subtract)],
+            SolidTool::Split => vec![boolean(&a, &b, Op::Subtract), boolean(&b, &a, Op::Subtract), boolean(&a, &b, Op::Intersect)],
+        };
+        let results: Vec<Mesh> = results.into_iter().filter(|m| !m.faces.is_empty()).collect();
+        if results.is_empty() {
+            return Err(match tool {
+                SolidTool::Intersect => "they do not overlap: there is nothing they share".into(),
+                _ => "nothing is left".into(),
+            });
+        }
+        for r in &results {
+            HalfEdgeMesh::from_mesh(r).map_err(|e| format!("the result is not a clean surface ({e}); nothing was changed"))?;
+        }
+        let mut gone = if tool == SolidTool::Trim { vec![second] } else { vec![first, second] };
+        gone.sort_unstable_by(|x, y| y.cmp(x));
+        self.edit_scene(|_, s, open| {
+            let w = s.world(open);
+            let back = w.inverse().ok_or(TopologyError::DegenerateNormal)?;
+            let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
+            for &i in &gone {
+                ctx.instances.remove(i);
+            }
+            let mut made = Vec::new();
+            for r in &results {
+                let (lo, _) = r.bounds().ok_or_else(nothing)?;
+                let xf = Xform::translation(back.apply(lo));
+                let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
+                let name = s.new_name(false);
+                s.defs.push(Definition { name, component: false, glue: false, cut: false, ctx: Context { mesh: r.transformed(&to_def), instances: Vec::new() } });
+                let def = s.defs.len() - 1;
+                let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
+                ctx.instances.push(Instance { def, xf });
+                made.push(ctx.instances.len() - 1);
+            }
+            s.purge();
+            Ok(made)
+        })
+        .map_err(|e| e.to_string())
     }
 
     /// Explode: instance `i`'s geometry joins the open context's (welded where it touches, when that stays a valid
@@ -1211,6 +1287,43 @@ mod tests {
         // erased: the wall is whole again
         m.erase_instances(&[inst]).unwrap();
         assert!(m.mesh().to_mesh().holes.iter().all(|h| h.is_empty()));
+    }
+
+    #[test]
+    fn solid_tools_on_two_box_groups() {
+        // two 2 m cubes as groups, overlapping by 1 m along x
+        let two_boxes = || {
+            let mut m = Model::new();
+            m.add_rectangle([0.0; 3], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
+            m.push_pull(0, 2.0).unwrap();
+            let all: Vec<usize> = (0..m.mesh().face_count()).collect();
+            let a = m.make_group(&all, &[], false).unwrap();
+            let f = m.add_rectangle([1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
+            m.push_pull(f, 2.0).unwrap();
+            let all: Vec<usize> = (0..m.mesh().face_count()).collect();
+            let b = m.make_group(&all, &[], false).unwrap();
+            (m, a, b)
+        };
+        let volume = |m: &Model, i: usize| {
+            let mut mesh = Mesh::new();
+            m.scene.flatten_instance(&m.instances()[i], &Xform::IDENTITY, &mut mesh);
+            HalfEdgeMesh::from_mesh(&mesh).unwrap().signed_volume()
+        };
+        let (mut m, a, b) = two_boxes();
+        // the first clicked is taken away from the second
+        let made = m.solid_tool(a, b, SolidTool::Subtract).unwrap();
+        assert_eq!(m.instances().len(), 1);
+        assert!((volume(&m, made[0]) - 4.0).abs() < 1e-9);
+        assert!(m.undo());
+        assert_eq!(m.instances().len(), 2, "one undo step");
+        let (mut m, a, b) = two_boxes();
+        let made = m.solid_tool(a, b, SolidTool::Split).unwrap();
+        let mut v: Vec<f64> = made.iter().map(|&i| volume(&m, i)).collect();
+        v.sort_by(f64::total_cmp);
+        assert!(v.iter().zip([4.0, 4.0, 4.0]).all(|(x, y)| (x - y).abs() < 1e-9), "{v:?}");
+        // loose geometry is no solid group
+        let (mut m, a, _) = two_boxes();
+        assert!(m.solid_tool(a, a, SolidTool::Union).is_err());
     }
 
     #[test]

@@ -361,6 +361,7 @@ impl Draw<'_> {
             Icon::Tool(Tool::Text) => self.planned(Planned::Text),
             Icon::Tool(Tool::Axes) => self.planned(Planned::Axes),
             Icon::Tool(Tool::Text3D) => self.planned(Planned::Text3D),
+            Icon::Tool(t @ (Tool::OuterShell | Tool::SolidIntersect | Tool::SolidUnion | Tool::SolidSubtract | Tool::SolidTrim | Tool::SolidSplit)) => self.solid(t),
             Icon::Tool(Tool::Walk) => {
                 // two footprints: a sole and a heel each
                 for (x, y) in [(0.3, 0.42), (0.68, 0.22)] {
@@ -410,6 +411,45 @@ impl Draw<'_> {
             Icon::BackEdges => self.cube(Hidden::Dashed, None),
             Icon::Planned(pl) => self.planned(pl),
         }
+    }
+
+    /// The Solid Tools: two overlapping squares, what each keeps filled.
+    fn solid(&self, t: Tool) {
+        let a = [(0.12, 0.3), (0.62, 0.3), (0.62, 0.8), (0.12, 0.8)];
+        let b = [(0.38, 0.12), (0.88, 0.12), (0.88, 0.62), (0.38, 0.62)];
+        let both = [(0.38, 0.3), (0.62, 0.3), (0.62, 0.62), (0.38, 0.62)];
+        let fill = self.accent.gamma_multiply(0.7);
+        match t {
+            Tool::OuterShell => {
+                let outline = [(0.12, 0.3), (0.38, 0.3), (0.38, 0.12), (0.88, 0.12), (0.88, 0.62), (0.62, 0.62), (0.62, 0.8), (0.12, 0.8)];
+                self.fill(&a, fill);
+                self.fill(&b, fill);
+                self.closed(&outline);
+                return;
+            }
+            Tool::SolidUnion => {
+                self.fill(&a, fill);
+                self.fill(&b, fill);
+            }
+            Tool::SolidIntersect => self.fill(&both, fill),
+            Tool::SolidSubtract | Tool::SolidTrim => {
+                // what is left of the second (the back square) once the first is taken out
+                self.fill(&[(0.62, 0.12), (0.88, 0.12), (0.88, 0.62), (0.62, 0.62)], fill);
+                self.fill(&[(0.38, 0.12), (0.62, 0.12), (0.62, 0.3), (0.38, 0.3)], fill);
+                if t == Tool::SolidTrim {
+                    // the first stays
+                    self.fill(&a, self.accent.gamma_multiply(0.25));
+                }
+            }
+            _ => {
+                // Split: the three parts, apart
+                self.fill(&both, fill);
+                self.line(&[(0.38, 0.3), (0.38, 0.62)]);
+                self.line(&[(0.62, 0.3), (0.62, 0.62)]);
+            }
+        }
+        self.closed(&a);
+        self.closed(&b);
     }
 
     fn planned(&self, pl: Planned) {

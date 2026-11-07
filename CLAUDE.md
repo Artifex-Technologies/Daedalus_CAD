@@ -146,6 +146,11 @@ the current state is:
   resized to 512 px (`render::TEXTURE_SIZE`), repeat sampler; tiles lined up with the face (level across). Style "Shaded
   with Textures" (code 4); Shaded shows a textured face in its average colour. Monochrome drew as Hidden Line before
   (shader); fixed.
+- Phase 4, Solid Tools (2026-11-06): `core/src/csg.rs` (BSP booleans over triangulated faces; pieces welded, T-junctions
+  split, coplanar pieces merged back; paint kept) and `Model::solid_tool` (Outer Shell, Intersect, Union, Subtract = first
+  taken from second and first goes, Trim = same but first stays, Split = three groups). Needs closed groups/components;
+  results are new groups, one undo step. Tools: click one solid, then another (toolbar group, Tools > Solid Tools).
+  Checked on screen. Outer Shell joins two at a time (SketchUp takes many).
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").
