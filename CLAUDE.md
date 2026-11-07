@@ -151,6 +151,12 @@ the current state is:
   taken from second and first goes, Trim = same but first stays, Split = three groups). Needs closed groups/components;
   results are new groups, one undo step. Tools: click one solid, then another (toolbar group, Tools > Solid Tools).
   Checked on screen. Outer Shell joins two at a time (SketchUp takes many).
+- Phase 5, Sandbox (2026-11-06): `core/src/sandbox.rs` (Delaunay with points nudged a hair for co-circular contours,
+  grid, Smoove, Stamp, Drape, Add Detail, Flip Edge) and Model functions. From Contours and Add Detail act on the
+  selection; From Scratch (two corners; typed number first = spacing), Smoove (click, then height; typed number first =
+  radius; a click on a ground group opens it), Stamp/Drape (object, then ground group), Flip Edge (click an edge). Draw >
+  Sandbox and Tools > Sandbox menus, a toolbar group. Contour terrains are all soft inside; grids hide only diagonals.
+  Checked on screen (From Scratch, Smoove).
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

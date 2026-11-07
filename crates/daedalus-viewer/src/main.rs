@@ -1015,6 +1015,64 @@ impl State {
                 return;
             }
         }
+        // Smoove, Flip Edge and Add Detail work inside the ground: a click on a ground group opens it, as SketchUp lets them
+        // work on it without opening it first
+        if matches!(self.tools.tool, Tool::Smoove | Tool::FlipEdge) && self.readonly.is_none() {
+            if let Some(i) = c.hit.and_then(|h| h.instance).filter(|_| c.hit.is_some_and(|h| h.face.is_none())) {
+                self.open_group(i);
+                self.message = Some("Editing the ground: click on it again.".into());
+                return;
+            }
+        }
+        // Flip Edge: the edge under the mouse turned the other way
+        if self.tools.tool == Tool::FlipEdge {
+            if self.readonly.is_some() {
+                return;
+            }
+            match self.edge_at() {
+                Some([a, b]) => {
+                    if self.model.flip_edge(a, b).is_err() {
+                        self.message = Some("Flip Edge: that edge is not between two triangles that can turn it.".into());
+                    }
+                    self.tools.model_changed();
+                    self.after_edit();
+                }
+                None => self.message = Some("Flip Edge: click an edge between two triangles of the ground (double-click the ground first).".into()),
+            }
+            return;
+        }
+        // Stamp and Drape: the object, then the ground
+        if matches!(self.tools.tool, Tool::Stamp | Tool::Drape) {
+            if self.readonly.is_some() {
+                return;
+            }
+            let Some(inst) = c.hit.and_then(|h| h.instance) else {
+                self.message = Some("Click a group: first the object, then the ground.".into());
+                return;
+            };
+            match self.tools.solid_first.take() {
+                None => {
+                    self.tools.solid_first = Some(inst);
+                    self.tools.instances = vec![inst];
+                    self.message = None;
+                }
+                Some(object) => {
+                    let drape = self.tools.tool == Tool::Drape;
+                    match self.model.sandbox_onto(inst, object, drape, 1.0) {
+                        Ok(()) => {
+                            self.tools.model_changed();
+                            self.message = Some(if drape { "Drape: the edges lie on the ground." } else { "Stamp: the ground is flattened under it." }.into());
+                        }
+                        Err(e) => {
+                            self.tools.instances.clear();
+                            self.message = Some(format!("{}: {e}.", self.tools.tool.label()));
+                        }
+                    }
+                }
+            }
+            self.after_edit();
+            return;
+        }
         // Solid Tools: a solid group or component, then another
         if let Some(kind) = self.tools.tool.solid() {
             if self.readonly.is_some() {
@@ -1398,6 +1456,33 @@ impl State {
             UiAction::DeleteDimensions => self.model.edit_notes(|n| n.dims.clear()),
             UiAction::MakeGroup => self.make_group(false),
             UiAction::Erase => self.erase_selected(),
+            UiAction::FromContours => {
+                if self.readonly.is_some() {
+                    return;
+                }
+                let edges = self.tools.edges.clone();
+                match self.model.sandbox_from_contours(&edges) {
+                    Ok(i) => {
+                        self.tools.model_changed();
+                        self.tools.instances = vec![i];
+                        self.message = Some("From Contours: the ground is a group (double-click it to shape it with Smoove).".into());
+                    }
+                    Err(e) => self.message = Some(format!("From Contours: {e}.")),
+                }
+                self.after_edit();
+            }
+            UiAction::AddDetail => {
+                if self.readonly.is_some() || self.tools.selected.is_empty() {
+                    self.message = Some("Add Detail: select ground faces first (double-click the ground to edit it).".into());
+                    return;
+                }
+                let faces = self.tools.selected.clone();
+                if let Err(e) = self.model.add_detail(&faces) {
+                    self.message = Some(format!("Add Detail: {e}."));
+                }
+                self.tools.model_changed();
+                self.after_edit();
+            }
             UiAction::Outliner => {
                 self.outliner_open = !self.outliner_open;
                 self.window.request_redraw();

@@ -47,6 +47,9 @@ pub enum UiAction {
     MakeComponent,
     /// Erase the selection (Delete; the right-click menu's Erase).
     Erase,
+    /// Sandbox on the selection: a terrain from the selected contour lines; selected ground faces split finer.
+    FromContours,
+    AddDetail,
     /// Window > Entity Info (the right-click menu's Entity Info): the panel on the right, open or shut.
     EntityInfo,
     /// Window > Outliner: the tree of groups and components, open or shut; and a row of it picked (selects that one,
@@ -543,6 +546,13 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 tool_items(ui, v, &[Tool::Arc, Tool::TwoPointArc, Tool::ThreePointArc], &mut actions);
                 ui.separator();
                 tool_items(ui, v, &[Tool::Rectangle, Tool::RotatedRectangle, Tool::Circle, Tool::Polygon, Tool::Pie], &mut actions);
+                ui.menu_button("Sandbox", |ui| {
+                    if ui.add_enabled(v.editable && v.has_selection, egui::Button::new("From Contours")).clicked() {
+                        actions.push(UiAction::FromContours);
+                        ui.close_menu();
+                    }
+                    tool_items(ui, v, &[Tool::SandboxScratch], &mut actions);
+                });
             });
             ui.menu_button("Tools", |ui| {
                 tool_items(ui, v, &[Tool::Select, Tool::Eraser], &mut actions);
@@ -550,6 +560,13 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                 tool_items(ui, v, &[Tool::Move, Tool::Rotate, Tool::Scale, Tool::PushPull, Tool::Offset, Tool::FollowMe], &mut actions);
                 ui.separator();
                 tool_items(ui, v, &[Tool::TapeMeasure, Tool::Protractor, Tool::Dimensions, Tool::Text, Tool::Axes, Tool::Text3D], &mut actions);
+                ui.menu_button("Sandbox", |ui| {
+                    tool_items(ui, v, &[Tool::Smoove, Tool::Stamp, Tool::Drape, Tool::FlipEdge], &mut actions);
+                    if ui.add_enabled(v.editable && v.has_selection, egui::Button::new("Add Detail")).clicked() {
+                        actions.push(UiAction::AddDetail);
+                        ui.close_menu();
+                    }
+                });
                 ui.menu_button("Solid Tools", |ui| {
                     tool_items(ui, v, &[Tool::OuterShell, Tool::SolidIntersect, Tool::SolidUnion, Tool::SolidSubtract, Tool::SolidTrim, Tool::SolidSplit], &mut actions);
                 });
@@ -897,6 +914,14 @@ fn toolbar_groups() -> [Vec<Slot>; 4] {
             t(Tool::SolidSubtract),
             t(Tool::SolidTrim),
             t(Tool::SolidSplit),
+            Act(Icon::FromContours, UiAction::FromContours),
+            t(Tool::SandboxScratch),
+            t(Tool::Smoove),
+            t(Tool::Stamp),
+            t(Tool::Drape),
+            Act(Icon::AddDetail, UiAction::AddDetail),
+            t(Tool::FlipEdge),
+            Empty,
         ],
         vec![
             Act(Icon::Iso, UiAction::Iso),

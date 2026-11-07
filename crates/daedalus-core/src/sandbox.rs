@@ -136,14 +136,19 @@ pub fn grid(origin: V, width: f64, depth: f64, spacing: f64) -> Option<Mesh> {
     }
     let w = xs.len();
     let mut tris = Vec::new();
+    let mut diagonals = Vec::new();
     for j in 0..ys.len() - 1 {
         for i in 0..w - 1 {
             let (a, b, c, d) = (j * w + i, j * w + i + 1, (j + 1) * w + i + 1, (j + 1) * w + i);
             tris.push([a, b, c]);
             tris.push([a, c, d]);
+            diagonals.push([a.min(c) as u32, a.max(c) as u32]);
         }
     }
-    Some(terrain(pts, &tris))
+    // the grid's squares show; only their diagonals are soft, as SketchUp draws it
+    let mut m = terrain(pts, &tris);
+    m.seams = diagonals;
+    Some(m)
 }
 
 /// Smoove: every corner within `radius` (seen from above) of `center` raised by `height`, less the further out it is (a

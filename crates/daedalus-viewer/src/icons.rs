@@ -20,6 +20,9 @@ pub enum Icon {
     Parallel,
     Style(FaceStyle),
     BackEdges,
+    /// Sandbox buttons that act on the selection: From Contours, Add Detail.
+    FromContours,
+    AddDetail,
     /// A SketchUp tool that has its place in the toolbar but is not built yet (shown greyed out).
     Planned(Planned),
 }
@@ -361,6 +364,14 @@ impl Draw<'_> {
             Icon::Tool(Tool::Text) => self.planned(Planned::Text),
             Icon::Tool(Tool::Axes) => self.planned(Planned::Axes),
             Icon::Tool(Tool::Text3D) => self.planned(Planned::Text3D),
+            Icon::Tool(t @ (Tool::SandboxScratch | Tool::Smoove | Tool::Stamp | Tool::Drape | Tool::FlipEdge)) => self.sandbox(Some(t)),
+            Icon::FromContours => self.sandbox(None),
+            Icon::AddDetail => {
+                self.sandbox_grid();
+                self.dot(0.5, 0.55);
+                self.line_with(&[(0.3, 0.7), (0.5, 0.55), (0.7, 0.7)], self.thin());
+                self.line_with(&[(0.5, 0.55), (0.5, 0.35)], self.thin());
+            }
             Icon::Tool(t @ (Tool::OuterShell | Tool::SolidIntersect | Tool::SolidUnion | Tool::SolidSubtract | Tool::SolidTrim | Tool::SolidSplit)) => self.solid(t),
             Icon::Tool(Tool::Walk) => {
                 // two footprints: a sole and a heel each
@@ -410,6 +421,51 @@ impl Draw<'_> {
             }
             Icon::BackEdges => self.cube(Hidden::Dashed, None),
             Icon::Planned(pl) => self.planned(pl),
+        }
+    }
+
+    /// A small terrain grid seen at an angle.
+    fn sandbox_grid(&self) {
+        let t = self.thin();
+        for k in 0..=3 {
+            let f = k as f32 / 3.0;
+            self.line_with(&[(0.1 + 0.3 * f, 0.62 - 0.22 * f), (0.6 + 0.3 * f, 0.88 - 0.22 * f)], t);
+            self.line_with(&[(0.1 + 0.5 * f, 0.62 + 0.26 * f), (0.4 + 0.5 * f, 0.4 + 0.26 * f)], t);
+        }
+    }
+
+    /// The Sandbox tools (None: From Contours).
+    fn sandbox(&self, t: Option<Tool>) {
+        match t {
+            None => {
+                // contour rings, one inside another
+                self.closed(&[(0.1, 0.6), (0.4, 0.35), (0.85, 0.42), (0.9, 0.7), (0.5, 0.85), (0.15, 0.78)]);
+                self.closed(&[(0.3, 0.6), (0.48, 0.48), (0.7, 0.52), (0.72, 0.66), (0.5, 0.72)]);
+                self.dot(0.52, 0.6);
+            }
+            Some(Tool::SandboxScratch) => self.sandbox_grid(),
+            Some(Tool::Smoove) => {
+                self.sandbox_grid();
+                self.line(&[(0.15, 0.55), (0.35, 0.5), (0.5, 0.22), (0.65, 0.5), (0.85, 0.55)]);
+                self.head(0.5, 0.12, 0.0, -1.0, 0.12, self.accent);
+            }
+            Some(Tool::Stamp) => {
+                self.sandbox_grid();
+                self.fill(&[(0.35, 0.18), (0.65, 0.18), (0.65, 0.42), (0.35, 0.42)], self.accent.gamma_multiply(0.7));
+                self.closed(&[(0.35, 0.18), (0.65, 0.18), (0.65, 0.42), (0.35, 0.42)]);
+            }
+            Some(Tool::Drape) => {
+                self.sandbox_grid();
+                self.dashed((0.3, 0.12), (0.3, 0.6));
+                self.dashed((0.7, 0.12), (0.7, 0.6));
+                self.line_with(&[(0.2, 0.12), (0.8, 0.12)], Stroke::new(2.0_f32, self.accent));
+            }
+            _ => {
+                // Flip Edge: a quad, its diagonal, a turning arrow
+                self.closed(&[(0.15, 0.5), (0.5, 0.2), (0.85, 0.5), (0.5, 0.8)]);
+                self.line(&[(0.5, 0.2), (0.5, 0.8)]);
+                self.line_with(&[(0.15, 0.5), (0.85, 0.5)], Stroke::new(1.5_f32, self.accent));
+            }
         }
     }
 
@@ -506,6 +562,8 @@ pub fn name(icon: Icon) -> String {
         Icon::Parallel => "Parallel projection".into(),
         Icon::Style(s) => s.label().into(),
         Icon::BackEdges => "Back Edges".into(),
+        Icon::FromContours => "From Contours (select contour lines first)".into(),
+        Icon::AddDetail => "Add Detail (select ground faces first)".into(),
         Icon::Planned(Planned::MakeComponent) => "Make Component (G)".into(),
         Icon::Planned(pl) => format!("{} (not built yet)", pl.label()),
     }

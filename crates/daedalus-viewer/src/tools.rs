@@ -51,10 +51,17 @@ pub enum Tool {
     SolidSubtract,
     SolidTrim,
     SolidSplit,
+    /// Sandbox: a flat terrain grid (two corners), Smoove (raise or lower the ground), Stamp and Drape (an object onto a
+    /// terrain: click the object, then the ground), Flip Edge (click an edge between two triangles).
+    SandboxScratch,
+    Smoove,
+    Stamp,
+    Drape,
+    FlipEdge,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 39] = [
+    pub const ALL: [Tool; 44] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -94,6 +101,11 @@ impl Tool {
         Tool::SolidSubtract,
         Tool::SolidTrim,
         Tool::SolidSplit,
+        Tool::SandboxScratch,
+        Tool::Smoove,
+        Tool::Stamp,
+        Tool::Drape,
+        Tool::FlipEdge,
     ];
 
     pub fn label(self) -> &'static str {
@@ -137,6 +149,11 @@ impl Tool {
             Tool::SolidSubtract => "Subtract",
             Tool::SolidTrim => "Trim",
             Tool::SolidSplit => "Split",
+            Tool::SandboxScratch => "From Scratch",
+            Tool::Smoove => "Smoove",
+            Tool::Stamp => "Stamp",
+            Tool::Drape => "Drape",
+            Tool::FlipEdge => "Flip Edge",
         }
     }
 
@@ -181,7 +198,12 @@ impl Tool {
             | Tool::SolidUnion
             | Tool::SolidSubtract
             | Tool::SolidTrim
-            | Tool::SolidSplit => None,
+            | Tool::SolidSplit
+            | Tool::SandboxScratch
+            | Tool::Smoove
+            | Tool::Stamp
+            | Tool::Drape
+            | Tool::FlipEdge => None,
         }
     }
 
@@ -332,6 +354,10 @@ enum Op {
     Follow { face: usize },
     /// Freehand: the points of the stroke while the button is held.
     Free { plane: Plane, points: Vec<[f64; 3]> },
+    /// Sandbox From Scratch: one corner, then the opposite one at the cursor.
+    Scratch { start: [f64; 3], cursor: Option<[f64; 3]> },
+    /// Smoove: the middle of the circle, and how far up (negative: down) it goes.
+    Smoove { center: [f64; 3], height: f64 },
     /// Rotated Rectangle: the first side from `a` to `b` (once set), then the height toward the cursor.
     RotRect { plane: Plane, a: [f64; 3], b: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
     /// Pie: the centre, the start of the arc (once set, it gives the radius), then the angle.
@@ -379,8 +405,11 @@ pub struct Tools {
     hover_instance: Option<usize>,
     /// The drawing axes (a copy of the model's, kept up to date by the viewer): axis locks follow them.
     pub axes: Axes,
-    /// Solid Tools: the first solid clicked (an instance of the open context), waiting for the second.
+    /// Solid Tools, Stamp and Drape: the first group clicked (an instance of the open context), waiting for the second.
     pub solid_first: Option<usize>,
+    /// Sandbox: From Scratch's grid spacing and Smoove's radius (metres; typed before the first click).
+    pub grid_spacing: f64,
+    pub smoove_radius: f64,
     /// Text just placed (its number in the notes): the viewer opens it for typing.
     pub edit_label: Option<usize>,
     op: Op,
@@ -408,6 +437,8 @@ impl Default for Tools {
             axes: Axes::default(),
             edit_label: None,
             solid_first: None,
+            grid_spacing: 1.0,
+            smoove_radius: 3.0,
             op: Op::Idle,
             last_push: None,
         }
@@ -764,6 +795,9 @@ impl Tools {
             }
             Op::Push { .. } | Op::Scale { .. } | Op::Offset { .. } => None,
             Op::Follow { .. } | Op::Dim { .. } | Op::Place3D { .. } => c.hit.map(|h| (h.point, h.snap)),
+            // From Scratch: on the level of the first corner
+            Op::Scratch { start, .. } => c.hit.filter(|h| matches!(h.snap, Snap::Endpoint | Snap::Midpoint)).map(|h| (h.point, h.snap)).or_else(|| on_plane(&Plane { origin: *start, ..Plane::ground() }, c)),
+            Op::Smoove { .. } => None,
             Op::Idle => c.hit.map(|h| (h.point, h.snap)),
         }
     }
@@ -837,6 +871,12 @@ impl Tools {
                     *d = inside_distance(ring, *normal, p);
                 }
             }
+            Op::Scratch { cursor, .. } => *cursor = marker.map(|m| m.0),
+            Op::Smoove { center, height } => {
+                if let Some(h) = closest_on_line(*center, [0.0, 0.0, 1.0], c.origin, c.dir) {
+                    *height = h;
+                }
+            }
             Op::Rotate { .. } | Op::Protract { .. } | Op::Follow { .. } | Op::Idle => {}
         }
     }
@@ -906,6 +946,25 @@ impl Tools {
                     let faces = if self.selected.binary_search(&face).is_ok() { self.selected.clone() } else { vec![face] };
                     model.paint(&faces, self.paint_color).map_err(|e| e.to_string())?;
                 }
+            }
+            (Tool::SandboxScratch, Op::Idle) => {
+                if let Some((p, _)) = marker {
+                    self.op = Op::Scratch { start: p, cursor: None };
+                }
+            }
+            (Tool::SandboxScratch, Op::Scratch { start, cursor }) => {
+                let end = marker.map(|m| m.0).or(cursor).ok_or("click the opposite corner")?;
+                let i = model.sandbox_from_scratch(start, end, self.grid_spacing)?;
+                self.model_changed();
+                self.instances = vec![i];
+            }
+            (Tool::Smoove, Op::Idle) => {
+                let h = c.hit.filter(|h| h.face.is_some()).ok_or("double-click the ground to edit it, then click on it")?;
+                self.op = Op::Smoove { center: h.point, height: 0.0 };
+            }
+            (Tool::Smoove, Op::Smoove { center, height }) => {
+                model.smoove(center, self.smoove_radius, height).map_err(|e| e.to_string())?;
+                self.model_changed();
             }
             (Tool::Offset, Op::Idle) => {
                 let face = c.hit.and_then(|h| h.face).ok_or("click a face to offset its edges")?;
@@ -1192,6 +1251,23 @@ impl Tools {
                 // typed: in or out as the mouse is
                 self.offset(model, face, &ring, normal, d.abs() * if shown < 0.0 { -1.0 } else { 1.0 })?
             }
+            // Sandbox: typed before the first click, From Scratch's grid spacing and Smoove's radius; during Smoove, its height
+            (Entry::Value(d), Op::Idle) if self.tool == Tool::SandboxScratch => {
+                if d <= 0.0 {
+                    return Err("the grid spacing must be more than zero".into());
+                }
+                self.grid_spacing = d;
+            }
+            (Entry::Value(d), Op::Idle) if self.tool == Tool::Smoove => {
+                if d <= 0.0 {
+                    return Err("the radius must be more than zero".into());
+                }
+                self.smoove_radius = d;
+            }
+            (Entry::Value(d), Op::Smoove { center, .. }) => {
+                model.smoove(center, self.smoove_radius, d).map_err(|e| e.to_string())?;
+                self.model_changed();
+            }
             (Entry::Value(d), Op::Idle) if self.tool == Tool::SectionPlane && model.notes().section().is_some() => {
                 // typed: the current plane moves that far into the model
                 model.edit_notes(|n| {
@@ -1450,6 +1526,19 @@ impl Tools {
                 None => out.push((*a, *c, PUSH_GUIDE)),
                 Some(b) => out.extend(dim_lines(*a, *b, dim_offset(*a, *b, *c), PUSH_GUIDE)),
             },
+            Op::Scratch { start, cursor: Some(c) } => {
+                let z = start[2];
+                let r = [*start, [c[0], start[1], z], [c[0], c[1], z], [start[0], c[1], z]];
+                ring_lines(&r, &mut out);
+            }
+            Op::Smoove { center, height } => {
+                let r: Vec<[f64; 3]> = (0..48).map(|k| {
+                    let t = std::f64::consts::TAU * k as f64 / 48.0;
+                    [center[0] + self.smoove_radius * t.cos(), center[1] + self.smoove_radius * t.sin(), center[2]]
+                }).collect();
+                ring_lines(&r, &mut out);
+                out.push((*center, add(*center, [0.0, 0.0, *height]), PUSH_GUIDE));
+            }
             Op::Offset { ring, normal, d, .. } => {
                 if let Some(r) = sketch::offset_ring(ring, *normal, *d) {
                     ring_lines(&r, &mut out);
@@ -1551,6 +1640,13 @@ impl Tools {
             (Tool::Axes, Op::Axes { red: None, .. }) => "Pick the direction of the red axis.",
             (Tool::Axes, _) => "Pick the direction of the green axis (blue follows).",
             (Tool::Text3D, Op::Idle) => "Type the words in the 3D Text window, then Place.",
+            (Tool::SandboxScratch, Op::Idle) => "Click a corner of the ground to make. Type a number first to set the grid spacing.",
+            (Tool::SandboxScratch, _) => "Click the opposite corner: a flat grid of triangles, as a group (Smoove shapes it).",
+            (Tool::Smoove, Op::Idle) => "In the ground being edited, click where to raise or lower it. Type a number first to set the radius.",
+            (Tool::Smoove, _) => "Move up or down and click, or type the height.",
+            (Tool::Stamp, _) => "Click the object to stamp with (it stands above the ground), then the ground.",
+            (Tool::Drape, _) => "Click the object whose edges to lay down, then the ground.",
+            (Tool::FlipEdge, _) => "In the ground being edited, click an edge between two triangles to turn it the other way.",
             (t, _) if t.solid().is_some() && self.solid_first.is_none() => match t {
                 Tool::SolidSubtract => "Click the solid to take away (it goes), then the solid to take it from.",
                 Tool::SolidTrim => "Click the solid to trim with (it stays), then the solid to trim.",
@@ -1602,6 +1698,8 @@ impl Tools {
             Op::Arc2 { a, b: None, cursor, .. } => ("Length", cursor.map(|c| fmt(dist(*a, c), self.units)).unwrap_or_default()),
             Op::Arc2 { plane, a, b: Some(b), cursor } => ("Bulge", cursor.map(|c| fmt(bulge_toward(plane, *a, *b, c).abs(), self.units)).unwrap_or_default()),
             Op::Arc3 { .. } | Op::Free { .. } | Op::Follow { .. } | Op::Text { .. } | Op::Axes { .. } | Op::Place3D { .. } => ("Measurements", String::new()),
+            Op::Scratch { .. } => ("Grid spacing", fmt(self.grid_spacing, self.units)),
+            Op::Smoove { height, .. } => ("Height", fmt(*height, self.units)),
             Op::Dim { a, b, cursor } => ("Length", b.or(*cursor).map(|b| fmt(dist(*a, b), self.units)).unwrap_or_default()),
             Op::Offset { d, .. } => ("Distance", fmt(d.abs(), self.units)),
             Op::Pie { center, start: None, cursor, .. } => ("Radius", cursor.map(|c| fmt(dist(*center, c), self.units)).unwrap_or_default()),

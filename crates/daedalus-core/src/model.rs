@@ -358,6 +358,116 @@ impl Model {
         .map_err(|e| e.to_string())
     }
 
+    /// Sandbox From Contours: a terrain group through the corners of `edges` (selected contour lines of the open context).
+    pub fn sandbox_from_contours(&mut self, edges: &[[u32; 2]]) -> Result<usize, String> {
+        let mesh = self.mesh.to_mesh();
+        let pts: Vec<[f64; 3]> = edges.iter().flatten().filter_map(|&v| mesh.positions.get(v as usize).copied()).collect();
+        if pts.len() < 3 {
+            return Err("select contour lines first (three corners at least)".into());
+        }
+        let t = crate::sandbox::from_contours(&pts, mesh.tolerance().max(1e-6) * 10.0).ok_or("those lines make no ground (are they all in a row?)")?;
+        self.place_group(&t, false).map_err(|e| e.to_string())
+    }
+
+    /// Sandbox From Scratch: a flat terrain group of squares `spacing` across, over the rectangle from `a` to `b` (seen from
+    /// above, at `a`'s height).
+    pub fn sandbox_from_scratch(&mut self, a: [f64; 3], b: [f64; 3], spacing: f64) -> Result<usize, String> {
+        let lo = [a[0].min(b[0]), a[1].min(b[1]), a[2]];
+        let t = crate::sandbox::grid(lo, (a[0] - b[0]).abs(), (a[1] - b[1]).abs(), spacing).ok_or("drag out a rectangle, and keep the grid coarser than 250,000 corners")?;
+        self.place_group(&t, false).map_err(|e| e.to_string())
+    }
+
+    /// Smoove on the open context (a terrain being edited): corners within `radius` of `center` raised by `height`, easing
+    /// to nothing at the edge. One undo step.
+    pub fn smoove(&mut self, center: [f64; 3], radius: f64, height: f64) -> Result<usize, TopologyError> {
+        self.edit(|m| {
+            let mut mesh = m.to_mesh();
+            let n = crate::sandbox::smoove(&mut mesh, center, radius, height);
+            *m = HalfEdgeMesh::from_mesh(&mesh)?;
+            Ok(n)
+        })
+    }
+
+    /// Add Detail on faces of the open context. One undo step.
+    pub fn add_detail(&mut self, faces: &[usize]) -> Result<(), TopologyError> {
+        self.edit(|m| {
+            let mut mesh = m.to_mesh();
+            crate::sandbox::add_detail(&mut mesh, faces);
+            *m = HalfEdgeMesh::from_mesh(&mesh)?;
+            Ok(())
+        })
+    }
+
+    /// Flip Edge on the edge `a`-`b` of the open context. One undo step; fails (changing nothing) when it cannot flip.
+    pub fn flip_edge(&mut self, a: u32, b: u32) -> Result<(), TopologyError> {
+        self.edit(|m| {
+            let mut mesh = m.to_mesh();
+            crate::sandbox::flip_edge(&mut mesh, a, b).ok_or(TopologyError::InvalidSplit)?;
+            *m = HalfEdgeMesh::from_mesh(&mesh)?;
+            Ok(())
+        })
+    }
+
+    /// Stamp and Drape: instance `object` of the open context worked onto the terrain instance `terrain`. Stamp flattens the
+    /// ground under the object's lowest face to its height, easing back within `offset` round it; Drape lays the object's
+    /// edges onto the ground as lines. The terrain's own geometry changes (every copy of it, if it is a component). One
+    /// undo step.
+    pub fn sandbox_onto(&mut self, terrain: usize, object: usize, drape: bool, offset: f64) -> Result<(), String> {
+        if terrain == object {
+            return Err("click the object first, then the ground".into());
+        }
+        let w = self.scene.world(&self.open);
+        let t_inst = *self.instances().get(terrain).ok_or("that is not a group here")?;
+        let o_inst = *self.instances().get(object).ok_or("that is not a group here")?;
+        let place = w.after(&t_inst.xf);
+        let back = place.inverse().ok_or("the ground's group cannot be turned back")?;
+        let mut ground = self.scene.defs.get(t_inst.def).ok_or("no such group")?.ctx.mesh.transformed(&place);
+        let mut obj = Mesh::new();
+        self.scene.flatten_instance(&o_inst, &w, &mut obj);
+        if obj.faces.is_empty() && obj.lines.is_empty() {
+            return Err("the object is empty".into());
+        }
+        if drape {
+            let lines: Vec<(u32, u32)> = obj.visible_edges();
+            let mut runs = Vec::new();
+            for (a, b) in lines {
+                let (pa, pb) = (obj.positions[a as usize], obj.positions[b as usize]);
+                runs.extend(crate::sandbox::drape(&ground, &[[pa[0], pa[1]], [pb[0], pb[1]]]));
+            }
+            if runs.is_empty() {
+                return Err("the object's edges are not over the ground".into());
+            }
+            let mut h = HalfEdgeMesh::from_mesh(&ground).map_err(|e| e.to_string())?;
+            for run in runs {
+                for seg in run.windows(2) {
+                    h.add_line(seg[0], seg[1]).map_err(|e| e.to_string())?;
+                }
+            }
+            ground = h.to_mesh();
+        } else {
+            // the object's lowest face, seen from above, and its height
+            let low = (0..obj.faces.len())
+                .filter(|&f| crate::imprint::face_plane(&obj, &obj.faces[f]).is_some_and(|(n, _)| n[2] < -0.9))
+                .min_by(|&a, &b| {
+                    let z = |f: usize| obj.faces[f].iter().map(|&v| obj.positions[v as usize][2]).fold(f64::MAX, f64::min);
+                    z(a).total_cmp(&z(b))
+                })
+                .ok_or("the object has no face underneath to stamp with")?;
+            let ring: Vec<[f64; 2]> = obj.faces[low].iter().map(|&v| [obj.positions[v as usize][0], obj.positions[v as usize][1]]).collect();
+            let z = obj.positions[obj.faces[low][0] as usize][2];
+            if crate::sandbox::stamp(&mut ground, &ring, z, offset) == 0 {
+                return Err("the object is not over the ground".into());
+            }
+        }
+        let local = ground.transformed(&back);
+        HalfEdgeMesh::from_mesh(&local).map_err(|e| e.to_string())?;
+        self.edit_scene(|_, s, _| {
+            s.defs.get_mut(t_inst.def).ok_or_else(nothing)?.ctx.mesh = local;
+            Ok(())
+        })
+        .map_err(|e| e.to_string())
+    }
+
     /// Explode: instance `i`'s geometry joins the open context's (welded where it touches, when that stays a valid
     /// surface), and its own instances become the context's.
     pub fn explode(&mut self, i: usize) -> Result<(), TopologyError> {
@@ -1324,6 +1434,32 @@ mod tests {
         // loose geometry is no solid group
         let (mut m, a, _) = two_boxes();
         assert!(m.solid_tool(a, a, SolidTool::Union).is_err());
+    }
+
+    #[test]
+    fn sandbox_ground_stamped_and_draped() {
+        let mut m = Model::new();
+        let t = m.sandbox_from_scratch([0.0; 3], [10.0, 10.0, 0.0], 1.0).unwrap();
+        // a 2 x 2 x 1 box group standing 1 m up, over the middle
+        let f = m.add_rectangle([4.3, 4.3, 1.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
+        m.push_pull(f, 1.0).unwrap();
+        let all: Vec<usize> = (0..m.mesh().face_count()).collect();
+        let o = m.make_group(&all, &[], false).unwrap();
+        let ground = |m: &Model| {
+            let mut g = Mesh::new();
+            m.scene.flatten_instance(&m.instances()[t], &Xform::IDENTITY, &mut g);
+            g
+        };
+        m.sandbox_onto(t, o, false, 1.0).unwrap();
+        let g = ground(&m);
+        assert!((crate::sandbox::height_at(&g, [5.3, 5.3]).unwrap() - 1.0).abs() < 1e-9, "flat at the box foot");
+        assert_eq!(crate::sandbox::height_at(&g, [0.5, 0.5]), Some(0.0), "untouched far off");
+        let lines_before = ground(&m).lines.len() + ground(&m).faces.len();
+        m.sandbox_onto(t, o, true, 0.0).unwrap();
+        assert!(ground(&m).lines.len() + ground(&m).faces.len() > lines_before, "the box's outline laid on the ground");
+        // one undo takes the drape back, another the stamp
+        assert!(m.undo() && m.undo());
+        assert_eq!(crate::sandbox::height_at(&ground(&m), [5.0, 5.0]), Some(0.0));
     }
 
     #[test]
