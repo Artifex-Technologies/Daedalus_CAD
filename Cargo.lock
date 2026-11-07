@@ -574,6 +574,10 @@ name = "daedalus-core"
 version = "0.1.0"
 
 [[package]]
+name = "daedalus-fea"
+version = "0.1.0"
+
+[[package]]
 name = "daedalus-io"
 version = "0.1.0"
 dependencies = [

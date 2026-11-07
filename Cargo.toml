@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/daedalus-core", "crates/daedalus-io", "crates/daedalus-app", "crates/daedalus-viewer", "crates/daedalus-sheet"]
+members = ["crates/daedalus-core", "crates/daedalus-io", "crates/daedalus-app", "crates/daedalus-viewer", "crates/daedalus-sheet", "crates/daedalus-fea"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ license = "MPL-2.0"
 daedalus-core = { path = "crates/daedalus-core" }
 daedalus-io = { path = "crates/daedalus-io" }
 daedalus-sheet = { path = "crates/daedalus-sheet" }
+daedalus-fea = { path = "crates/daedalus-fea" }
 
 # The exact-solid kernel (SolidCraft/solidcore, used by daedalus-sheet) is far too slow unoptimised: its tests took over
 # 6 minutes in a plain debug build. Dependencies and the sheet crate are optimised even in debug builds; our other crates
@@ -20,6 +21,10 @@ opt-level = 2
 
 [profile.dev.package.daedalus-sheet]
 opt-level = 2
+
+# The stress solver does millions of element products per run: optimised in debug builds too, so its tests stay quick.
+[profile.dev.package.daedalus-fea]
+opt-level = 3
 
 # Release builds without symbol tables: 59 -> 48 MB with the exact-solid kernel in (2026-11-06).
 [profile.release]

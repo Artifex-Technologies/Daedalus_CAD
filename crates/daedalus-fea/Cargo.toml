@@ -1,0 +1,8 @@
+[package]
+name = "daedalus-fea"
+description = "Stress testing for Daedalus: linear static finite elements on a voxel grid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
