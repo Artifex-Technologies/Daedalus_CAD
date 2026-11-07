@@ -30,7 +30,8 @@ use winit::window::{Window, WindowId};
 
 /// How close (in pixels) the cursor must be to a point to snap onto it.
 const SNAP_RADIUS: f32 = 12.0;
-/// How close (pixels) the Select tool must be to an edge to take it rather than the face behind.
+/// How close (points, so the same reach on a high-density screen) the Select tool must be to an edge to take it rather than
+/// the face behind.
 const EDGE_PICK_RADIUS: f32 = 6.0;
 
 /// Position Camera: eye height above the point clicked (SketchUp's 5' 6").
@@ -732,7 +733,7 @@ impl State {
             let (pa, pb) = (DVec3::from(self.display.positions[a as usize]), DVec3::from(self.display.positions[b as usize]));
             let (Some(sa), Some(sb)) = (self.camera.project(pa, w, h), self.camera.project(pb, w, h)) else { continue };
             let d = segment_distance(self.cursor, sa, sb);
-            if d > EDGE_PICK_RADIUS || best.is_some_and(|(_, bd)| d >= bd) {
+            if d > EDGE_PICK_RADIUS * self.window.scale_factor() as f32 || best.is_some_and(|(_, bd)| d >= bd) {
                 continue;
             }
             // the point of the edge under the mouse must not be hidden by a face nearer the eye (its own faces are at the
@@ -875,6 +876,21 @@ impl State {
         self.after_edit();
     }
 
+    /// Selects what is under the mouse in the open context: an edge or line near it (a whole curve), else the face or group.
+    fn select_under_cursor(&mut self) {
+        if let Some(e) = self.edge_at() {
+            match self.model.curve_at(e[0], e[1]) {
+                Some(c) => self.tools.select_edges(&c.edges(), false, false),
+                None => self.tools.select_edge(e, false, false),
+            }
+        } else {
+            let c = self.resolve_cursor();
+            let (face, instance) = (c.hit.and_then(|h| h.face), c.hit.and_then(|h| h.instance));
+            self.tools.select(&self.model, face, instance, false, false, false);
+        }
+        self.refresh();
+    }
+
     /// Right-click: what is under the mouse is selected first if it is not already (as in SketchUp), then the menu opens.
     fn open_context_menu(&mut self) {
         if self.tools.tool.edits() || self.tools.tool == Tool::Select {
@@ -1012,6 +1028,8 @@ impl State {
         if self.tools.tool == Tool::Select && count == 2 && self.readonly.is_none() {
             if let Some(i) = c.hit.and_then(|h| h.instance) {
                 self.open_group(i);
+                // and what was double-clicked inside it is selected, a line before the face behind it, as in SketchUp
+                self.select_under_cursor();
                 return;
             }
         }
