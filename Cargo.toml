@@ -20,3 +20,7 @@ opt-level = 2
 
 [profile.dev.package.daedalus-sheet]
 opt-level = 2
+
+# Release builds without symbol tables: 59 -> 48 MB with the exact-solid kernel in (2026-11-06).
+[profile.release]
+strip = true
