@@ -33,6 +33,10 @@ Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/c
   model copied and cut loose from its document (rules are plain numbers, `RuleValues`); `util.rs` the error type and 4x4
   helpers it needs. Rust 2024 edition for this crate only. Dependencies and this crate are optimised in debug builds
   (root `Cargo.toml`), or its tests take minutes. STEP comes from `kernel::step_export` (AP242, true cylinders).
+- `crates/daedalus-fea`: stress testing (linear static FEA). `voxel` fills a closed part with cubes, `hex8` the cube element
+  (8-node brick with Wilson's incompatible modes, condensed once; corner strains with the bubbles in), `solve` K u = f by
+  Jacobi-preconditioned conjugate gradients without storing K, `material` typical presets; `run` matches supports and loads to
+  model faces and reports peak von Mises, safety factor, deflection, reactions and the coloured surface. No dependencies.
 - `crates/daedalus-viewer`: wgpu 24 + winit 0.30 + egui 0.31 (pinned together on purpose; egui 0.32 needs wgpu 25).
   `tools.rs` is the GPU-free tool state machine (unit-tested); `render.rs` GPU; `ui.rs` egui chrome; `main.rs` events,
   snapping and the document (open, save, unsaved changes); `filedlg.rs` the built-in file browser (no GTK/Qt dialog);
@@ -61,7 +65,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 303 tests pass (2026-11-07, 110 of them in daedalus-sheet). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 316 tests pass (2026-11-07, 110 of them in daedalus-sheet, 9 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -199,9 +203,17 @@ the current state is:
 - Box selection (2026-11-07, `f52ceb3`): with Select, drag a box. Left to right takes what is wholly inside;
   right to left (dashed, crossing) takes what it touches. Ctrl adds, Shift toggles, Ctrl+Shift takes out. It takes faces,
   edges and loose lines of the geometry being edited, and groups/components whole.
-- Next milestones (my decision, 2026-11-07): stress testing first (own linear FEA: shells for sheet metal, voxels for
-  solids; CalculiX only as an external program), then more sheet metal (jogs and the other SolidCraft features in the UI)
-  and the Dynamic Components extras (Hidden, Copies, Material, Parent!, per-copy values). Constraints are still to come too.
+- Stress Test (2026-11-07, `c97cf61`, `a6dc89b`): Tools > Stress Test and its panel (`viewer/src/stressui.rs`). Click a
+  closed group or component, then the faces that hold it (blue) and the faces pushed (orange); force in N, kN, kg or lb,
+  its direction, own weight, material, cubes along the longest side (a sheet part starts at two cubes across its thickness);
+  Run solves on a thread of its own; the result paints the part blue to red, bent by the load (drawn larger). Checked against
+  textbook answers (tension F/A and FL/AE; cantilever tip within 1% of PL³/3EI plus shear with two cubes through it; Mc/I
+  within 5% halfway, the peak at the support 59-65 MPa against 60), and from the first click to the result on a bar group.
+  Not yet seen on screen. Not built: shell elements (voxels already bend right at two cubes across a sheet), several load
+  cases, results saved in the file.
+- Next milestones (my decision, 2026-11-07: stress testing first, now built): more sheet metal (jogs and the other SolidCraft
+  features in the UI) and the Dynamic Components extras (Hidden, Copies, Material, Parent!, per-copy values). Constraints are
+  still to come too.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
   constraint solver, reuse CADCraft crates or reimplement.
 
