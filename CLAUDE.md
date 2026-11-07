@@ -162,6 +162,11 @@ the current state is:
   click point with the icon beside it, navigation tools the icon alone; dark ink, white rim. Made at the window's scale
   when it opens. egui is told the arrow while a tool cursor shows, so it takes over again over the chrome. Contact sheet:
   `CURSOR_SHEET=out.png cargo test sheet -- --ignored`. Not yet seen live (nested screenshots leave the cursor out).
+- Phase 6, Dynamic Components (2026-11-06, `core/src/dynamic.rs`): attributes on a definition (values or formulas;
+  `.daedalus` 5 `attr` lines); built-ins X Y Z LenX LenY LenZ RotZ place and size every copy (`Model::set_attributes`);
+  onClick SET/ALTER (Interact tool). Panels in the tray: Component Options (labelled attributes, Enter applies) and
+  Component Attributes (rows, + Built-in, Apply). Checked on screen. Not yet: Hidden, Copies, Material, Parent!
+  references, per-copy values (copies share; Make Unique). Location skipped for now (Matt, 2026-11-06).
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").

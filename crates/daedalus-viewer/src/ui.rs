@@ -56,6 +56,9 @@ pub enum UiAction {
     /// opening the groups it is in).
     Outliner,
     OutlinerPick(usize),
+    /// Window > Component Attributes and Component Options: their panels, open or shut.
+    ComponentAttributes,
+    ComponentOptions,
     /// Entity Info on an arc or circle: its number of segments, or its radius (metres).
     CurveSegments(usize),
     /// Entity Info on a component: glue to faces, cut opening.
@@ -89,6 +92,15 @@ pub enum UiAction {
 }
 
 /// Everything the chrome shows, gathered by the viewer each frame.
+/// The selected component for the Dynamic Components panels: its name, its attributes with each one's value now (or the
+/// error its formula gives), and a key that changes with it (so half-typed rows are dropped when another is selected).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DcView {
+    pub name: String,
+    pub attrs: Vec<(daedalus_core::dynamic::Attribute, String)>,
+    pub key: u64,
+}
+
 /// What Entity Info shows about the selection.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Info {
@@ -133,6 +145,12 @@ pub struct UiView<'a> {
     /// The Entity Info panel is open, and what it shows (None: nothing selected).
     pub info_open: bool,
     pub info: Option<Info>,
+    /// The Dynamic Components panels: open or shut, the selected component (None: not one component), and where their
+    /// changes go (the whole new list of attributes).
+    pub attributes_open: bool,
+    pub options_open: bool,
+    pub dc: Option<DcView>,
+    pub dc_out: &'a std::cell::RefCell<Option<Vec<daedalus_core::dynamic::Attribute>>>,
     /// The Outliner is open, and its rows: depth, name, component, selected, open for editing.
     pub outliner_open: bool,
     pub outline: Vec<(usize, String, bool, bool, bool)>,
@@ -177,6 +195,8 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView, fresh: bool) -> (
             };
             item(ui, true, "Entity Info", "", UiAction::EntityInfo);
             item(ui, true, "Outliner", "", UiAction::Outliner);
+            item(ui, true, "Component Options", "", UiAction::ComponentOptions);
+            item(ui, true, "Component Attributes", "", UiAction::ComponentAttributes);
             item(ui, v.editable && v.has_selection, "Erase", "Delete", UiAction::Erase);
             ui.separator();
             let kind = if v.one_instance == Some(true) { "Component" } else { "Group" };
@@ -204,7 +224,9 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView, fresh: bool) -> (
 /// The Entity Info panel on the right (SketchUp's tray): what the selection is, and for an arc or circle its segments and
 /// radius to change (applied on Enter).
 fn tray(ctx: &egui::Context, v: &UiView, actions: &mut Vec<UiAction>) {
-    egui::SidePanel::right("tray").resizable(false).exact_width(230.0).show(ctx, |ui| {
+    // wider while Component Attributes is open: its rows have three fields
+    let width = if v.attributes_open { 340.0 } else { 230.0 };
+    egui::SidePanel::right("tray").resizable(false).exact_width(width).show(ctx, |ui| {
         if v.info_open {
             entity_info(ui, v, actions);
         }
@@ -214,7 +236,126 @@ fn tray(ctx: &egui::Context, v: &UiView, actions: &mut Vec<UiAction>) {
             }
             outliner(ui, v, actions);
         }
+        egui::ScrollArea::vertical().id_salt("dc").show(ui, |ui| {
+            if v.options_open {
+                ui.add_space(10.0);
+                component_options(ui, v, actions);
+            }
+            if v.attributes_open {
+                ui.add_space(10.0);
+                component_attributes(ui, v, actions);
+            }
+        });
     });
+}
+
+fn panel_head(ui: &mut egui::Ui, title: &str, close: UiAction, actions: &mut Vec<UiAction>) {
+    ui.horizontal(|ui| {
+        ui.strong(title);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("×").on_hover_text("Close").clicked() {
+                actions.push(close);
+            }
+        });
+    });
+    ui.separator();
+}
+
+/// Component Options: the attributes the component offers its user (those with a label), each a field; Enter applies.
+fn component_options(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
+    panel_head(ui, "Component Options", UiAction::ComponentOptions, actions);
+    let Some(dc) = &v.dc else {
+        ui.label(egui::RichText::new("Select one component").weak());
+        return;
+    };
+    ui.label(&dc.name);
+    let offered: Vec<usize> = (0..dc.attrs.len()).filter(|&i| dc.attrs[i].0.label.is_some()).collect();
+    if offered.is_empty() {
+        ui.label(egui::RichText::new("It offers no options (give an attribute a label in Component Attributes).").weak().small());
+        return;
+    }
+    for i in offered {
+        let (a, now) = &dc.attrs[i];
+        let id = egui::Id::new(("dc-option", dc.key, i));
+        let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| if a.formula.trim_start().starts_with('=') { now.clone() } else { a.formula.clone() });
+        let mut done = false;
+        ui.horizontal(|ui| {
+            ui.label(a.label.as_deref().unwrap_or(&a.name));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let r = ui.add_enabled(!a.formula.trim_start().starts_with('='), egui::TextEdit::singleline(&mut text).desired_width(100.0));
+                done = r.lost_focus() && ui.input(|k| k.key_pressed(egui::Key::Enter));
+            });
+        });
+        if done {
+            let mut list: Vec<_> = dc.attrs.iter().map(|x| x.0.clone()).collect();
+            list[i].formula = text.clone();
+            *v.dc_out.borrow_mut() = Some(list);
+            ui.data_mut(|d| d.remove::<String>(id));
+        } else {
+            ui.data_mut(|d| d.insert_temp(id, text));
+        }
+    }
+}
+
+/// Component Attributes: every attribute (name, value or formula, and the label it is offered to the user with), with
+/// what it works out to; rows added and taken away, then Apply.
+fn component_attributes(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
+    use daedalus_core::dynamic::Attribute;
+    panel_head(ui, "Component Attributes", UiAction::ComponentAttributes, actions);
+    let Some(dc) = &v.dc else {
+        ui.label(egui::RichText::new("Select one component").weak());
+        return;
+    };
+    ui.label(&dc.name);
+    let id = egui::Id::new(("dc-rows", dc.key));
+    let mut rows: Vec<(String, String, String)> = ui.data_mut(|d| d.get_temp(id)).unwrap_or_else(|| {
+        dc.attrs.iter().map(|(a, _)| (a.name.clone(), a.formula.clone(), a.label.clone().unwrap_or_default())).collect()
+    });
+    let mut gone = None;
+    egui::Grid::new(("dc-grid", dc.key)).num_columns(4).spacing([4.0, 3.0]).show(ui, |ui| {
+        ui.label(egui::RichText::new("Name").weak().small());
+        ui.label(egui::RichText::new("Value or =formula").weak().small());
+        ui.label(egui::RichText::new("Option label").weak().small());
+        ui.end_row();
+        for (k, (name, formula, label)) in rows.iter_mut().enumerate() {
+            ui.add(egui::TextEdit::singleline(name).desired_width(70.0));
+            let r = ui.add(egui::TextEdit::singleline(formula).desired_width(130.0));
+            if let Some((_, now)) = dc.attrs.get(k).filter(|(a, _)| a.formula.trim_start().starts_with('=')) {
+                r.on_hover_text(format!("= {now}"));
+            }
+            ui.add(egui::TextEdit::singleline(label).desired_width(60.0)).on_hover_text("A label here shows it in Component Options");
+            if ui.small_button("×").on_hover_text("Take it away").clicked() {
+                gone = Some(k);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(k) = gone {
+        rows.remove(k);
+    }
+    ui.horizontal(|ui| {
+        if ui.button("+ Attribute").clicked() {
+            rows.push((String::new(), String::new(), String::new()));
+        }
+        ui.menu_button("+ Built-in", |ui| {
+            for b in daedalus_core::dynamic::BUILT_INS.iter().chain(&["onClick"]) {
+                if ui.button(*b).clicked() {
+                    rows.push((b.to_string(), String::new(), String::new()));
+                    ui.close_menu();
+                }
+            }
+        });
+        if ui.button("Apply").clicked() {
+            let list: Vec<Attribute> = rows
+                .iter()
+                .filter(|(n, _, _)| !n.trim().is_empty())
+                .map(|(n, f, l)| Attribute { name: n.trim().to_string(), formula: f.trim().to_string(), label: Some(l.trim().to_string()).filter(|l| !l.is_empty()) })
+                .collect();
+            *v.dc_out.borrow_mut() = Some(list);
+        }
+    });
+    ui.label(egui::RichText::new("X Y Z place it, LenX LenY LenZ size it, RotZ turns it; onClick: SET(\"Name\", value); ALTER(\"Name\", a, b)").weak().small());
+    ui.data_mut(|d| d.insert_temp(id, rows));
 }
 
 /// The Outliner: every group and component, nested as they are; a click selects one.
@@ -487,6 +628,16 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     actions.push(UiAction::Outliner);
                     ui.close_menu();
                 }
+                let mut options = v.options_open;
+                if ui.checkbox(&mut options, "Component Options").clicked() {
+                    actions.push(UiAction::ComponentOptions);
+                    ui.close_menu();
+                }
+                let mut attrs = v.attributes_open;
+                if ui.checkbox(&mut attrs, "Component Attributes").clicked() {
+                    actions.push(UiAction::ComponentAttributes);
+                    ui.close_menu();
+                }
                 ui.separator();
                 ui.label(egui::RichText::new("Face Style").weak());
                 for f in FaceStyle::ALL {
@@ -567,6 +718,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                         ui.close_menu();
                     }
                 });
+                tool_items(ui, v, &[Tool::Interact], &mut actions);
                 ui.menu_button("Solid Tools", |ui| {
                     tool_items(ui, v, &[Tool::OuterShell, Tool::SolidIntersect, Tool::SolidUnion, Tool::SolidSubtract, Tool::SolidTrim, Tool::SolidSplit], &mut actions);
                 });
@@ -769,7 +921,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
             );
         }
     }
-    if v.info_open || v.outliner_open {
+    if v.info_open || v.outliner_open || v.options_open || v.attributes_open {
         tray(ctx, v, &mut actions);
     }
     actions
@@ -921,7 +1073,7 @@ fn toolbar_groups() -> [Vec<Slot>; 4] {
             t(Tool::Drape),
             Act(Icon::AddDetail, UiAction::AddDetail),
             t(Tool::FlipEdge),
-            Empty,
+            t(Tool::Interact),
         ],
         vec![
             Act(Icon::Iso, UiAction::Iso),

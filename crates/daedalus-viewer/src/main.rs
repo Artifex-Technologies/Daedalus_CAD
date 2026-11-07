@@ -66,6 +66,10 @@ struct State {
     context_fresh: bool,
     /// The Entity Info panel is open.
     info_open: bool,
+    /// The Dynamic Components panels are open; what they hand back (a whole new attribute list).
+    attributes_open: bool,
+    options_open: bool,
+    dc_out: std::cell::RefCell<Option<Vec<daedalus_core::dynamic::Attribute>>>,
     /// The texture files on the GPU (in the model's order), and each one's average colour (what Shaded shows).
     loaded_textures: Vec<String>,
     texture_colors: Vec<[u8; 3]>,
@@ -201,6 +205,9 @@ impl State {
             cursor_shown: None,
             context_fresh: false,
             info_open: false,
+            attributes_open: false,
+            options_open: false,
+            dc_out: std::cell::RefCell::new(None),
             loaded_textures: Vec::new(),
             texture_colors: Vec::new(),
             outliner_open: false,
@@ -815,6 +822,29 @@ impl State {
         info
     }
 
+    /// The selected component for the Dynamic Components panels: its attributes and what each works out to now.
+    fn dc_view(&self) -> Option<ui::DcView> {
+        let i = self.one_instance()?;
+        let inst = *self.model.instances().get(i)?;
+        let d = self.model.definition(inst.def)?;
+        let values = self.model.attribute_values(i);
+        let attrs = d
+            .attributes
+            .iter()
+            .map(|a| {
+                let now = match &values {
+                    Ok(v) => v.get(&a.name.to_lowercase()).map(|x| x.text()).unwrap_or_default(),
+                    Err(e) => format!("error: {e}"),
+                };
+                (a.clone(), now)
+            })
+            .collect();
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.doc, self.model.state(), i, inst.def).hash(&mut h);
+        Some(ui::DcView { name: d.name.clone(), attrs, key: h.finish() })
+    }
+
     /// The Outliner's rows (worked out again only when the model changed): depth, name, component, path from the top.
     fn outline(&mut self) -> &[(usize, String, bool, Vec<usize>)] {
         let key = self.doc.wrapping_mul(1_000_003) ^ self.model.state();
@@ -1062,6 +1092,27 @@ impl State {
                     self.after_edit();
                 }
                 None => self.message = Some("Flip Edge: click an edge between two triangles of the ground (double-click the ground first).".into()),
+            }
+            return;
+        }
+        // Interact: the component's onClick actions
+        if self.tools.tool == Tool::Interact {
+            if self.readonly.is_some() {
+                return;
+            }
+            match c.hit.and_then(|h| h.instance) {
+                Some(i) => {
+                    match self.model.interact(i) {
+                        Ok(true) => self.message = None,
+                        Ok(false) => self.message = Some("Interact: it has no onClick actions (Component Attributes adds them).".into()),
+                        Err(e) => self.message = Some(format!("Interact: {e}.")),
+                    }
+                    self.tools.model_changed();
+                    // it stays selected, so its panels keep showing it
+                    self.tools.instances = vec![i];
+                    self.after_edit();
+                }
+                None => self.message = Some("Interact: click a component.".into()),
             }
             return;
         }
@@ -1512,6 +1563,14 @@ impl State {
                 self.window.request_redraw();
             }
             UiAction::OutlinerPick(i) => self.outliner_pick(i),
+            UiAction::ComponentAttributes => {
+                self.attributes_open = !self.attributes_open;
+                self.window.request_redraw();
+            }
+            UiAction::ComponentOptions => {
+                self.options_open = !self.options_open;
+                self.window.request_redraw();
+            }
             UiAction::EntityInfo => {
                 self.info_open = !self.info_open;
                 self.window.request_redraw();
@@ -1759,6 +1818,7 @@ impl State {
         let (label, current) = self.tools.measurement();
         let info = if self.info_open { self.info() } else { None };
         let outline = if self.outliner_open { self.outline_rows() } else { Vec::new() };
+        let dc = if self.attributes_open || self.options_open { self.dc_view() } else { None };
         let view = UiView {
             tool: self.tools.tool,
             units: self.tools.units,
@@ -1784,6 +1844,10 @@ impl State {
             info,
             outliner_open: self.outliner_open,
             outline,
+            attributes_open: self.attributes_open,
+            options_open: self.options_open,
+            dc,
+            dc_out: &self.dc_out,
             one_instance: self.one_instance().and_then(|i| self.model.instances().get(i)).and_then(|inst| self.model.definition(inst.def)).map(|d| d.component),
             editing: (self.model.open_depth() > 0).then(|| self.model.open_names().join(" › ")),
             labels: self
@@ -1997,6 +2061,20 @@ impl State {
         }
         for a in actions {
             self.apply(a);
+        }
+        // the Dynamic Components panels' changes: the selected component's attributes, all of them
+        let handed = self.dc_out.borrow_mut().take();
+        if let Some(list) = handed {
+            if let Some(def) = self.one_instance().and_then(|i| self.model.instances().get(i)).map(|i| i.def) {
+                match self.model.set_attributes(def, list) {
+                    Ok(()) => self.message = None,
+                    Err(e) => self.message = Some(format!("Not applied: {e}.")),
+                }
+                let keep = self.tools.instances.clone();
+                self.after_edit();
+                self.tools.instances = keep;
+                self.refresh();
+            }
         }
         if let Some((purpose, o)) = dialog_out {
             match o {

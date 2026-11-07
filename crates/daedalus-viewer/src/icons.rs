@@ -376,6 +376,14 @@ impl Draw {
             Icon::Tool(Tool::Text3D) => self.planned(Planned::Text3D),
             Icon::Tool(t @ (Tool::SandboxScratch | Tool::Smoove | Tool::Stamp | Tool::Drape | Tool::FlipEdge)) => self.sandbox(Some(t)),
             Icon::FromContours => self.sandbox(None),
+            Icon::Tool(Tool::Interact) => {
+                // a pointing hand: the finger up, the fist below, a spark where it touches
+                self.closed(&[(0.42, 0.18), (0.5, 0.12), (0.58, 0.18), (0.58, 0.45), (0.78, 0.5), (0.8, 0.78), (0.62, 0.92), (0.38, 0.92), (0.24, 0.72), (0.3, 0.55), (0.42, 0.6)]);
+                self.line_with(&[(0.58, 0.45), (0.58, 0.62)], self.thin());
+                self.line_with(&[(0.68, 0.48), (0.68, 0.64)], self.thin());
+                self.line_with(&[(0.32, 0.1), (0.24, 0.04)], Stroke::new(1.5_f32, self.accent));
+                self.line_with(&[(0.68, 0.1), (0.76, 0.04)], Stroke::new(1.5_f32, self.accent));
+            }
             Icon::AddDetail => {
                 self.sandbox_grid();
                 self.dot(0.5, 0.55);

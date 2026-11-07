@@ -58,10 +58,12 @@ pub enum Tool {
     Stamp,
     Drape,
     FlipEdge,
+    /// Dynamic Components: click a component to run its onClick actions.
+    Interact,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 44] = [
+    pub const ALL: [Tool; 45] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -106,6 +108,7 @@ impl Tool {
         Tool::Stamp,
         Tool::Drape,
         Tool::FlipEdge,
+        Tool::Interact,
     ];
 
     pub fn label(self) -> &'static str {
@@ -154,6 +157,7 @@ impl Tool {
             Tool::Stamp => "Stamp",
             Tool::Drape => "Drape",
             Tool::FlipEdge => "Flip Edge",
+            Tool::Interact => "Interact",
         }
     }
 
@@ -203,7 +207,8 @@ impl Tool {
             | Tool::Smoove
             | Tool::Stamp
             | Tool::Drape
-            | Tool::FlipEdge => None,
+            | Tool::FlipEdge
+            | Tool::Interact => None,
         }
     }
 
@@ -1647,6 +1652,7 @@ impl Tools {
             (Tool::Stamp, _) => "Click the object to stamp with (it stands above the ground), then the ground.",
             (Tool::Drape, _) => "Click the object whose edges to lay down, then the ground.",
             (Tool::FlipEdge, _) => "In the ground being edited, click an edge between two triangles to turn it the other way.",
+            (Tool::Interact, _) => "Click a dynamic component to run its onClick actions (Component Attributes sets them).",
             (t, _) if t.solid().is_some() && self.solid_first.is_none() => match t {
                 Tool::SolidSubtract => "Click the solid to take away (it goes), then the solid to take it from.",
                 Tool::SolidTrim => "Click the solid to trim with (it stays), then the solid to trim.",
