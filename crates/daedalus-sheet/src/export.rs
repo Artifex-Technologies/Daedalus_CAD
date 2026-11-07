@@ -73,19 +73,29 @@ fn add_mesh(mesh: &Mesh, w: &Xform, name: &str, bodies: &mut Vec<crate::kernel::
 
 /// Each face (outline and holes) a plane bounded by straight edges, sewn into one closed solid.
 fn sewn(mesh: &Mesh, w: &Xform) -> Result<crate::kernel::Body> {
+    sew_polygons(&polygons_mm(mesh, w))
+}
+
+/// A mesh's faces as loops of points in mm (outline first, then holes), placed by `w`.
+pub(crate) fn polygons_mm(mesh: &Mesh, w: &Xform) -> Vec<Vec<Vec<[f64; 3]>>> {
+    (0..mesh.faces.len())
+        .map(|f| mesh.loops(f).map(|lp| lp.iter().map(|&i| w.apply(mesh.positions[i as usize]).map(|x| x * 1000.0)).collect()).collect())
+        .collect()
+}
+
+/// Flat faces given as loops of points (mm), sewn into one closed solid.
+pub(crate) fn sew_polygons(faces: &[Vec<Vec<[f64; 3]>>]) -> Result<crate::kernel::Body> {
     use crate::kernel::{EdgeSpec, FaceSpec, SurfSpec};
-    let pt = |i: u32| {
-        let p = w.apply(mesh.positions[i as usize]);
-        Vec3::new(p[0] * 1000.0, p[1] * 1000.0, p[2] * 1000.0)
-    };
-    let faces: Vec<FaceSpec> = (0..mesh.faces.len())
-        .map(|f| FaceSpec {
-            loops: mesh.loops(f).map(|lp| (0..lp.len()).map(|i| EdgeSpec::Line { a: pt(lp[i]), b: pt(lp[(i + 1) % lp.len()]) }).collect()).collect(),
+    let v = |p: [f64; 3]| Vec3::new(p[0], p[1], p[2]);
+    let specs: Vec<FaceSpec> = faces
+        .iter()
+        .map(|loops| FaceSpec {
+            loops: loops.iter().map(|lp| (0..lp.len()).map(|i| EdgeSpec::Line { a: v(lp[i]), b: v(lp[(i + 1) % lp.len()]) }).collect()).collect(),
             surface: SurfSpec::Plane,
             probe: None,
         })
         .collect();
-    Ok(crate::kernel::sew_touching(&faces)?)
+    Ok(crate::kernel::sew_touching(&specs)?)
 }
 
 #[cfg(test)]

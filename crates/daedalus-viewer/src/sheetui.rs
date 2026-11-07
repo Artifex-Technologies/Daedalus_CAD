@@ -14,10 +14,37 @@ const TABS: [&str; 3] = ["Drawing", "3D", "Flat pattern"];
 pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
     ui.add_space(6.0);
     panel_head(ui, "Sheet Metal", UiAction::SheetMetal, actions);
-    match &v.sheet {
-        Some(s) => part(ui, v, s, actions),
-        None => make_form(ui, v, actions),
+    match (&v.sheet, &v.converting) {
+        (Some(s), _) => part(ui, v, s, actions),
+        (None, Some(c)) => convert_form(ui, v, c, actions),
+        (None, None) => make_form(ui, v, actions),
     }
+}
+
+/// Convert to Sheet Metal under way: what is picked, the material, Convert.
+fn convert_form(ui: &mut egui::Ui, v: &UiView, (name, fixed, bends): &(String, bool, usize), actions: &mut Vec<UiAction>) {
+    ui.label(format!("Convert {name} to sheet metal"));
+    ui.label(RichText::new(if *fixed { "✔ the face that stays put" } else { "Click the face that stays put" }).weak());
+    ui.label(RichText::new(match bends {
+        0 => "Click each edge that becomes a bend".to_string(),
+        1 => "✔ 1 bend edge (click more, or Convert)".to_string(),
+        n => format!("✔ {n} bend edges (click more, or Convert)"),
+    }).weak());
+    ui.label(RichText::new("A solid with thin walls keeps their thickness; any other gets the thickness below inside its outer faces.").weak().small());
+    ui.add_space(4.0);
+    let first = &MATERIALS[0];
+    let (values, preset, _) = material_fields(ui, egui::Id::new("sheet-convert"), (0, first.thickness, first.k_factor, first.bend_radius));
+    ui.horizontal(|ui| {
+        let ready = v.editable && *fixed && *bends > 0 && values.is_some();
+        if ui.add_enabled(ready, egui::Button::new("Convert")).clicked() {
+            if let Some((t, k, r)) = values {
+                actions.push(UiAction::ConvertSheet(t, k, r, preset));
+            }
+        }
+        if ui.button("Start over").clicked() {
+            actions.push(UiAction::ConvertReset);
+        }
+    });
 }
 
 /// A length typed in mm (or with its own unit), as mm.
@@ -84,6 +111,10 @@ fn make_form(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
     if !v.face_for_part {
         ui.label(RichText::new("Select a sheet-metal part to edit it, or one face to make a part of it.").weak());
         ui.label(RichText::new("The face's outline and holes become the flat part; it grows out of the face's front by the thickness.").weak().small());
+        ui.add_space(4.0);
+        if ui.add_enabled(v.editable, egui::Button::new("Convert a solid…").selected(v.tool == Tool::SheetConvert)).on_hover_text("A solid group or component you modelled (say, with 2 mm walls) into a part with bends").clicked() {
+            actions.push(UiAction::Tool(Tool::SheetConvert));
+        }
         return;
     }
     ui.label("Make a sheet-metal part of the selected face");
@@ -121,6 +152,9 @@ fn part(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiAction
 /// Drawing: the outline the part was made from (with its size), its material, and its flanges.
 fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiAction>) {
     drawing(ui, &s.base, &[], 200.0);
+    for n in &s.notes {
+        ui.label(RichText::new(format!("Note: {n}")).weak().small());
+    }
     ui.add_space(6.0);
     ui.strong("Material");
     let preset = MATERIALS.iter().position(|m| m.name == s.material).unwrap_or(usize::MAX);

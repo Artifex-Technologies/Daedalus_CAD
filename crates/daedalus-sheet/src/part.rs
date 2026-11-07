@@ -98,8 +98,23 @@ pub struct SheetPart {
     /// The model shows it unfolded.
     #[serde(default)]
     pub shown_flat: bool,
+    /// Made by converting a solid (then `region` is unused): the solid, the face that stays put and the bend edges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solid: Option<SolidSource>,
+    /// What the conversion could not finish as the rule says (corners, bend ends), to show the person.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     /// What the above make (kept so a part reads back without rebuilding; rebuilt on every change).
     pub sheet: SheetBody,
+}
+
+/// A solid a part was converted from (part mm): its flat faces (each loops of points, the outline first), a point on the
+/// face that stays put, and a point on each edge that becomes a bend.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolidSource {
+    pub faces: Vec<Vec<Vec<[f64; 3]>>>,
+    pub fixed: [f64; 3],
+    pub bends: Vec<[f64; 3]>,
 }
 
 /// An edge flange (or a hem) as the user asked for it.
@@ -131,6 +146,32 @@ fn invalid<T>(m: impl Into<String>) -> Result<T> {
     Err(DocError::Invalid(m.into()))
 }
 
+/// The sheet a solid converts to under `rule` (the solid's own thickness when it is a shell), and the notes on what was
+/// not finished as the rule says.
+fn converted(src: &SolidSource, material: &str, rule: &RuleValues) -> Result<(SheetBody, Vec<String>)> {
+    let body = crate::export::sew_polygons(&src.faces)?;
+    let mb = sheet::ModelBody::new("Part", body)?;
+    let v = |p: [f64; 3]| Vec3::new(p[0], p[1], p[2]);
+    let rule = *rule;
+    let values = move |t: Option<f64>| RuleValues { thickness: t.unwrap_or(rule.thickness), ..rule }.checked();
+    let bends: Vec<Vec3> = src.bends.iter().map(|&p| v(p)).collect();
+    sheet::convert_body(&mb, material, &values, v(src.fixed), &bends, &crate::util::IDENTITY)
+}
+
+/// A sheet-metal part converted from a closed solid (`mesh`, in metres, the part's coordinates): `fixed` a point on the
+/// face that stays put, `bends` a point on each edge that becomes a bend (metres). A shelled solid keeps its walls'
+/// thickness; any other takes the rule's thickness inside its outer faces. Returns the part and its notes.
+pub fn part_from_solid(mesh: &Mesh, fixed: [f64; 3], bends: &[[f64; 3]], material: &str, rule: RuleValues) -> Result<SheetPart> {
+    let mm = |p: [f64; 3]| p.map(|x| x * MM);
+    let src = SolidSource { faces: crate::export::polygons_mm(mesh, &Xform::IDENTITY), fixed: mm(fixed), bends: bends.iter().map(|&p| mm(p)).collect() };
+    let rule = rule.checked()?;
+    let (sheet, notes) = converted(&src, material, &rule)?;
+    let mut part = SheetPart { kind: KIND.into(), material: material.into(), rule, region: Region2::default(), flanges: Vec::new(), shown_flat: false, solid: Some(src), notes, sheet };
+    part.rule.thickness = part.sheet.t;
+    part.sheet.solid()?;
+    Ok(part)
+}
+
 /// A flange or hem as asked, added to `sheet`.
 fn apply(sheet: &mut SheetBody, f: &FlangeAsked, rule: &RuleValues) -> Result<()> {
     let pick = Vec3::new(f.pick[0], f.pick[1], f.pick[2]);
@@ -158,7 +199,7 @@ impl SheetPart {
     pub fn from_region(material: &str, rule: RuleValues, region: Region2) -> Result<SheetPart> {
         let rule = rule.checked()?;
         let sheet = sheet::base_flange("Part", material, &rule, Plane::XY, region.clone());
-        let part = SheetPart { kind: KIND.into(), material: material.into(), rule, region, flanges: Vec::new(), shown_flat: false, sheet };
+        let part = SheetPart { kind: KIND.into(), material: material.into(), rule, region, flanges: Vec::new(), shown_flat: false, solid: None, notes: Vec::new(), sheet };
         part.sheet.solid()?;
         Ok(part)
     }
@@ -167,7 +208,11 @@ impl SheetPart {
     /// finds its edge or the part cannot be made.
     pub fn rebuild(&mut self) -> Result<()> {
         let rule = self.rule.checked()?;
-        let mut sheet = sheet::base_flange("Part", &self.material, &rule, Plane::XY, self.region.clone());
+        let (mut sheet, notes) = match &self.solid {
+            Some(src) => converted(src, &self.material, &rule)?,
+            None => (sheet::base_flange("Part", &self.material, &rule, Plane::XY, self.region.clone()), Vec::new()),
+        };
+        self.notes = notes;
         for (n, f) in self.flanges.iter().enumerate() {
             apply(&mut sheet, f, &rule).map_err(|e| DocError::Invalid(format!("flange {}: {e}", n + 1)))?;
         }
@@ -304,6 +349,16 @@ impl SheetPart {
             }
         }
         out
+    }
+
+    /// The outline the part was made from, and its holes (part mm, flat), for the Drawing tab: the face's for a part made
+    /// of a face, the base panel's for a converted solid.
+    pub fn outline(&self) -> Vec<Vec<[f64; 2]>> {
+        let base: Vec<&Loop2> = match &self.solid {
+            Some(_) => std::iter::once(&self.sheet.base.outer).chain(&self.sheet.base.holes).chain(self.sheet.holes.iter().map(|h| &h.outer)).collect(),
+            None => std::iter::once(&self.region.outer).chain(&self.region.holes).collect(),
+        };
+        base.into_iter().map(sample_loop).collect()
     }
 
     /// The flat blank's size (mm).
@@ -776,5 +831,64 @@ mod tests {
         let mut back = SheetPart::from_text(&part.to_text()).unwrap();
         back.rebuild().unwrap();
         assert_eq!(back.sheet, part.sheet);
+    }
+
+    /// A profile in the XZ plane (metres, counter-clockwise seen from -Y) pushed `depth` along +Y: a closed solid.
+    fn extruded(profile: &[[f64; 2]], depth: f64) -> Mesh {
+        let mut m = Mesh::new();
+        let n = profile.len() as u32;
+        for y in [0.0, depth] {
+            for p in profile {
+                m.add_vertex([p[0], y, p[1]]);
+            }
+        }
+        // the end at y = 0 faces -Y: the profile's order seen from -Y is counter-clockwise
+        m.add_face((0..n).collect());
+        m.add_face((0..n).rev().map(|i| i + n).collect());
+        for i in 0..n {
+            let j = (i + 1) % n;
+            m.add_face(vec![i, i + n, j + n, j]);
+        }
+        m
+    }
+
+    #[test]
+    fn an_l_shaped_solid_with_2mm_walls_converts_to_a_part_with_one_bend() {
+        // base 40 long, upright 30 high, 2 thick, 50 deep; the outside corner at the origin, sharp
+        let l = extruded(&[[0.0, 0.0], [0.04, 0.0], [0.04, 0.002], [0.002, 0.002], [0.002, 0.03], [0.0, 0.03]], 0.05);
+        assert!(daedalus_core::inspect::inspect(&l, l.tolerance()).is_solid(), "the test solid is closed");
+        let rule = RuleValues { k_factor: 0.44, bend_radius: 2.0, ..RuleValues::steel(2.0) };
+        // the bottom stays put; the outside corner edge (x = 0, z = 0) is the bend
+        let part = part_from_solid(&l, [0.02, 0.025, 0.0], &[[0.0, 0.025, 0.0]], "Steel 2 mm", rule).unwrap();
+        assert!((part.thickness() - 2.0).abs() < 1e-9, "the walls' own thickness: {}", part.thickness());
+        let bends = part.bend_table();
+        assert_eq!(bends.len(), 1, "{:?}", part.notes);
+        assert!((bends[0].0 - 90.0).abs() < 1e-6 && (bends[0].1 - 2.0).abs() < 1e-9 && (bends[0].2 - 50.0).abs() < 1e-6, "{bends:?}");
+        // outer sizes kept: flat = (40 - 4) + (30 - 4) + BA
+        let ba = std::f64::consts::FRAC_PI_2 * (2.0 + 0.44 * 2.0);
+        let (w, h) = part.flat_size().unwrap();
+        let long = w.max(h);
+        assert!((long - (36.0 + 26.0 + ba)).abs() < 1e-6 && (w.min(h) - 50.0).abs() < 1e-6, "{w} x {h}");
+        // folded it fills the solid's box
+        let m = part.faces(false).unwrap();
+        let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+        for p in &m.positions {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        assert!((hi[0] - lo[0] - 0.04).abs() < 1e-6 && (hi[1] - lo[1] - 0.05).abs() < 1e-6 && (hi[2] - lo[2] - 0.03).abs() < 1e-6, "{lo:?} {hi:?}");
+        // a new radius rebuilds it from the solid; the text round trip too
+        let mut softer = part.clone();
+        softer.set_rule("Steel R3", RuleValues { bend_radius: 3.0, ..softer.rule }).unwrap();
+        assert!((softer.bend_table()[0].1 - 3.0).abs() < 1e-9);
+        let mut back = SheetPart::from_text(&part.to_text()).unwrap();
+        back.rebuild().unwrap();
+        assert_eq!(back.sheet, part.sheet);
+        // a flange added on the converted part's far edge
+        let mut more = part.clone();
+        more.add_flange([40.0, 25.0, 2.0], 15.0, 90.0, FlangePosition::Inside, false).unwrap();
+        assert_eq!(more.bend_table().len(), 2);
     }
 }

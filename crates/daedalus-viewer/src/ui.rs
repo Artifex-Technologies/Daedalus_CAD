@@ -102,6 +102,9 @@ pub enum UiAction {
     SheetRemoveFlange(usize),
     /// What the Flange tool adds: height (mm), angle (degrees), position, bent down, a hem.
     FlangeDefaults(f64, f64, usize, bool, bool),
+    /// Convert to Sheet Metal: make the part (thickness, K-factor, radius, preset), or start the picks again.
+    ConvertSheet(f64, f64, f64, usize),
+    ConvertReset,
     /// The selected part's flat pattern as DXF (true: inches), and the part alone as STEP.
     ExportFlatDxf(bool),
     ExportPartStep,
@@ -142,6 +145,8 @@ pub struct SheetView {
     pub bends: Vec<(f64, f64, f64)>,
     /// What a bending shop would likely query (rules of thumb).
     pub checks: Vec<String>,
+    /// What a conversion from a solid could not finish as the rule says.
+    pub notes: Vec<String>,
     /// Changes with the part (so half-typed values are dropped when it changes).
     pub key: u64,
 }
@@ -203,6 +208,8 @@ pub struct UiView<'a> {
     pub sheet: Option<SheetView>,
     pub face_for_part: bool,
     pub flange_defaults: (f64, f64, usize, bool, bool),
+    /// Convert to Sheet Metal under way: the solid's name, whether its fixed face is picked, and how many bend edges.
+    pub converting: Option<(String, bool, usize)>,
     /// The Outliner is open, and its rows: depth, name, component, selected, open for editing.
     pub outliner_open: bool,
     pub outline: Vec<(usize, String, bool, bool, bool)>,
@@ -791,7 +798,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                         actions.push(UiAction::SheetMetal);
                         ui.close_menu();
                     }
-                    tool_items(ui, v, &[Tool::Flange], &mut actions);
+                    tool_items(ui, v, &[Tool::Flange, Tool::SheetConvert], &mut actions);
                     if ui.button("Sheet Metal Panel").clicked() {
                         actions.push(UiAction::SheetMetal);
                         ui.close_menu();
@@ -1153,6 +1160,7 @@ fn toolbar_groups() -> [Vec<Slot>; 4] {
             t(Tool::FlipEdge),
             t(Tool::Interact),
             t(Tool::Flange),
+            t(Tool::SheetConvert),
         ],
         vec![
             Act(Icon::Iso, UiAction::Iso),

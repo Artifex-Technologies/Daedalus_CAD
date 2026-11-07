@@ -401,6 +401,16 @@ impl Draw {
                 self.line_with(&fold, Stroke::new(1.5_f32, self.accent));
                 self.head(0.33, 0.42, 1.0, 0.0, 0.1, self.accent);
             }
+            Icon::Tool(Tool::SheetConvert) => {
+                // a block on the left, an arrow, the same unfolded into an L of sheet on the right
+                self.closed(&[(0.08, 0.5), (0.36, 0.5), (0.36, 0.86), (0.08, 0.86)]);
+                self.line(&[(0.08, 0.5), (0.18, 0.4), (0.46, 0.4), (0.36, 0.5)]);
+                self.line(&[(0.46, 0.4), (0.46, 0.76), (0.36, 0.86)]);
+                self.line(&[(0.56, 0.86), (0.92, 0.86), (0.92, 0.8), (0.62, 0.8), (0.62, 0.3), (0.56, 0.3), (0.56, 0.86)]);
+                let accent = Stroke::new(1.5_f32, self.accent);
+                self.line_with(&[(0.2, 0.28), (0.44, 0.16)], accent);
+                self.head(0.5, 0.13, 1.0, -0.5, 0.09, self.accent);
+            }
             Icon::AddDetail => {
                 self.sandbox_grid();
                 self.dot(0.5, 0.55);

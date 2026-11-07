@@ -82,6 +82,9 @@ struct State {
     sheet_cache: Option<(u64, Option<ui::SheetView>)>,
     /// The flat pattern DXF being saved is in inches.
     dxf_inches: bool,
+    /// Convert to Sheet Metal under way: the solid's instance, the point on its face that stays put and on each bend edge
+    /// (its own coordinates, metres).
+    convert: Option<(usize, Option<[f64; 3]>, Vec<[f64; 3]>)>,
     /// The Outliner is open; its rows, for the model state they were read at.
     outliner_open: bool,
     outline_cache: Option<(u64, Vec<(usize, String, bool, Vec<usize>)>)>,
@@ -224,6 +227,7 @@ impl State {
             flange_defaults: (20.0, 90.0, 0, false, false),
             sheet_cache: None,
             dxf_inches: false,
+            convert: None,
             outliner_open: false,
             outline_cache: None,
             info_cache: None,
@@ -894,7 +898,7 @@ impl State {
         }
         let view = self.sheet_part().map(|(_, def, p)| {
             let (flat_loops, bend_lines) = p.flat_drawing().unwrap_or_default();
-            let base = std::iter::once(&p.region.outer).chain(&p.region.holes).map(daedalus_sheet::part::loop_points).collect();
+            let base = p.outline();
             ui::SheetView {
                 name: self.model.definition(def).map(|d| d.name.clone()).unwrap_or_default(),
                 material: p.material.clone(),
@@ -916,6 +920,7 @@ impl State {
                 flat_size: p.flat_size().ok(),
                 bends: p.bend_table(),
                 checks: p.shop_checks(),
+                notes: p.notes.clone(),
                 key,
             }
         });
@@ -1006,6 +1011,78 @@ impl State {
             self.change_part("Flange", |p| p.add_flange(pick, h, a, position, down));
         }
         self.sheet_open = true;
+    }
+
+    /// Convert to Sheet Metal: a click on a solid group or component. The first picks the face that stays put; the next
+    /// ones the edges that become bends (each taken onto the nearest edge of the solid).
+    fn convert_pick(&mut self, i: usize, point: [f64; 3]) {
+        let Some(back) = self.model.instance_world(i).and_then(|w| w.inverse()) else { return };
+        let def = self.model.instances()[i].def;
+        let Some(d) = self.model.definition(def) else { return };
+        if d.part.is_some() {
+            self.message = Some("Convert to Sheet Metal: that is a sheet-metal part already.".into());
+            return;
+        }
+        let local = back.apply(point);
+        match &mut self.convert {
+            Some((at, Some(_), bends)) if *at == i => {
+                let mesh = &d.ctx.mesh;
+                let nearest = mesh
+                    .face_edges()
+                    .map(|(_, a, b)| nearest_on_segment(local, mesh.positions[a as usize], mesh.positions[b as usize]))
+                    .min_by(|p, q| dist3(*p, local).total_cmp(&dist3(*q, local)));
+                match nearest {
+                    Some(p) => {
+                        bends.push(p);
+                        self.message = Some(format!("Convert: {} bend edge(s) picked; click more, or Convert in the Sheet Metal panel.", bends.len()));
+                    }
+                    None => self.message = Some("Convert: that solid has no edges.".into()),
+                }
+            }
+            _ => {
+                self.convert = Some((i, Some(local), Vec::new()));
+                self.tools.selected.clear();
+                self.tools.instances = vec![i];
+                self.message = Some(format!("Convert {}: the face that stays put is picked; now click each edge that becomes a bend.", d.name));
+            }
+        }
+        self.sheet_open = true;
+    }
+
+    /// Convert to Sheet Metal: the picked solid made a part.
+    fn convert_sheet(&mut self, t: f64, k: f64, r: f64, preset: usize) {
+        use daedalus_sheet::sheet::RuleValues;
+        let Some((i, Some(fixed), bends)) = self.convert.clone() else {
+            self.message = Some("Convert: click the face that stays put, then the bend edges.".into());
+            return;
+        };
+        let Some(def) = self.model.instances().get(i).map(|x| x.def) else { return };
+        let Some(mesh) = self.model.definition(def).map(|d| d.ctx.mesh.clone()) else { return };
+        let name = daedalus_sheet::part::MATERIALS.get(preset).map(|m| m.name.to_string()).unwrap_or_else(|| format!("{t} mm sheet"));
+        let rule = RuleValues { k_factor: k, bend_radius: r, ..RuleValues::steel(t) };
+        let made = daedalus_sheet::part::part_from_solid(&mesh, fixed, &bends, &name, rule)
+            .map(|mut p| {
+                // a shelled solid keeps its own walls: named by them when they are not the preset's thickness
+                if (p.thickness() - t).abs() > 1e-6 {
+                    p.material = format!("{} mm sheet (the solid's walls)", (p.thickness() * 1000.0).round() / 1000.0);
+                }
+                p
+            })
+            .and_then(|p| p.faces(false).map(|f| (p, f)))
+            .map_err(|e| e.to_string())
+            .and_then(|(p, f)| self.model.set_part(def, p.to_text(), f).map_err(|e| e.to_string()).map(|()| p));
+        match made {
+            Ok(p) => {
+                self.convert = None;
+                self.tools.model_changed();
+                self.tools.instances = vec![i];
+                self.sheet_tab = 2;
+                self.set_tool(Tool::Select);
+                self.message = Some(if p.notes.is_empty() { "Converted to sheet metal.".into() } else { format!("Converted; note: {}", p.notes.join("; ")) });
+            }
+            Err(e) => self.message = Some(format!("Convert to Sheet Metal: {e}.")),
+        }
+        self.after_edit();
     }
 
     /// The selected component for the Dynamic Components panels: its attributes and what each works out to now.
@@ -1293,6 +1370,18 @@ impl State {
             }
             return;
         }
+        // Convert to Sheet Metal: the face that stays put, then the bend edges
+        if self.tools.tool == Tool::SheetConvert {
+            if self.readonly.is_some() {
+                return;
+            }
+            match c.hit.and_then(|h| h.instance.map(|i| (i, h.point))) {
+                Some((i, point)) => self.convert_pick(i, point),
+                None => self.message = Some("Convert to Sheet Metal: click a solid group or component (make one of a solid first).".into()),
+            }
+            self.refresh();
+            return;
+        }
         // Flange: a flange on the sheet-metal part's edge under the mouse
         if self.tools.tool == Tool::Flange {
             if self.readonly.is_some() {
@@ -1445,6 +1534,9 @@ impl State {
     }
 
     fn set_tool(&mut self, tool: Tool) {
+        if matches!(tool, Tool::Flange | Tool::SheetConvert) {
+            self.sheet_open = true;
+        }
         self.tools.set_tool(tool);
         self.typed.clear();
         self.message = None;
@@ -1870,6 +1962,11 @@ impl State {
                 self.window.request_redraw();
             }
             UiAction::SheetTab(t) => self.sheet_tab = t,
+            UiAction::ConvertSheet(t, k, r, preset) => self.convert_sheet(t, k, r, preset),
+            UiAction::ConvertReset => {
+                self.convert = None;
+                self.message = Some("Convert: click the face that stays put.".into());
+            }
             UiAction::MakeSheetPart(t, k, r, preset) => self.make_sheet_part(t, k, r, preset),
             UiAction::SheetRule(t, k, r, preset) => {
                 let name = daedalus_sheet::part::MATERIALS.get(preset).map(|m| m.name.to_string()).unwrap_or_else(|| format!("{t} mm sheet"));
@@ -2106,6 +2203,10 @@ impl State {
             sheet,
             face_for_part,
             flange_defaults: self.flange_defaults,
+            converting: self.convert.as_ref().and_then(|(i, fixed, bends)| {
+                let def = self.model.instances().get(*i)?.def;
+                Some((self.model.definition(def)?.name.clone(), fixed.is_some(), bends.len()))
+            }),
             one_instance: self.one_instance().and_then(|i| self.model.instances().get(i)).and_then(|inst| self.model.definition(inst.def)).map(|d| d.component),
             editing: (self.model.open_depth() > 0).then(|| self.model.open_names().join(" › ")),
             labels: self
@@ -2660,4 +2761,16 @@ fn segment_distance(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
     let t = if l2 > 0.0 { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
     let (cx, cy) = (a.0 + t * dx, a.1 + t * dy);
     ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt()
+}
+
+/// The point of segment ab nearest p.
+fn nearest_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    let t = if l2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1] + (p[2] - a[2]) * d[2]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    [a[0] + t * d[0], a[1] + t * d[1], a[2] + t * d[2]]
+}
+
+fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }

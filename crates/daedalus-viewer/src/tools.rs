@@ -63,10 +63,13 @@ pub enum Tool {
     /// Sheet metal: click an edge of a sheet-metal part to add a flange there (height, angle and position from the Sheet
     /// Metal panel).
     Flange,
+    /// Sheet metal: Convert to Sheet Metal. Click a face of a solid group or component (it stays put), then each edge that
+    /// becomes a bend; Convert in the Sheet Metal panel.
+    SheetConvert,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 46] = [
+    pub const ALL: [Tool; 47] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -113,6 +116,7 @@ impl Tool {
         Tool::FlipEdge,
         Tool::Interact,
         Tool::Flange,
+        Tool::SheetConvert,
     ];
 
     pub fn label(self) -> &'static str {
@@ -163,6 +167,7 @@ impl Tool {
             Tool::FlipEdge => "Flip Edge",
             Tool::Interact => "Interact",
             Tool::Flange => "Flange",
+            Tool::SheetConvert => "Convert to Sheet Metal",
         }
     }
 
@@ -214,7 +219,8 @@ impl Tool {
             | Tool::Drape
             | Tool::FlipEdge
             | Tool::Interact
-            | Tool::Flange => None,
+            | Tool::Flange
+            | Tool::SheetConvert => None,
         }
     }
 
@@ -1660,6 +1666,7 @@ impl Tools {
             (Tool::FlipEdge, _) => "In the ground being edited, click an edge between two triangles to turn it the other way.",
             (Tool::Interact, _) => "Click a dynamic component to run its onClick actions (Component Attributes sets them).",
             (Tool::Flange, _) => "Click an edge of a sheet-metal part to add a flange (height, angle and position in the Sheet Metal panel).",
+            (Tool::SheetConvert, _) => "Click a face of a solid group (it stays put), then each edge that becomes a bend; then Convert in the Sheet Metal panel.",
             (t, _) if t.solid().is_some() && self.solid_first.is_none() => match t {
                 Tool::SolidSubtract => "Click the solid to take away (it goes), then the solid to take it from.",
                 Tool::SolidTrim => "Click the solid to trim with (it stays), then the solid to trim.",

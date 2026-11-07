@@ -1,7 +1,7 @@
 // Daedalus CAD: sheet-metal bodies, copied from SolidCraft (https://github.com/tangency-labs/solidcraft,
 // crates/doc/src/sheet.rs at commit 871014f955a76fd308ce156e68c93e6372906005, MIT OR Apache-2.0; see NOTICE.md).
 // Changes for Daedalus: the ties to SolidCraft's document are gone (rules as expressions, the document's
-// rule lookup, sketch-plane references, model state, converting a solid to a sheet, face names); rule values
+// rule lookup, sketch-plane references, model state, face names; converting a solid is in convert.rs); rule values
 // are plain numbers (`RuleValues`, which also reads back from text); the error type and matrix helpers come from `crate::util`.
 
 //! Sheet metal: rules (thickness, K-factor, bend radius, reliefs as expressions that may use
@@ -23,6 +23,10 @@ use solidcraft_kernel::{self as kernel, Body, EdgeSpec, FaceSpec, SurfSpec};
 
 #[allow(unused_imports)]
 use crate::util::{DocError, IDENTITY, Mat, Result, apply_point, apply_vector, mat_inverse, mat_mul, rigid};
+
+#[path = "convert.rs"]
+mod convert;
+pub use convert::{ModelBody, convert_body};
 
 // Bound the aggregate geometry, including sampled curves and intermediate clipping pieces.
 // These are work limits, never geometry truncation: a larger input returns a useful error.

@@ -400,12 +400,16 @@ impl Model {
         })
     }
 
-    /// A part's new description and faces (every copy of it changes), as one undo step.
+    /// A part's new description and faces (every copy of it changes), as one undo step. A group or component that is no
+    /// part yet becomes one (Convert to Sheet Metal): it must have no groups inside it, and it becomes a component.
     pub fn set_part(&mut self, def: usize, text: String, faces: Mesh) -> Result<(), TopologyError> {
         self.edit_scene(|_, s, _| {
             let d = s.defs.get_mut(def).ok_or_else(nothing)?;
             if d.part.is_none() {
-                return Err(nothing());
+                if !d.ctx.instances.is_empty() {
+                    return Err(nothing());
+                }
+                d.component = true;
             }
             d.part = Some(text);
             d.ctx.mesh = faces;
@@ -1843,7 +1847,14 @@ mod tests {
         m.undo();
         assert_eq!(m.mesh().to_mesh().faces.len(), faces_before);
         assert!(m.instances().is_empty());
-        // a definition that is no part is not given one
+        // no such definition
         assert!(m.set_part(99, "x".into(), Mesh::new()).is_err());
+        // a group becomes a part (and a component)
+        let f = m.add_rectangle([2.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.0, 0.1, 0.0]).unwrap();
+        let g = m.make_group(&[f], &[], false).unwrap();
+        let def = m.instances()[g].def;
+        m.set_part(def, "{converted}".into(), part_faces.clone()).unwrap();
+        let d = m.definition(def).unwrap();
+        assert!(d.component && d.part.as_deref() == Some("{converted}") && d.ctx.mesh == part_faces);
     }
 }
