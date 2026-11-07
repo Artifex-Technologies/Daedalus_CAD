@@ -1,8 +1,6 @@
 use crate::scene::{Context, Definition, Instance, Notes, Scene, Xform};
 use crate::{HalfEdgeMesh, Mesh, TopologyError};
 
-/// Within this distance (model units, metres) two faces' planes count as one when coplanar faces are merged.
-
 /// Merges coplanar faces of `m` in place; returns where `face` went (or `face` when nothing could be rebuilt).
 fn merge_in_place(m: &mut HalfEdgeMesh, face: usize) -> usize {
     let mesh = m.to_mesh();

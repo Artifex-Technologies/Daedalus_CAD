@@ -197,7 +197,9 @@ pub fn add_segment(m: &mut Mesh, a: V, b: V, tol: f64) -> (Vec<usize>, bool) {
         let mid = scale(add(m.positions[u as usize], m.positions[w as usize]), 0.5);
         // a piece across a face, between two of its corners: the face splits along it
         let face = m.faces.iter().position(|ring| {
-            let (Some(i), Some(j)) = (ring.iter().position(|&x| x == u), ring.iter().position(|&x| x == w)) else { return false };
+            let (Some(i), Some(j)) = (ring.iter().position(|&x| x == u), ring.iter().position(|&x| x == w)) else {
+                return false;
+            };
             let n = ring.len();
             (i + 1) % n != j && (j + 1) % n != i && inside_face(m, ring, mid, tol * 10.0)
         });
@@ -264,7 +266,11 @@ pub fn cut_hole_avoiding(m: &mut Mesh, outer: usize, inner: &[u32], avoid: &[Vec
         inner2.reverse();
     }
     let inner = &inner[..];
-    let span = outer2.iter().chain(&inner2).fold(0.0f64, |s, p| s.max(p[0].abs()).max(p[1].abs())).max(1e-6);
+    let span = outer2
+        .iter()
+        .chain(&inner2)
+        .fold(0.0f64, |s, p| s.max(p[0].abs()).max(p[1].abs()))
+        .max(1e-6);
     let eps = span * 1e-6;
     // a seam may join outer corner p and hole corner q only if it stays inside the face: it crosses no edge of the outline
     // or of the hole (touching them only at its own two ends), and its middle is inside the outline and outside the hole
@@ -290,8 +296,26 @@ pub fn cut_hole_avoiding(m: &mut Mesh, outer: usize, inner: &[u32], avoid: &[Vec
         let (a, b) = (outer2[pi], inner2[qi]);
         (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
     };
-    let mut pairs: Vec<(usize, usize)> = (0..n).flat_map(|pi| (0..k).map(move |qi| (pi, qi))).filter(|&(pi, qi)| clear(pi, qi)).collect();
-    pairs.sort_by(|x, y| d2(x.0, x.1).total_cmp(&d2(y.0, y.1)));
+    // every pair by length, shortest first, but tested for a clear path only until enough are found: testing all of them
+    // first took 24 s on a face of 3,100 corners (a curved terrace in Matt's Dream House)
+    let mut all: Vec<(f64, u32, u32)> = (0..n)
+        .flat_map(|pi| (0..k).map(move |qi| (pi, qi)))
+        .map(|(pi, qi)| (d2(pi, qi), pi as u32, qi as u32))
+        .collect();
+    all.sort_unstable_by(|x, y| x.0.total_cmp(&y.0));
+    const ENOUGH: usize = 256;
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut scanned = 0;
+    let more = |pairs: &mut Vec<(usize, usize)>, scanned: &mut usize, until: usize| {
+        while pairs.len() < until && *scanned < all.len() {
+            let (_, pi, qi) = all[*scanned];
+            *scanned += 1;
+            if clear(pi as usize, qi as usize) {
+                pairs.push((pi as usize, qi as usize));
+            }
+        }
+    };
+    more(&mut pairs, &mut scanned, ENOUGH);
     let area = |r: &[u32]| {
         let pts: Vec<[f64; 2]> = r.iter().map(|&q| flat(q)).collect();
         signed_area(&pts).abs()
@@ -318,35 +342,44 @@ pub fn cut_hole_avoiding(m: &mut Mesh, outer: usize, inner: &[u32], avoid: &[Vec
     };
     // the two seams: the shortest clear one, then the shortest clear one that does not cross it, ends elsewhere, and leaves
     // two faces that are each simple and together cover the face minus the hole
-    for (i, &(p1, q1)) in pairs.iter().enumerate() {
-        for &(p2, q2) in pairs.iter().skip(i + 1).take(64) {
-            if p2 == p1 || q2 == q1 || segments_cross(outer2[p1], inner2[q1], outer2[p2], inner2[q2], eps) {
-                continue;
+    for round in 0..2 {
+        if round == 1 {
+            // none of the shortest worked: every clear pair (slow, but rare)
+            if scanned >= all.len() {
+                break;
             }
-            let mut a = walk(p1, p2);
-            a.extend(back(q2, q1));
-            let mut b = walk(p2, p1);
-            b.extend(back(q1, q2));
-            if a.len() < 3 || b.len() < 3 {
-                continue;
+            more(&mut pairs, &mut scanned, usize::MAX);
+        }
+        for (i, &(p1, q1)) in pairs.iter().enumerate() {
+            for &(p2, q2) in pairs.iter().skip(i + 1).take(64) {
+                if p2 == p1 || q2 == q1 || segments_cross(outer2[p1], inner2[q1], outer2[p2], inner2[q2], eps) {
+                    continue;
+                }
+                let mut a = walk(p1, p2);
+                a.extend(back(q2, q1));
+                let mut b = walk(p2, p1);
+                b.extend(back(q1, q2));
+                if a.len() < 3 || b.len() < 3 {
+                    continue;
+                }
+                let simple = |r: &[u32]| {
+                    let pts: Vec<[f64; 2]> = r.iter().map(|&q| flat(q)).collect();
+                    !self_crossing(&pts, eps)
+                };
+                if (area(&a) + area(&b) - want).abs() > want.abs() * 1e-3 + eps || !simple(&a) || !simple(&b) {
+                    continue;
+                }
+                m.faces[outer] = a;
+                m.faces.push(b);
+                m.faces.push(inner.to_vec());
+                // the ring and the new face inside it keep the face's colour
+                let c = m.color_of(outer);
+                m.set_color(m.faces.len() - 2, c);
+                m.set_color(m.faces.len() - 1, c);
+                m.seams.push([ring[p1], inner[q1]]);
+                m.seams.push([ring[p2], inner[q2]]);
+                return Some(m.faces.len() - 1);
             }
-            let simple = |r: &[u32]| {
-                let pts: Vec<[f64; 2]> = r.iter().map(|&q| flat(q)).collect();
-                !self_crossing(&pts, eps)
-            };
-            if (area(&a) + area(&b) - want).abs() > want.abs() * 1e-3 + eps || !simple(&a) || !simple(&b) {
-                continue;
-            }
-            m.faces[outer] = a;
-            m.faces.push(b);
-            m.faces.push(inner.to_vec());
-            // the ring and the new face inside it keep the face's colour
-            let c = m.color_of(outer);
-            m.set_color(m.faces.len() - 2, c);
-            m.set_color(m.faces.len() - 1, c);
-            m.seams.push([ring[p1], inner[q1]]);
-            m.seams.push([ring[p2], inner[q2]]);
-            return Some(m.faces.len() - 1);
         }
     }
     None
@@ -424,7 +457,16 @@ mod tests {
     #[test]
     fn a_square_hole_in_a_square_face() {
         let mut m = Mesh::new();
-        for p in [[0.0, 0.0, 0.0], [9.0, 0.0, 0.0], [9.0, 9.0, 0.0], [0.0, 9.0, 0.0], [2.0, 2.0, 0.0], [7.0, 2.0, 0.0], [7.0, 7.0, 0.0], [2.0, 7.0, 0.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [9.0, 0.0, 0.0],
+            [9.0, 9.0, 0.0],
+            [0.0, 9.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [7.0, 2.0, 0.0],
+            [7.0, 7.0, 0.0],
+            [2.0, 7.0, 0.0],
+        ] {
             m.add_vertex(p);
         }
         m.add_face(vec![0, 1, 2, 3]);
@@ -432,7 +474,13 @@ mod tests {
             let mut t = m.clone();
             let f = cut_hole(&mut t, 0, &inner);
             assert!(f.is_some(), "{inner:?}");
-            let area: f64 = t.faces[..2].iter().map(|r| { let p: Vec<[f64; 2]> = r.iter().map(|&v| [t.positions[v as usize][0], t.positions[v as usize][1]]).collect(); signed_area(&p) }).sum();
+            let area: f64 = t.faces[..2]
+                .iter()
+                .map(|r| {
+                    let p: Vec<[f64; 2]> = r.iter().map(|&v| [t.positions[v as usize][0], t.positions[v as usize][1]]).collect();
+                    signed_area(&p)
+                })
+                .sum();
             assert!((area - 56.0).abs() < 1e-3, "{area}");
             assert_eq!(t.seams.len(), 2);
         }
@@ -443,8 +491,14 @@ mod tests {
         let (t, p) = crossing([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], 1e-5).unwrap();
         assert!((t - 0.5).abs() < 1e-6 && (p[0] - 1.0).abs() < 1e-6);
         assert!(crossing([0.0; 3], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [2.0, 1.0, 0.0], 1e-5).is_none());
-        assert!(crossing([0.0; 3], [2.0, 0.0, 0.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], 1e-5).is_none(), "one above the other");
-        assert!(crossing([0.0; 3], [2.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0], 1e-5).is_none(), "touching at an end");
+        assert!(
+            crossing([0.0; 3], [2.0, 0.0, 0.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], 1e-5).is_none(),
+            "one above the other"
+        );
+        assert!(
+            crossing([0.0; 3], [2.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0], 1e-5).is_none(),
+            "touching at an end"
+        );
     }
 
     #[test]

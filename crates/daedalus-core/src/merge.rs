@@ -92,7 +92,6 @@ pub(crate) fn join_pair(mesh: &Mesh, a: usize, b: usize, tol: f64) -> Option<Vec
 
 /// Whether faces `a` and `b` lie in one plane (within `tol`) and face the same way.
 pub(crate) fn coplanar(mesh: &Mesh, a: usize, b: usize, tol: f64) -> bool {
-    let tol = tol;
     let (Some((na, da)), Some((nb, db))) = (plane(mesh, &mesh.faces[a]), plane(mesh, &mesh.faces[b])) else { return false };
     let in_plane = mesh.faces[b].iter().all(|&v| (dot(na, p(mesh, v)) - da).abs() <= tol) && (da - db).abs() <= tol * 4.0;
     dot(na, nb) > 1.0 - 1e-6 && in_plane
@@ -101,7 +100,6 @@ pub(crate) fn coplanar(mesh: &Mesh, a: usize, b: usize, tol: f64) -> bool {
 /// Merges coplanar neighbours. `tol` is the distance (model units) within which two planes count as one. Returns the merged mesh
 /// and, for every face of `mesh`, the index of the face it became part of.
 pub fn merge_coplanar(mesh: &Mesh, tol: f64) -> (Mesh, Vec<usize>) {
-    let tol = tol;
     let planes: Vec<Option<(V3, f64)>> = mesh.faces.iter().map(|f| plane(mesh, f)).collect();
     let mut parent: Vec<usize> = (0..mesh.faces.len()).collect();
     // faces on each undirected edge
