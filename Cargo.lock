@@ -603,6 +603,7 @@ dependencies = [
  "bytemuck",
  "daedalus-core",
  "daedalus-io",
+ "daedalus-sheet",
  "egui",
  "egui-wgpu",
  "egui-winit",

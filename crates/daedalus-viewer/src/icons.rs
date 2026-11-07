@@ -384,6 +384,23 @@ impl Draw {
                 self.line_with(&[(0.32, 0.1), (0.24, 0.04)], Stroke::new(1.5_f32, self.accent));
                 self.line_with(&[(0.68, 0.1), (0.76, 0.04)], Stroke::new(1.5_f32, self.accent));
             }
+            Icon::Tool(Tool::Flange) => {
+                // a sheet seen from its end: the flat part along the bottom, bent up round a radius into the flange; an
+                // orange arrow for the fold
+                let mut outer = vec![(0.1, 0.84), (0.56, 0.84)];
+                outer.extend(self.arc(0.56, 0.64, 0.2, 270.0, 360.0));
+                outer.push((0.76, 0.14));
+                let mut inner = vec![(0.1, 0.74), (0.56, 0.74)];
+                inner.extend(self.arc(0.56, 0.64, 0.1, 270.0, 360.0));
+                inner.push((0.66, 0.14));
+                self.line(&outer);
+                self.line(&inner);
+                self.line(&[(0.1, 0.84), (0.1, 0.74)]);
+                self.line(&[(0.76, 0.14), (0.66, 0.14)]);
+                let fold = self.arc(0.32, 0.62, 0.2, 180.0, 95.0);
+                self.line_with(&fold, Stroke::new(1.5_f32, self.accent));
+                self.head(0.33, 0.42, 1.0, 0.0, 0.1, self.accent);
+            }
             Icon::AddDetail => {
                 self.sandbox_grid();
                 self.dot(0.5, 0.55);

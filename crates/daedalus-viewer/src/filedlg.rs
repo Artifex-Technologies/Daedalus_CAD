@@ -12,6 +12,10 @@ pub enum Purpose {
     Export,
     /// An image for a texture (Paint Bucket).
     Texture,
+    /// File > Export STEP (the whole model), a sheet-metal part as STEP, its flat pattern as DXF.
+    Step,
+    PartStep,
+    FlatDxf,
 }
 
 impl Purpose {
@@ -22,6 +26,8 @@ impl Purpose {
             Purpose::Import => "Import",
             Purpose::Export => "Export",
             Purpose::Texture => "Texture",
+            Purpose::Step | Purpose::PartStep => "Export STEP",
+            Purpose::FlatDxf => "Export flat pattern",
         }
     }
 
@@ -33,11 +39,13 @@ impl Purpose {
             Purpose::Import => &["stl", "obj", "dxf", "dae", "skp", "dskp"],
             Purpose::Export => &["stl", "obj", "dxf", "dae"],
             Purpose::Texture => &["jpg", "jpeg", "png", "bmp"],
+            Purpose::Step | Purpose::PartStep => &["step", "stp"],
+            Purpose::FlatDxf => &["dxf"],
         }
     }
 
     fn writes(self) -> bool {
-        matches!(self, Purpose::SaveAs | Purpose::Export)
+        matches!(self, Purpose::SaveAs | Purpose::Export | Purpose::Step | Purpose::PartStep | Purpose::FlatDxf)
     }
 }
 

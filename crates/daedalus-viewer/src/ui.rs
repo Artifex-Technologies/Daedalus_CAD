@@ -84,6 +84,26 @@ pub enum UiAction {
     SaveAs,
     Import,
     Export,
+    /// File > Export > STEP: the whole model (sheet parts exact, closed solids flat-faced).
+    ExportStep,
+    /// Sheet metal: the panel opened or shut, and its tab (0 Drawing, 1 3D, 2 Flat pattern).
+    SheetMetal,
+    SheetTab(usize),
+    /// A part made from the selected face: thickness, K-factor and inside bend radius (mm), and the material preset picked
+    /// (`usize::MAX`: typed in).
+    MakeSheetPart(f64, f64, f64, usize),
+    /// The selected part's rule changed: thickness, K-factor, bend radius (mm), preset (as above).
+    SheetRule(f64, f64, f64, usize),
+    /// The selected part shown unfolded (true) or folded.
+    SheetFlat(bool),
+    /// Flange `0` of the selected part changed to height (mm), angle (degrees), position (index into FlangePosition::ALL).
+    SheetFlange(usize, f64, f64, usize),
+    SheetRemoveFlange(usize),
+    /// What the Flange tool adds: height (mm), angle (degrees), position.
+    FlangeDefaults(f64, f64, usize),
+    /// The selected part's flat pattern as DXF (true: inches), and the part alone as STEP.
+    ExportFlatDxf(bool),
+    ExportPartStep,
     /// The window frame (Linux): start moving the window, maximize or restore, minimize, close.
     MoveWindow,
     ToggleMaximize,
@@ -98,6 +118,28 @@ pub enum UiAction {
 pub struct DcView {
     pub name: String,
     pub attrs: Vec<(daedalus_core::dynamic::Attribute, String)>,
+    pub key: u64,
+}
+
+/// The selected sheet-metal part, for the Sheet Metal panel (lengths in mm).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SheetView {
+    pub name: String,
+    pub material: String,
+    pub thickness: f64,
+    pub k_factor: f64,
+    pub bend_radius: f64,
+    pub flat: bool,
+    /// Each flange: height, angle (degrees), position (index into FlangePosition::ALL).
+    pub flanges: Vec<(f64, f64, usize)>,
+    /// The base outline and holes (Drawing tab) and the flat pattern's loops and bend centre lines (Flat pattern tab).
+    pub base: Vec<Vec<[f64; 2]>>,
+    pub flat_loops: Vec<Vec<[f64; 2]>>,
+    pub bend_lines: Vec<([f64; 2], [f64; 2])>,
+    pub flat_size: Option<(f64, f64)>,
+    /// The bend table: angle (degrees), inside radius, length.
+    pub bends: Vec<(f64, f64, f64)>,
+    /// Changes with the part (so half-typed values are dropped when it changes).
     pub key: u64,
 }
 
@@ -151,6 +193,13 @@ pub struct UiView<'a> {
     pub options_open: bool,
     pub dc: Option<DcView>,
     pub dc_out: &'a std::cell::RefCell<Option<Vec<daedalus_core::dynamic::Attribute>>>,
+    /// The Sheet Metal panel: open, its tab, the selected part (if one is), whether one face is selected (a part can be
+    /// made of it), and what the Flange tool adds (height mm, angle, position).
+    pub sheet_open: bool,
+    pub sheet_tab: usize,
+    pub sheet: Option<SheetView>,
+    pub face_for_part: bool,
+    pub flange_defaults: (f64, f64, usize),
     /// The Outliner is open, and its rows: depth, name, component, selected, open for editing.
     pub outliner_open: bool,
     pub outline: Vec<(usize, String, bool, bool, bool)>,
@@ -197,6 +246,11 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView, fresh: bool) -> (
             item(ui, true, "Outliner", "", UiAction::Outliner);
             item(ui, true, "Component Options", "", UiAction::ComponentOptions);
             item(ui, true, "Component Attributes", "", UiAction::ComponentAttributes);
+            if v.sheet.is_some() {
+                item(ui, true, "Sheet Metal Part", "", UiAction::SheetMetal);
+            } else if v.face_for_part {
+                item(ui, v.editable, "Make Sheet Metal Part…", "", UiAction::SheetMetal);
+            }
             item(ui, v.editable && v.has_selection, "Erase", "Delete", UiAction::Erase);
             ui.separator();
             let kind = if v.one_instance == Some(true) { "Component" } else { "Group" };
@@ -225,8 +279,14 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView, fresh: bool) -> (
 /// radius to change (applied on Enter).
 fn tray(ctx: &egui::Context, v: &UiView, actions: &mut Vec<UiAction>) {
     // wider while Component Attributes is open: its rows have three fields
-    let width = if v.attributes_open { 340.0 } else { 230.0 };
+    let width = if v.sheet_open { 360.0 } else if v.attributes_open { 340.0 } else { 230.0 };
     egui::SidePanel::right("tray").resizable(false).exact_width(width).show(ctx, |ui| {
+        if v.sheet_open {
+            egui::ScrollArea::vertical().id_salt("sheet").max_height(ui.available_height() * if v.info_open || v.outliner_open { 0.7 } else { 1.0 }).show(ui, |ui| {
+                crate::sheetui::panel(ui, v, actions);
+            });
+            ui.add_space(10.0);
+        }
         if v.info_open {
             entity_info(ui, v, actions);
         }
@@ -249,7 +309,7 @@ fn tray(ctx: &egui::Context, v: &UiView, actions: &mut Vec<UiAction>) {
     });
 }
 
-fn panel_head(ui: &mut egui::Ui, title: &str, close: UiAction, actions: &mut Vec<UiAction>) {
+pub(crate) fn panel_head(ui: &mut egui::Ui, title: &str, close: UiAction, actions: &mut Vec<UiAction>) {
     ui.horizontal(|ui| {
         ui.strong(title);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -527,6 +587,10 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     actions.push(UiAction::Export);
                     ui.close_menu();
                 }
+                if ui.button("Export STEP…").on_hover_text("Sheet-metal parts with true bends; other closed groups and components as solids").clicked() {
+                    actions.push(UiAction::ExportStep);
+                    ui.close_menu();
+                }
             });
             ui.menu_button("Edit", |ui| {
                 if ui.add_enabled(v.can_undo, egui::Button::new("Undo").shortcut_text("Ctrl+Z")).clicked() {
@@ -719,6 +783,17 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     }
                 });
                 tool_items(ui, v, &[Tool::Interact], &mut actions);
+                ui.menu_button("Sheet Metal", |ui| {
+                    if ui.add_enabled(v.editable && v.face_for_part, egui::Button::new("Make Sheet Metal Part…")).on_hover_text("Select one face first").clicked() {
+                        actions.push(UiAction::SheetMetal);
+                        ui.close_menu();
+                    }
+                    tool_items(ui, v, &[Tool::Flange], &mut actions);
+                    if ui.button("Sheet Metal Panel").clicked() {
+                        actions.push(UiAction::SheetMetal);
+                        ui.close_menu();
+                    }
+                });
                 ui.menu_button("Solid Tools", |ui| {
                     tool_items(ui, v, &[Tool::OuterShell, Tool::SolidIntersect, Tool::SolidUnion, Tool::SolidSubtract, Tool::SolidTrim, Tool::SolidSplit], &mut actions);
                 });
@@ -921,7 +996,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
             );
         }
     }
-    if v.info_open || v.outliner_open || v.options_open || v.attributes_open {
+    if v.info_open || v.outliner_open || v.options_open || v.attributes_open || v.sheet_open {
         tray(ctx, v, &mut actions);
     }
     actions
@@ -1074,6 +1149,7 @@ fn toolbar_groups() -> [Vec<Slot>; 4] {
             Act(Icon::AddDetail, UiAction::AddDetail),
             t(Tool::FlipEdge),
             t(Tool::Interact),
+            t(Tool::Flange),
         ],
         vec![
             Act(Icon::Iso, UiAction::Iso),

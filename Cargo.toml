@@ -10,6 +10,7 @@ license = "MPL-2.0"
 [workspace.dependencies]
 daedalus-core = { path = "crates/daedalus-core" }
 daedalus-io = { path = "crates/daedalus-io" }
+daedalus-sheet = { path = "crates/daedalus-sheet" }
 
 # The exact-solid kernel (SolidCraft/solidcore, used by daedalus-sheet) is far too slow unoptimised: its tests took over
 # 6 minutes in a plain debug build. Dependencies and the sheet crate are optimised even in debug builds; our other crates

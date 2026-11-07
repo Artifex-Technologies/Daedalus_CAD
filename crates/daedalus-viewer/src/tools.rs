@@ -60,10 +60,13 @@ pub enum Tool {
     FlipEdge,
     /// Dynamic Components: click a component to run its onClick actions.
     Interact,
+    /// Sheet metal: click an edge of a sheet-metal part to add a flange there (height, angle and position from the Sheet
+    /// Metal panel).
+    Flange,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 45] = [
+    pub const ALL: [Tool; 46] = [
         Tool::Select,
         Tool::Line,
         Tool::Rectangle,
@@ -109,6 +112,7 @@ impl Tool {
         Tool::Drape,
         Tool::FlipEdge,
         Tool::Interact,
+        Tool::Flange,
     ];
 
     pub fn label(self) -> &'static str {
@@ -158,6 +162,7 @@ impl Tool {
             Tool::Drape => "Drape",
             Tool::FlipEdge => "Flip Edge",
             Tool::Interact => "Interact",
+            Tool::Flange => "Flange",
         }
     }
 
@@ -208,7 +213,8 @@ impl Tool {
             | Tool::Stamp
             | Tool::Drape
             | Tool::FlipEdge
-            | Tool::Interact => None,
+            | Tool::Interact
+            | Tool::Flange => None,
         }
     }
 
@@ -1653,6 +1659,7 @@ impl Tools {
             (Tool::Drape, _) => "Click the object whose edges to lay down, then the ground.",
             (Tool::FlipEdge, _) => "In the ground being edited, click an edge between two triangles to turn it the other way.",
             (Tool::Interact, _) => "Click a dynamic component to run its onClick actions (Component Attributes sets them).",
+            (Tool::Flange, _) => "Click an edge of a sheet-metal part to add a flange (height, angle and position in the Sheet Metal panel).",
             (t, _) if t.solid().is_some() && self.solid_first.is_none() => match t {
                 Tool::SolidSubtract => "Click the solid to take away (it goes), then the solid to take it from.",
                 Tool::SolidTrim => "Click the solid to trim with (it stays), then the solid to trim.",

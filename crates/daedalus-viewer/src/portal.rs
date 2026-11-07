@@ -34,6 +34,8 @@ fn filters(purpose: Purpose) -> Vec<(&'static str, Vec<&'static str>)> {
         ],
         Purpose::SaveAs => vec![("Daedalus model (.daedalus)", vec!["*.daedalus"])],
         Purpose::Texture => vec![("Images", vec!["*.jpg", "*.jpeg", "*.png", "*.bmp"]), ("All files", vec!["*"])],
+        Purpose::Step | Purpose::PartStep => vec![("STEP (.step)", vec!["*.step", "*.stp"])],
+        Purpose::FlatDxf => vec![("DXF flat pattern (.dxf)", vec!["*.dxf"])],
         Purpose::Export => vec![
             ("STL", vec!["*.stl"]),
             ("OBJ", vec!["*.obj"]),
@@ -50,6 +52,9 @@ fn title(purpose: Purpose) -> &'static str {
         Purpose::Import => "Import a model",
         Purpose::Export => "Export the model as",
         Purpose::Texture => "Choose an image for the texture",
+        Purpose::Step => "Export the model as STEP",
+        Purpose::PartStep => "Export the part as STEP",
+        Purpose::FlatDxf => "Export the flat pattern as DXF",
     }
 }
 
@@ -99,7 +104,7 @@ fn request(purpose: Purpose, folder: Option<PathBuf>, name: &str) -> Option<Answ
     opts.insert("modal", Value::from(true));
     opts.insert("current_filter", Value::from(filters[0].clone()));
     opts.insert("filters", Value::from(filters));
-    let saving = matches!(purpose, Purpose::SaveAs | Purpose::Export);
+    let saving = matches!(purpose, Purpose::SaveAs | Purpose::Export | Purpose::Step | Purpose::PartStep | Purpose::FlatDxf);
     if saving && !name.is_empty() {
         opts.insert("current_name", Value::from(name));
     }

@@ -58,7 +58,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 287 tests pass (2026-11-06, 100 of them in daedalus-sheet). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 294 tests pass (2026-11-06, 106 of them in daedalus-sheet). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -175,11 +175,21 @@ the current state is:
 - Edges are drawn as screen-facing strips 1.4 px wide (lines.wgsl, one instance per segment) with 4x MSAA, pulled a
   hair toward the eye so faces never break them up.
 - The SketchUp tool phases still to come are in PROGRESS.md ("SketchUp tool set").
-- Sheet metal and STEP (2026-11-06, started): `daedalus-sheet` builds base flanges, edge/contour flanges, bends, reliefs,
-  flat patterns and folded solids (SolidCraft's 99 tests pass here) and writes exact STEP; an L-bracket test checks the
-  flat length against hand-computed bend allowance. Not yet: parts in the model, the part editor tabs (Drawing / 3D bent
-  or flat / Flat pattern), DXF from the flat pattern, material presets.
-- Next milestones: sheet-metal parts in the model and their editor, STEP export from the File menu, constraints.
+- Sheet metal and STEP (2026-11-06): `daedalus-sheet` (SolidCraft's sheet model, 99 of its tests) plus `part.rs` (a
+  `SheetPart`: material, rule values, base outline, flanges in order; the sheet rebuilt from them, so flanges change or go)
+  and `export.rs` (whole-model STEP). A part is a component whose `Definition::part` holds the part as JSON (`.daedalus` 6
+  `part` line) and whose faces are made from it (flat faces whole with holes, bends soft-edged). Tools > Sheet Metal / the
+  right-click menu: Make Sheet Metal Part (one face: its outline and holes, circles and arcs drawn in segments becoming
+  true arcs; material presets are typical values only), the Flange tool (click a part's edge; height, angle, position from
+  the panel), the Sheet Metal panel in the tray with tabs Drawing (outline with size, material, flange list), 3D (bent or
+  flat in the model, Flange tool, part STEP) and Flat pattern (blank with red bend lines, size, bend table, DXF in mm or
+  inches: lines and true arcs on CUT, bend centre lines on BEND). Double-clicking a part opens the panel, not the
+  geometry. File > Export STEP: parts exact, other closed groups/components as exact flat-faced solids (kernel sew), the
+  rest named as left out. Checked on screen 2026-11-06 (face -> part -> two flanges -> flat; blank sizes match hand
+  numbers). Not yet: editing values by typing was not driven on screen (no keys sent to the nested desktop), bend lines
+  on the flat part in 3D, hems/jogs/other SolidCraft features in the UI, converting a solid to sheet metal.
+- Next milestones: stress testing (own linear FEA: shells for sheet metal, voxels for solids; CalculiX only as an
+  external program), constraints, more sheet-metal features in the UI.
 - Biggest open decisions: geometry kernel (half-edge mesh vs OpenCASCADE bindings vs pure-Rust B-rep),
   constraint solver, reuse CADCraft crates or reimplement.
 

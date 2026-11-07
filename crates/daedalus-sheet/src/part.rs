@@ -71,6 +71,10 @@ impl FlangePosition {
         }
     }
 
+    pub fn from_key(k: &str) -> Option<FlangePosition> {
+        FlangePosition::ALL.into_iter().find(|p| p.key() == k)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             FlangePosition::Inside => "Inside (keeps the outer size)",
@@ -80,17 +84,22 @@ impl FlangePosition {
     }
 }
 
-/// A sheet-metal part: its material and the sheet it is made of.
+/// A sheet-metal part: its material, the outline it was made from, and its flanges in the order they were added. The sheet
+/// itself is built from those (again whenever one changes), so a flange can be changed or taken away later.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SheetPart {
     /// Saved with the part so a newer description can be told apart.
     pub kind: String,
     pub material: String,
     pub rule: RuleValues,
-    pub sheet: SheetBody,
-    /// Edge flanges as they were asked for, in order (to list and undo them; the sheet holds what they made).
-    #[serde(default)]
+    /// The base panel's outline and holes (part mm).
+    pub region: Region2,
     pub flanges: Vec<FlangeAsked>,
+    /// The model shows it unfolded.
+    #[serde(default)]
+    pub shown_flat: bool,
+    /// What the above make (kept so a part reads back without rebuilding; rebuilt on every change).
+    pub sheet: SheetBody,
 }
 
 /// An edge flange as the user asked for it.
@@ -115,14 +124,73 @@ fn invalid<T>(m: impl Into<String>) -> Result<T> {
     Err(DocError::Invalid(m.into()))
 }
 
+fn check_flange(height: f64, angle_deg: f64) -> Result<()> {
+    if !(height > 0.0 && height.is_finite()) {
+        return invalid("the flange height must be more than 0");
+    }
+    if !(angle_deg > 0.0 && angle_deg <= 180.0) {
+        return invalid("the bend angle must be more than 0 and at most 180 degrees");
+    }
+    Ok(())
+}
+
 impl SheetPart {
     /// A flat part from an outline and its holes (part mm, the outline counter-clockwise), `rule`'s thickness up +Z.
     pub fn from_region(material: &str, rule: RuleValues, region: Region2) -> Result<SheetPart> {
         let rule = rule.checked()?;
-        let sheet = sheet::base_flange("Part", material, &rule, Plane::XY, region);
-        let part = SheetPart { kind: KIND.into(), material: material.into(), rule, sheet, flanges: Vec::new() };
+        let sheet = sheet::base_flange("Part", material, &rule, Plane::XY, region.clone());
+        let part = SheetPart { kind: KIND.into(), material: material.into(), rule, region, flanges: Vec::new(), shown_flat: false, sheet };
         part.sheet.solid()?;
         Ok(part)
+    }
+
+    /// The sheet built again from the outline, the rule and the flanges. Fails (and changes nothing) if a flange no longer
+    /// finds its edge or the part cannot be made.
+    pub fn rebuild(&mut self) -> Result<()> {
+        let rule = self.rule.checked()?;
+        let mut sheet = sheet::base_flange("Part", &self.material, &rule, Plane::XY, self.region.clone());
+        for (n, f) in self.flanges.iter().enumerate() {
+            let position = FlangePosition::from_key(&f.position).unwrap_or(FlangePosition::Inside);
+            sheet
+                .add_flange(Vec3::new(f.pick[0], f.pick[1], f.pick[2]), f.height, f.angle_deg.to_radians(), rule.bend_radius, position.key(), false)
+                .map_err(|e| DocError::Invalid(format!("flange {}: {e}", n + 1)))?;
+        }
+        sheet.solid()?;
+        self.sheet = sheet;
+        Ok(())
+    }
+
+    /// A new material or rule (thickness, K-factor, bend radius), the flanges kept. The part is unchanged if it fails.
+    pub fn set_rule(&mut self, material: &str, rule: RuleValues) -> Result<()> {
+        let mut next = self.clone();
+        next.material = material.into();
+        next.rule = rule.checked()?;
+        next.rebuild()?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Flange `i` changed (its height, angle or position). The part is unchanged if it fails.
+    pub fn set_flange(&mut self, i: usize, height: f64, angle_deg: f64, position: FlangePosition) -> Result<()> {
+        check_flange(height, angle_deg)?;
+        let mut next = self.clone();
+        let Some(f) = next.flanges.get_mut(i) else { return invalid("no such flange") };
+        (f.height, f.angle_deg, f.position) = (height, angle_deg, position.key().into());
+        next.rebuild()?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Flange `i` taken away (and any added after it that no longer finds its edge stops the change).
+    pub fn remove_flange(&mut self, i: usize) -> Result<()> {
+        let mut next = self.clone();
+        if i >= next.flanges.len() {
+            return invalid("no such flange");
+        }
+        next.flanges.remove(i);
+        next.rebuild()?;
+        *self = next;
+        Ok(())
     }
 
     pub fn to_text(&self) -> String {
@@ -145,12 +213,7 @@ impl SheetPart {
     /// Adds an edge flange on the part's edge nearest `pick` (part mm): `height` from the outer virtual sharp (mm),
     /// `angle_deg` bend angle (0…180), radius from the part's rule. The part is unchanged if it fails.
     pub fn add_flange(&mut self, pick: [f64; 3], height: f64, angle_deg: f64, position: FlangePosition) -> Result<()> {
-        if !(height > 0.0 && height.is_finite()) {
-            return invalid("the flange height must be more than 0");
-        }
-        if !(angle_deg > 0.0 && angle_deg <= 180.0) {
-            return invalid("the bend angle must be more than 0 and at most 180 degrees");
-        }
+        check_flange(height, angle_deg)?;
         let mut sheet = self.sheet.clone();
         sheet.add_flange(Vec3::new(pick[0], pick[1], pick[2]), height, angle_deg.to_radians(), self.rule.bend_radius, position.key(), false)?;
         sheet.solid()?;
@@ -270,6 +333,10 @@ fn joined_arcs(segs: &[Seg2]) -> Vec<Seg2> {
 }
 
 /// A loop's points, curves sampled (for drawing).
+pub fn loop_points(lp: &Loop2) -> Vec<[f64; 2]> {
+    sample_loop(lp)
+}
+
 fn sample_loop(lp: &Loop2) -> Vec<[f64; 2]> {
     let mut pts: Vec<[f64; 2]> = Vec::new();
     for s in &lp.segs {
@@ -534,5 +601,36 @@ mod tests {
         for w in 0..segs.len() {
             assert!(segs[w].end().dist(segs[(w + 1) % segs.len()].start()) < 1e-6, "{segs:?}");
         }
+    }
+
+    #[test]
+    fn flanges_change_and_go_and_a_new_rule_keeps_them() {
+        let (mut part, _) = part_from_face(&plate_face(), 0, "Steel 2 mm", steel2()).unwrap();
+        part.add_flange([50.0, 0.0, 2.0], 30.0, 90.0, FlangePosition::Inside).unwrap();
+        part.add_flange([50.0, 50.0, 2.0], 20.0, 90.0, FlangePosition::Inside).unwrap();
+        let h = |p: &SheetPart| p.flat_size().unwrap().1;
+        let ba = std::f64::consts::FRAC_PI_2 * (2.0 + 0.44 * 2.0);
+        assert!((h(&part) - (26.0 + 42.0 + 16.0 + 2.0 * ba)).abs() < 1e-6, "{}", h(&part));
+        // the first flange 40 high: 10 more in the blank
+        part.set_flange(0, 40.0, 90.0, FlangePosition::Inside).unwrap();
+        assert!((h(&part) - (36.0 + 42.0 + 16.0 + 2.0 * ba)).abs() < 1e-6, "{}", h(&part));
+        // a softer bend radius changes both bends, the flanges stay
+        part.set_rule("Steel 2 mm R3", RuleValues { bend_radius: 3.0, ..part.rule }).unwrap();
+        let ba3 = std::f64::consts::FRAC_PI_2 * (3.0 + 0.44 * 2.0);
+        assert!((h(&part) - (35.0 + 40.0 + 15.0 + 2.0 * ba3)).abs() < 1e-6, "{}", h(&part));
+        assert_eq!(part.flanges.len(), 2);
+        // the second goes: one bend left
+        part.remove_flange(1).unwrap();
+        assert_eq!(part.bend_table().len(), 1);
+        // bad changes leave it alone
+        let before = part.clone();
+        assert!(part.set_flange(0, 0.0, 90.0, FlangePosition::Inside).is_err());
+        assert!(part.set_rule("x", RuleValues { k_factor: 2.0, ..part.rule }).is_err());
+        assert!(part.remove_flange(5).is_err());
+        assert_eq!(part, before);
+        // the text round trip rebuilds the same
+        let mut back = SheetPart::from_text(&part.to_text()).unwrap();
+        back.rebuild().unwrap();
+        assert_eq!(back.sheet, part.sheet);
     }
 }

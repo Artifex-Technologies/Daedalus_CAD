@@ -7,6 +7,7 @@ mod portal;
 mod theme;
 mod icons;
 mod settings;
+mod sheetui;
 mod text3d;
 mod render;
 mod tools;
@@ -73,6 +74,14 @@ struct State {
     /// The texture files on the GPU (in the model's order), and each one's average colour (what Shaded shows).
     loaded_textures: Vec<String>,
     texture_colors: Vec<[u8; 3]>,
+    /// The Sheet Metal panel is open, its tab, and what the Flange tool adds (height mm, angle degrees, position).
+    sheet_open: bool,
+    sheet_tab: usize,
+    flange_defaults: (f64, f64, usize),
+    /// The selected part as the panel shows it, for the model state and selection it was made for.
+    sheet_cache: Option<(u64, Option<ui::SheetView>)>,
+    /// The flat pattern DXF being saved is in inches.
+    dxf_inches: bool,
     /// The Outliner is open; its rows, for the model state they were read at.
     outliner_open: bool,
     outline_cache: Option<(u64, Vec<(usize, String, bool, Vec<usize>)>)>,
@@ -210,6 +219,11 @@ impl State {
             dc_out: std::cell::RefCell::new(None),
             loaded_textures: Vec::new(),
             texture_colors: Vec::new(),
+            sheet_open: false,
+            sheet_tab: 0,
+            flange_defaults: (20.0, 90.0, 0),
+            sheet_cache: None,
+            dxf_inches: false,
             outliner_open: false,
             outline_cache: None,
             info_cache: None,
@@ -424,6 +438,12 @@ impl State {
                         Purpose::Export => {
                             path.set_extension("stl");
                         }
+                        Purpose::Step | Purpose::PartStep => {
+                            path.set_extension("step");
+                        }
+                        Purpose::FlatDxf => {
+                            path.set_extension("dxf");
+                        }
                         _ => {}
                     }
                 }
@@ -455,6 +475,37 @@ impl State {
                 Err(e) => self.message = Some(format!("Not exported: {e}.")),
             },
             Purpose::Texture => self.add_texture_from(&path),
+            Purpose::Step => match daedalus_sheet::export::scene_step(&self.document()) {
+                Ok(r) => match std::fs::write(&path, r.text) {
+                    Ok(()) => {
+                        let mut note = format!("Exported {}: {} sheet-metal part(s), {} other solid(s).", short(&path), r.parts, r.solids);
+                        if !r.skipped.is_empty() {
+                            note.push_str(&format!(" Left out (not closed solids): {}.", r.skipped.join(", ")));
+                        }
+                        self.message = Some(note);
+                    }
+                    Err(e) => self.message = Some(format!("Not exported: {e}.")),
+                },
+                Err(e) => self.message = Some(format!("Not exported: {e}.")),
+            },
+            Purpose::PartStep => {
+                let made = self.sheet_part().ok_or_else(|| "select a sheet-metal part first".to_string()).and_then(|(i, _, p)| {
+                    let w = self.model.instance_world(i).unwrap_or_default();
+                    p.solid_placed(&w).and_then(|b| daedalus_sheet::part::step(&[b])).map_err(|e| e.to_string())
+                });
+                self.message = Some(match made.and_then(|t| std::fs::write(&path, t).map_err(|e| e.to_string())) {
+                    Ok(()) => format!("Exported {}.", short(&path)),
+                    Err(e) => format!("Not exported: {e}."),
+                });
+            }
+            Purpose::FlatDxf => {
+                let units = if self.dxf_inches { daedalus_io::dxf2d::Units::Inches } else { daedalus_io::dxf2d::Units::Millimeters };
+                let made = self.sheet_part().ok_or_else(|| "select a sheet-metal part first".to_string()).and_then(|(_, _, p)| p.flat_dxf(units).map_err(|e| e.to_string()));
+                self.message = Some(match made.and_then(|t| std::fs::write(&path, t).map_err(|e| e.to_string())) {
+                    Ok(()) => format!("Exported the flat pattern to {}.", short(&path)),
+                    Err(e) => format!("Not exported: {e}."),
+                });
+            }
         }
     }
 
@@ -822,6 +873,133 @@ impl State {
         info
     }
 
+    /// The selected sheet-metal part: its instance, its definition and its description.
+    fn sheet_part(&self) -> Option<(usize, usize, daedalus_sheet::part::SheetPart)> {
+        let i = self.one_instance()?;
+        let def = self.model.instances().get(i)?.def;
+        let text = self.model.definition(def)?.part.as_deref().filter(|t| daedalus_sheet::part::is_sheet(t))?;
+        daedalus_sheet::part::SheetPart::from_text(text).ok().map(|p| (i, def, p))
+    }
+
+    /// The part as the Sheet Metal panel shows it (worked out again only when the model or the selection changed).
+    fn sheet_view(&mut self) -> Option<ui::SheetView> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.doc, self.model.state(), self.one_instance()).hash(&mut h);
+        let key = h.finish();
+        if let Some((k, v)) = &self.sheet_cache {
+            if *k == key {
+                return v.clone();
+            }
+        }
+        let view = self.sheet_part().map(|(_, def, p)| {
+            let (flat_loops, bend_lines) = p.flat_drawing().unwrap_or_default();
+            let base = std::iter::once(&p.region.outer).chain(&p.region.holes).map(daedalus_sheet::part::loop_points).collect();
+            ui::SheetView {
+                name: self.model.definition(def).map(|d| d.name.clone()).unwrap_or_default(),
+                material: p.material.clone(),
+                thickness: p.rule.thickness,
+                k_factor: p.rule.k_factor,
+                bend_radius: p.rule.bend_radius,
+                flat: p.shown_flat,
+                flanges: p
+                    .flanges
+                    .iter()
+                    .map(|f| (f.height, f.angle_deg, daedalus_sheet::part::FlangePosition::ALL.iter().position(|q| Some(*q) == daedalus_sheet::part::FlangePosition::from_key(&f.position)).unwrap_or(0)))
+                    .collect(),
+                base,
+                flat_loops,
+                bend_lines,
+                flat_size: p.flat_size().ok(),
+                bends: p.bend_table(),
+                key,
+            }
+        });
+        self.sheet_cache = Some((key, view.clone()));
+        view
+    }
+
+    /// A change to the selected part: `f` changes it; its faces are made again and put in the model as one undo step.
+    fn change_part(&mut self, what: &str, f: impl FnOnce(&mut daedalus_sheet::part::SheetPart) -> Result<(), daedalus_sheet::util::DocError>) {
+        if self.readonly.is_some() {
+            return;
+        }
+        let Some((i, def, mut p)) = self.sheet_part() else {
+            self.message = Some(format!("{what}: select a sheet-metal part first."));
+            return;
+        };
+        let done = f(&mut p).and_then(|()| p.faces(p.shown_flat)).map_err(|e| e.to_string()).and_then(|faces| self.model.set_part(def, p.to_text(), faces).map_err(|e| e.to_string()));
+        match done {
+            Ok(()) => self.message = None,
+            Err(e) => self.message = Some(format!("{what}: {e}.")),
+        }
+        self.tools.model_changed();
+        // the part stays selected (its instance number does not change), so the panel keeps showing it
+        self.tools.selected.clear();
+        self.tools.edges.clear();
+        self.tools.instances = vec![i];
+        self.after_edit();
+    }
+
+    /// Make Sheet Metal Part: the selected face becomes a flat part of that material.
+    fn make_sheet_part(&mut self, t: f64, k: f64, r: f64, preset: usize) {
+        use daedalus_sheet::part::{part_from_face, MATERIALS};
+        use daedalus_sheet::sheet::RuleValues;
+        if self.readonly.is_some() {
+            return;
+        }
+        let [f] = self.tools.selected[..] else {
+            self.message = Some("Make Sheet Metal Part: select one face.".into());
+            return;
+        };
+        let name = MATERIALS.get(preset).map(|m| m.name.to_string()).unwrap_or_else(|| format!("{} mm sheet", t));
+        let rule = RuleValues { k_factor: k, bend_radius: r, ..RuleValues::steel(t) };
+        // the face as the model has it (open context coordinates are model coordinates while editing)
+        let mesh = self.model.mesh().to_mesh();
+        let made = part_from_face(&mesh, f, &name, rule)
+            .and_then(|(p, place)| p.faces(false).map(|faces| (p, place, faces)))
+            .map_err(|e| e.to_string())
+            .and_then(|(p, place, faces)| self.model.place_part("Sheet Part", p.to_text(), &faces, &place, Some(f)).map_err(|e| e.to_string()));
+        match made {
+            Ok(i) => {
+                self.tools.model_changed();
+                self.tools.selected.clear();
+                self.tools.instances = vec![i];
+                self.sheet_tab = 1;
+                self.message = Some("Sheet-metal part made. The Flange tool adds flanges on its edges.".into());
+            }
+            Err(e) => self.message = Some(format!("Make Sheet Metal Part: {e}.")),
+        }
+        self.after_edit();
+    }
+
+    /// The Flange tool's click: a flange on the part's edge nearest the point clicked.
+    fn add_flange_at(&mut self, i: usize, point: [f64; 3]) {
+        use daedalus_sheet::part::FlangePosition;
+        let Some(world) = self.model.instance_world(i) else { return };
+        let Some(back) = world.inverse() else { return };
+        let def = self.model.instances()[i].def;
+        let is_part = self.model.definition(def).and_then(|d| d.part.as_deref()).is_some_and(daedalus_sheet::part::is_sheet);
+        if !is_part {
+            self.message = Some("Flange: click an edge of a sheet-metal part (Tools > Sheet Metal makes one of a face).".into());
+            return;
+        }
+        // select it so the panel shows it, then add the flange there
+        self.tools.selected.clear();
+        self.tools.instances = vec![i];
+        let local = back.apply(point);
+        let pick = [local[0] * 1000.0, local[1] * 1000.0, local[2] * 1000.0];
+        let (h, a, pos) = self.flange_defaults;
+        let position = FlangePosition::ALL[pos.min(FlangePosition::ALL.len() - 1)];
+        let flat = self.sheet_part().is_some_and(|p| p.2.shown_flat);
+        if flat {
+            self.message = Some("Flange: show the part bent first (Sheet Metal panel, 3D tab).".into());
+            return;
+        }
+        self.change_part("Flange", |p| p.add_flange(pick, h, a, position));
+        self.sheet_open = true;
+    }
+
     /// The selected component for the Dynamic Components panels: its attributes and what each works out to now.
     fn dc_view(&self) -> Option<ui::DcView> {
         let i = self.one_instance()?;
@@ -1062,6 +1240,18 @@ impl State {
         }
         // Select: a double-click on a group or component opens it for editing
         if self.tools.tool == Tool::Select && count == 2 && self.readonly.is_none() {
+            // a sheet-metal part is edited in its panel, not as loose geometry (its faces are made from its description)
+            if let Some(i) = c.hit.and_then(|h| h.instance).filter(|&i| {
+                let def = self.model.instances()[i].def;
+                self.model.definition(def).and_then(|d| d.part.as_deref()).is_some_and(daedalus_sheet::part::is_sheet)
+            }) {
+                self.tools.selected.clear();
+                self.tools.edges.clear();
+                self.tools.instances = vec![i];
+                self.sheet_open = true;
+                self.refresh();
+                return;
+            }
             if let Some(i) = c.hit.and_then(|h| h.instance) {
                 self.open_group(i);
                 // and what was double-clicked inside it is selected, a line before the face behind it, as in SketchUp
@@ -1092,6 +1282,17 @@ impl State {
                     self.after_edit();
                 }
                 None => self.message = Some("Flip Edge: click an edge between two triangles of the ground (double-click the ground first).".into()),
+            }
+            return;
+        }
+        // Flange: a flange on the sheet-metal part's edge under the mouse
+        if self.tools.tool == Tool::Flange {
+            if self.readonly.is_some() {
+                return;
+            }
+            match c.hit.and_then(|h| h.instance.map(|i| (i, h.point))) {
+                Some((i, point)) => self.add_flange_at(i, point),
+                None => self.message = Some("Flange: click an edge of a sheet-metal part.".into()),
             }
             return;
         }
@@ -1637,6 +1838,48 @@ impl State {
                 let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|n| format!("{}.stl", n.to_string_lossy())).unwrap_or_default();
                 self.choose(Purpose::Export, &stem);
             }
+            UiAction::ExportStep => {
+                let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|n| format!("{}.step", n.to_string_lossy())).unwrap_or_default();
+                self.choose(Purpose::Step, &stem);
+            }
+            UiAction::ExportPartStep => match self.sheet_part() {
+                Some((_, def, _)) => {
+                    let name = self.model.definition(def).map(|d| d.name.replace('#', " ")).unwrap_or_default();
+                    self.choose(Purpose::PartStep, &format!("{name}.step"));
+                }
+                None => self.message = Some("Select a sheet-metal part first.".into()),
+            },
+            UiAction::ExportFlatDxf(inches) => match self.sheet_part() {
+                Some((_, def, _)) => {
+                    self.dxf_inches = inches;
+                    let name = self.model.definition(def).map(|d| d.name.replace('#', " ")).unwrap_or_default();
+                    self.choose(Purpose::FlatDxf, &format!("{name} flat.dxf"));
+                }
+                None => self.message = Some("Select a sheet-metal part first.".into()),
+            },
+            UiAction::SheetMetal => {
+                self.sheet_open = !self.sheet_open;
+                self.window.request_redraw();
+            }
+            UiAction::SheetTab(t) => self.sheet_tab = t,
+            UiAction::MakeSheetPart(t, k, r, preset) => self.make_sheet_part(t, k, r, preset),
+            UiAction::SheetRule(t, k, r, preset) => {
+                let name = daedalus_sheet::part::MATERIALS.get(preset).map(|m| m.name.to_string()).unwrap_or_else(|| format!("{t} mm sheet"));
+                self.change_part("Material", |p| {
+                    let rule = daedalus_sheet::sheet::RuleValues { thickness: t, k_factor: k, bend_radius: r, ..p.rule };
+                    p.set_rule(&name, rule)
+                });
+            }
+            UiAction::SheetFlat(flat) => self.change_part("Show", |p| {
+                p.shown_flat = flat;
+                Ok(())
+            }),
+            UiAction::SheetFlange(i, h, a, pos) => {
+                let position = daedalus_sheet::part::FlangePosition::ALL[pos.min(2)];
+                self.change_part("Flange", |p| p.set_flange(i, h, a, position));
+            }
+            UiAction::SheetRemoveFlange(i) => self.change_part("Flange", |p| p.remove_flange(i)),
+            UiAction::FlangeDefaults(h, a, pos) => self.flange_defaults = (h, a, pos),
         }
         self.window.request_redraw();
     }
@@ -1819,6 +2062,8 @@ impl State {
         let info = if self.info_open { self.info() } else { None };
         let outline = if self.outliner_open { self.outline_rows() } else { Vec::new() };
         let dc = if self.attributes_open || self.options_open { self.dc_view() } else { None };
+        let sheet = if self.sheet_open || self.context_at.is_some() { self.sheet_view() } else { None };
+        let face_for_part = self.readonly.is_none() && self.tools.selected.len() == 1 && self.tools.instances.is_empty();
         let view = UiView {
             tool: self.tools.tool,
             units: self.tools.units,
@@ -1848,6 +2093,11 @@ impl State {
             options_open: self.options_open,
             dc,
             dc_out: &self.dc_out,
+            sheet_open: self.sheet_open,
+            sheet_tab: self.sheet_tab,
+            sheet,
+            face_for_part,
+            flange_defaults: self.flange_defaults,
             one_instance: self.one_instance().and_then(|i| self.model.instances().get(i)).and_then(|inst| self.model.definition(inst.def)).map(|d| d.component),
             editing: (self.model.open_depth() > 0).then(|| self.model.open_names().join(" › ")),
             labels: self

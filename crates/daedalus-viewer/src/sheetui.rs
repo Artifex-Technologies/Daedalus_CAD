@@ -1,0 +1,310 @@
+//! The Sheet Metal panel (in the tray on the right): making a part of a face, and the part's editor in three tabs, as
+//! CADCraft lays it out: Drawing (the outline it was made from, its material and its flanges), 3D (the part bent or flat in
+//! the model, and the Flange tool) and Flat pattern (the blank with its bend lines and bend table, for the cutting shop).
+//! Lengths are in mm, as fabricators work; a typed length may carry its own unit (`0.125"`).
+
+use crate::tools::Tool;
+use crate::ui::{panel_head, SheetView, UiAction, UiView};
+use daedalus_core::units::{self, Units};
+use daedalus_sheet::part::{FlangePosition, MATERIALS};
+use egui::{pos2, vec2, Color32, Rect, RichText, Sense, Shape, Stroke};
+
+const TABS: [&str; 3] = ["Drawing", "3D", "Flat pattern"];
+
+pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
+    ui.add_space(6.0);
+    panel_head(ui, "Sheet Metal", UiAction::SheetMetal, actions);
+    match &v.sheet {
+        Some(s) => part(ui, v, s, actions),
+        None => make_form(ui, v, actions),
+    }
+}
+
+/// A length typed in mm (or with its own unit), as mm.
+fn mm(text: &str) -> Option<f64> {
+    units::parse(text, Units::Millimetres).map(|m| m * 1000.0).filter(|x| x.is_finite())
+}
+
+fn num(text: &str) -> Option<f64> {
+    text.trim().parse::<f64>().ok().filter(|x| x.is_finite())
+}
+
+fn fmt(x: f64) -> String {
+    let s = format!("{x:.3}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    s.to_string()
+}
+
+/// A row: a label on the left, a text field on the right. Returns true when Enter was pressed in it.
+fn field(ui: &mut egui::Ui, label: &str, text: &mut String, hint: &str) -> bool {
+    let mut enter = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).weak());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let r = ui.add(egui::TextEdit::singleline(text).desired_width(110.0)).on_hover_text(hint);
+            enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        });
+    });
+    enter
+}
+
+/// The material picker and the three values it fills in (kept per `id` while being typed). Returns the values when they
+/// read, and the preset (`usize::MAX`: typed in).
+fn material_fields(ui: &mut egui::Ui, id: egui::Id, start: (usize, f64, f64, f64)) -> (Option<(f64, f64, f64)>, usize, bool) {
+    let (mut preset, mut t, mut k, mut r) = ui.data_mut(|d| d.get_temp::<(usize, String, String, String)>(id)).unwrap_or_else(|| (start.0, fmt(start.1), fmt(start.2), fmt(start.3)));
+    let shown = MATERIALS.get(preset).map(|m| m.name).unwrap_or("Typed in");
+    egui::ComboBox::from_id_salt((id, "material")).selected_text(shown).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
+        for (i, m) in MATERIALS.iter().enumerate() {
+            if ui.selectable_label(preset == i, m.name).clicked() {
+                preset = i;
+                (t, k, r) = (fmt(m.thickness), fmt(m.k_factor), fmt(m.bend_radius));
+            }
+        }
+        if ui.selectable_label(preset == usize::MAX, "Typed in").clicked() {
+            preset = usize::MAX;
+        }
+    });
+    let (t0, k0, r0) = (t.clone(), k.clone(), r.clone());
+    let mut enter = field(ui, "Thickness", &mut t, "Sheet thickness, mm (or with a unit: 0.125\")");
+    enter |= field(ui, "K-factor", &mut k, "Where the neutral line sits in the bend, 0 to 1: use your fabricator's value");
+    enter |= field(ui, "Bend radius", &mut r, "Inside bend radius, mm: use your fabricator's value");
+    if (&t, &k, &r) != (&t0, &k0, &r0) {
+        preset = usize::MAX; // a value typed over the preset's
+    }
+    let values = match (mm(&t), num(&k), mm(&r)) {
+        (Some(t), Some(k), Some(r)) if t > 0.0 && (0.0..=1.0).contains(&k) && r >= 0.0 => Some((t, k, r)),
+        _ => None,
+    };
+    ui.data_mut(|d| d.insert_temp(id, (preset, t, k, r)));
+    (values, preset, enter)
+}
+
+/// No part selected: make one of the selected face.
+fn make_form(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
+    if !v.face_for_part {
+        ui.label(RichText::new("Select a sheet-metal part to edit it, or one face to make a part of it.").weak());
+        ui.label(RichText::new("The face's outline and holes become the flat part; it grows out of the face's front by the thickness.").weak().small());
+        return;
+    }
+    ui.label("Make a sheet-metal part of the selected face");
+    ui.add_space(4.0);
+    let first = &MATERIALS[0];
+    let (values, preset, enter) = material_fields(ui, egui::Id::new("sheet-make"), (0, first.thickness, first.k_factor, first.bend_radius));
+    ui.add_space(4.0);
+    ui.label(RichText::new("Presets are typical values only: check your fabricator's K-factor and bend radius.").weak().small());
+    let clicked = ui.add_enabled(v.editable && values.is_some(), egui::Button::new("Make Part")).clicked();
+    if let Some((t, k, r)) = values.filter(|_| clicked || enter) {
+        actions.push(UiAction::MakeSheetPart(t, k, r, preset));
+    }
+}
+
+fn part(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiAction>) {
+    ui.horizontal(|ui| {
+        ui.strong(&s.name);
+        ui.label(RichText::new(&s.material).weak());
+    });
+    ui.horizontal(|ui| {
+        for (i, name) in TABS.iter().enumerate() {
+            if ui.selectable_label(v.sheet_tab == i, *name).clicked() {
+                actions.push(UiAction::SheetTab(i));
+            }
+        }
+    });
+    ui.separator();
+    match v.sheet_tab {
+        0 => drawing_tab(ui, v, s, actions),
+        1 => model_tab(ui, v, s, actions),
+        _ => flat_tab(ui, s, actions),
+    }
+}
+
+/// Drawing: the outline the part was made from (with its size), its material, and its flanges.
+fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiAction>) {
+    drawing(ui, &s.base, &[], 200.0);
+    ui.add_space(6.0);
+    ui.strong("Material");
+    let preset = MATERIALS.iter().position(|m| m.name == s.material).unwrap_or(usize::MAX);
+    let (values, preset, enter) = material_fields(ui, egui::Id::new(("sheet-rule", s.key)), (preset, s.thickness, s.k_factor, s.bend_radius));
+    let clicked = ui.add_enabled(v.editable && values.is_some(), egui::Button::new("Apply")).on_hover_text("The part is made again with these values; its flanges stay").clicked();
+    if let Some((t, k, r)) = values.filter(|_| clicked || enter) {
+        actions.push(UiAction::SheetRule(t, k, r, preset));
+    }
+    ui.add_space(6.0);
+    ui.strong("Flanges");
+    if s.flanges.is_empty() {
+        ui.label(RichText::new("None yet: the Flange tool (3D tab) adds one on an edge.").weak());
+        return;
+    }
+    egui::Grid::new(("sheet-flanges", s.key)).num_columns(5).spacing([4.0, 3.0]).show(ui, |ui| {
+        ui.label(RichText::new("#").weak().small());
+        ui.label(RichText::new("Height").weak().small());
+        ui.label(RichText::new("Angle").weak().small());
+        ui.label(RichText::new("Position").weak().small());
+        ui.end_row();
+        for (i, &(h, a, pos)) in s.flanges.iter().enumerate() {
+            let id = egui::Id::new(("sheet-flange", s.key, i));
+            let (mut th, mut ta, mut tp) = ui.data_mut(|d| d.get_temp::<(String, String, usize)>(id)).unwrap_or_else(|| (fmt(h), fmt(a), pos));
+            ui.label(format!("{}", i + 1));
+            let r1 = ui.add(egui::TextEdit::singleline(&mut th).desired_width(60.0)).on_hover_text("Height from the outside of the bend, mm");
+            let r2 = ui.add(egui::TextEdit::singleline(&mut ta).desired_width(44.0)).on_hover_text("Bend angle, degrees (90: square)");
+            let mut changed_pos = false;
+            egui::ComboBox::from_id_salt((id, "pos")).selected_text(position_short(tp)).width(70.0).show_ui(ui, |ui| {
+                for (k, p) in FlangePosition::ALL.iter().enumerate() {
+                    if ui.selectable_label(tp == k, p.label()).clicked() {
+                        tp = k;
+                        changed_pos = true;
+                    }
+                }
+            });
+            if ui.small_button("×").on_hover_text("Take the flange away").clicked() {
+                actions.push(UiAction::SheetRemoveFlange(i));
+            }
+            let enter = (r1.lost_focus() || r2.lost_focus()) && ui.input(|k| k.key_pressed(egui::Key::Enter));
+            if enter || changed_pos {
+                if let (Some(h), Some(a)) = (mm(&th), num(&ta)) {
+                    actions.push(UiAction::SheetFlange(i, h, a, tp));
+                }
+            }
+            ui.data_mut(|d| d.insert_temp(id, (th, ta, tp)));
+            ui.end_row();
+        }
+    });
+    ui.label(RichText::new("Enter applies a change.").weak().small());
+}
+
+fn position_short(i: usize) -> &'static str {
+    match FlangePosition::ALL.get(i) {
+        Some(FlangePosition::Inside) => "Inside",
+        Some(FlangePosition::Outside) => "Outside",
+        _ => "Middle",
+    }
+}
+
+/// 3D: the part in the model bent or flat, the Flange tool and what it adds, STEP of the part.
+fn model_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiAction>) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Show it").weak());
+        if ui.selectable_label(!s.flat, "Bent").clicked() && s.flat {
+            actions.push(UiAction::SheetFlat(false));
+        }
+        if ui.selectable_label(s.flat, "Flat").clicked() && !s.flat {
+            actions.push(UiAction::SheetFlat(true));
+        }
+    });
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if ui.add_enabled(v.editable, egui::Button::new("Flange tool").selected(v.tool == Tool::Flange)).clicked() {
+            actions.push(UiAction::Tool(Tool::Flange));
+        }
+        ui.label(RichText::new("then click an edge of the part").weak());
+    });
+    ui.label(RichText::new("New flanges:").weak());
+    let id = egui::Id::new("flange-defaults");
+    let (h0, a0, p0) = v.flange_defaults;
+    let (mut th, mut ta, mut tp) = ui.data_mut(|d| d.get_temp::<(String, String, usize)>(id)).unwrap_or_else(|| (fmt(h0), fmt(a0), p0));
+    let mut changed = field(ui, "Height", &mut th, "From the outside of the bend, mm (Enter sets it)");
+    changed |= field(ui, "Angle", &mut ta, "Bend angle, degrees, 90 is square (Enter sets it)");
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Position").weak());
+        for (k, p) in FlangePosition::ALL.iter().enumerate() {
+            if ui.selectable_label(tp == k, position_short(k)).on_hover_text(p.label()).clicked() {
+                tp = k;
+                changed = true;
+            }
+        }
+    });
+    if let (Some(h), Some(a)) = (mm(&th), num(&ta)) {
+        if changed && (h, a, tp) != (h0, a0, p0) && h > 0.0 && a > 0.0 && a <= 180.0 {
+            actions.push(UiAction::FlangeDefaults(h, a, tp));
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(id, (th, ta, tp)));
+    ui.add_space(8.0);
+    if ui.button("Export part as STEP…").on_hover_text("The bent part as an exact solid, for the fabricator or another CAD program").clicked() {
+        actions.push(UiAction::ExportPartStep);
+    }
+}
+
+/// Flat pattern: the blank, its bend lines and bend table, and DXF for the cutting shop.
+fn flat_tab(ui: &mut egui::Ui, s: &SheetView, actions: &mut Vec<UiAction>) {
+    drawing(ui, &s.flat_loops, &s.bend_lines, 220.0);
+    if let Some((w, h)) = s.flat_size {
+        ui.label(format!("Blank {} × {} mm, {} mm thick", fmt(w), fmt(h), fmt(s.thickness)));
+    }
+    if !s.bends.is_empty() {
+        ui.add_space(4.0);
+        egui::Grid::new(("bend-table", s.key)).num_columns(5).spacing([10.0, 2.0]).striped(true).show(ui, |ui| {
+            for head in ["Bend", "Angle", "Included", "Radius", "Length"] {
+                ui.label(RichText::new(head).weak().small());
+            }
+            ui.end_row();
+            for (i, &(a, r, l)) in s.bends.iter().enumerate() {
+                ui.label(format!("{}", i + 1));
+                ui.label(format!("{}°", fmt(a)));
+                ui.label(format!("{}°", fmt(180.0 - a)));
+                ui.label(fmt(r));
+                ui.label(fmt(l));
+                ui.end_row();
+            }
+        });
+    }
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if ui.button("DXF (mm)…").on_hover_text("Outline and holes on layer CUT, bend centre lines on BEND, 1:1").clicked() {
+            actions.push(UiAction::ExportFlatDxf(false));
+        }
+        if ui.button("DXF (inches)…").clicked() {
+            actions.push(UiAction::ExportFlatDxf(true));
+        }
+    });
+    ui.label(RichText::new("Check with your shop whether bend lines go in the cut file or are left out.").weak().small());
+}
+
+/// A 2D drawing fitted to the panel's width: `loops` in ink, `bends` as dashed red lines, the overall size along the bottom
+/// and the right side (mm, y up).
+fn drawing(ui: &mut egui::Ui, loops: &[Vec<[f64; 2]>], bends: &[([f64; 2], [f64; 2])], height: f32) {
+    /// Room kept right of the drawing for its height (points).
+    const RIGHT: f64 = 52.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let painter = ui.painter_at(rect);
+    let visuals = ui.visuals();
+    painter.rect_filled(rect, 4.0, visuals.extreme_bg_color);
+    let pts = loops.iter().flatten().chain(bends.iter().flat_map(|(a, b)| [a, b]));
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in pts {
+        for k in 0..2 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    if !(hi[0] > lo[0] && hi[1] > lo[1]) {
+        return;
+    }
+    let inner = rect.shrink2(vec2(18.0, 18.0));
+    let scale = ((inner.width() as f64 - RIGHT) / (hi[0] - lo[0])).min((inner.height() as f64 - 16.0) / (hi[1] - lo[1]));
+    let (w, h) = ((hi[0] - lo[0]) * scale, (hi[1] - lo[1]) * scale);
+    let origin = pos2(inner.left() + ((inner.width() as f64 - RIGHT - w) / 2.0) as f32, inner.top() + ((inner.height() as f64 - 16.0 - h) / 2.0) as f32);
+    let at = |p: &[f64; 2]| pos2(origin.x + ((p[0] - lo[0]) * scale) as f32, origin.y + ((hi[1] - p[1]) * scale) as f32);
+    let ink = visuals.text_color();
+    for lp in loops {
+        let mut pts: Vec<_> = lp.iter().map(at).collect();
+        if let Some(&first) = pts.first() {
+            pts.push(first);
+        }
+        painter.add(Shape::line(pts, Stroke::new(1.3_f32, ink)));
+    }
+    let red = Color32::from_rgb(220, 60, 50);
+    for (a, b) in bends {
+        painter.extend(Shape::dashed_line(&[at(a), at(b)], Stroke::new(1.0_f32, red), 6.0, 4.0));
+    }
+    // overall size
+    let font = egui::FontId::proportional(11.0);
+    let dim = visuals.weak_text_color();
+    let box_ = Rect::from_min_size(origin, vec2(w as f32, h as f32));
+    let y = box_.bottom() + 8.0;
+    painter.line_segment([pos2(box_.left(), y), pos2(box_.right(), y)], Stroke::new(0.8_f32, dim));
+    painter.text(pos2(box_.center().x, y + 1.0), egui::Align2::CENTER_TOP, format!("{} mm", fmt(hi[0] - lo[0])), font.clone(), dim);
+    let x = box_.right() + 8.0;
+    painter.line_segment([pos2(x, box_.top()), pos2(x, box_.bottom())], Stroke::new(0.8_f32, dim));
+    painter.text(pos2(x + 2.0, box_.center().y), egui::Align2::LEFT_CENTER, fmt(hi[1] - lo[1]), font, dim);
+}
