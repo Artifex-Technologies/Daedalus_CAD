@@ -411,6 +411,20 @@ impl Draw {
                 self.line_with(&[(0.2, 0.28), (0.44, 0.16)], accent);
                 self.head(0.5, 0.13, 1.0, -0.5, 0.09, self.accent);
             }
+            Icon::Tool(Tool::Stress) => {
+                // a bracket held at its foot (hatching), pushed down at its tip (arrow), bending
+                self.line(&[(0.14, 0.86), (0.14, 0.3)]);
+                for k in 0..4 {
+                    let y = 0.36 + k as f32 * 0.14;
+                    self.line_with(&[(0.14, y), (0.06, y + 0.08)], self.thin());
+                }
+                let beam = self.arc(0.14, 1.9, 1.6, 90.0, 66.0);
+                self.line(&beam);
+                let under = self.arc(0.14, 2.02, 1.6, 90.0, 66.0);
+                self.line(&under);
+                self.head(0.8, 0.42, 0.0, 1.0, 0.1, self.accent);
+                self.line_with(&[(0.8, 0.1), (0.8, 0.34)], Stroke::new(1.5_f32, self.accent));
+            }
             Icon::AddDetail => {
                 self.sandbox_grid();
                 self.dot(0.5, 0.55);

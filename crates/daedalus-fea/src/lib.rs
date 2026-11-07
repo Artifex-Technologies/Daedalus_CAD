@@ -215,12 +215,30 @@ fn surface(grid: &Grid, part: &Part) -> Vec<Quad> {
     quads
 }
 
+/// The face of the part nearest to a point (a click on it), if the part has any.
+pub fn nearest_face(part: &Part, p: [f64; 3]) -> Option<usize> {
+    part.triangles
+        .iter()
+        .zip(&part.face_of)
+        .map(|(t, f)| (distance_to_triangle(p, t), *f))
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, f)| f)
+}
+
 /// Runs the study. `progress` gets a fraction (0..1) and what is being done.
 pub fn run(part: &Part, study: &Study, progress: &mut dyn FnMut(f32, &str)) -> Result<Report, String> {
     study.material.check()?;
     if part.triangles.is_empty() || part.triangles.len() != part.face_of.len() {
         return Err("the part has no surface".into());
     }
+    // supports and loads are matched by which way faces look: a part wound inward is turned round first
+    let turned;
+    let part = if voxel::mesh_volume(&part.triangles) < 0.0 {
+        turned = Part { triangles: part.triangles.iter().map(|t| [t[0], t[2], t[1]]).collect(), face_of: part.face_of.clone() };
+        &turned
+    } else {
+        part
+    };
     if study.fixed.is_empty() {
         return Err("nothing holds the part: choose at least one face as a support".into());
     }
@@ -496,6 +514,16 @@ mod tests {
         assert!(r.max_stress > 0.95 * root && r.max_stress < 1.4 * root, "peak {} MPa vs {} MPa", r.max_stress / 1e6, root / 1e6);
         assert!(r.max_stress_at[0] < 2.0 * r.cube_size, "at the held end: {:?}", r.max_stress_at);
         assert!((r.reaction[2] - 100.0).abs() < 0.5, "the support holds it up: {:?}", r.reaction);
+    }
+
+    #[test]
+    fn a_part_wound_inward_and_a_click_on_a_face() {
+        let (part, study) = bar(20, [1000.0, 0.0, 0.0]);
+        assert_eq!(nearest_face(&part, [0.1, 0.005, 0.004]), Some(1), "a point on the end at x = 100 mm");
+        assert_eq!(nearest_face(&part, [0.05, 0.005, 0.0101]), Some(5), "just above the top");
+        let inward = Part { triangles: part.triangles.iter().map(|t| [t[0], t[2], t[1]]).collect(), face_of: part.face_of.clone() };
+        let (a, b) = (run(&part, &study, &mut |_, _| {}).unwrap(), run(&inward, &study, &mut |_, _| {}).unwrap());
+        assert!((a.max_displacement - b.max_displacement).abs() < 1e-15);
     }
 
     #[test]

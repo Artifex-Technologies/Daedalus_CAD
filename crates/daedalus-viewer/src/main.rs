@@ -9,6 +9,7 @@ mod theme;
 mod icons;
 mod settings;
 mod sheetui;
+mod stressui;
 mod text3d;
 mod render;
 mod tools;
@@ -86,6 +87,9 @@ struct State {
     /// Convert to Sheet Metal under way: the solid's instance, the point on its face that stays put and on each bend edge
     /// (its own coordinates, metres).
     convert: Option<(usize, Option<[f64; 3]>, Vec<[f64; 3]>)>,
+    /// The Stress Test panel is open, and the test under way (its part, picks, settings and last result).
+    stress_open: bool,
+    stress: Option<stressui::Stress>,
     /// The Outliner is open; its rows, for the model state they were read at.
     outliner_open: bool,
     outline_cache: Option<(u64, Vec<(usize, String, bool, Vec<usize>)>)>,
@@ -224,6 +228,8 @@ impl State {
             loaded_textures: Vec::new(),
             texture_colors: Vec::new(),
             sheet_open: false,
+            stress_open: false,
+            stress: None,
             sheet_tab: 0,
             flange_defaults: (20.0, 90.0, 0, false, false),
             sheet_cache: None,
@@ -600,7 +606,17 @@ impl State {
             let moving = self.tools.preview_instances();
             let (_, inside, (outside, outside_tris)) = self.parts.as_ref().expect("built above");
             let tris = &mut self.tris;
+            let state = self.model.state();
+            let mut stress = self.stress.as_mut();
             for (i, m, t) in inside {
+                // the part under a stress test: painted with its supports and loads, or drawn as the result
+                if let Some((sm, st)) = stress.as_mut().filter(|s| s.instance == *i && moving.is_none()).and_then(|s| s.display(state)) {
+                    let base = self.display.positions.len() as u32;
+                    tris.extend(st.iter().map(|ts| ts.iter().map(|tri| tri.map(|v| v + base)).collect::<Vec<_>>()));
+                    self.display.append(sm);
+                    self.owners.extend(std::iter::repeat_n(*i, sm.faces.len()));
+                    continue;
+                }
                 let mut place = |m: &Mesh, owners: &mut Vec<usize>, display: &mut Mesh, lit_now: bool| {
                     let from = display.faces.len();
                     let base = display.positions.len() as u32;
@@ -1014,6 +1030,37 @@ impl State {
         self.sheet_open = true;
     }
 
+    /// Stress Test: a click on a solid group or component. A new part (another one, or the same after the model changed) is
+    /// read; a click on the part being tested marks the face under it as a support or a load.
+    fn stress_pick(&mut self, i: usize, point: [f64; 3]) {
+        let state = self.model.state();
+        if self.stress.as_ref().is_some_and(|s| s.running()) {
+            self.message = Some("Stress Test: wait for the run to finish.".into());
+            return;
+        }
+        let same = self.stress.as_ref().is_some_and(|s| s.instance == i && s.state == state);
+        if !same {
+            match stressui::Stress::new(&self.model, i) {
+                Ok(mut s) => {
+                    // a part read again after an edit keeps its settings (its face picks may not fit any more)
+                    if let Some(old) = &self.stress {
+                        if old.instance == i {
+                            s.settings = old.settings;
+                        }
+                    }
+                    self.message = Some(format!("Stress Test {}: click the faces that hold it (supports), then switch to Loads in the panel.", s.name()));
+                    self.stress = Some(s);
+                }
+                Err(e) => self.message = Some(format!("Stress Test: {e}.")),
+            }
+            self.stress_open = true;
+            return;
+        }
+        if let Some(s) = &mut self.stress {
+            self.message = Some(s.pick(point));
+        }
+    }
+
     /// Convert to Sheet Metal: a click on a solid group or component. The first picks the face that stays put; the next
     /// ones the edges that become bends (each taken onto the nearest edge of the solid).
     fn convert_pick(&mut self, i: usize, point: [f64; 3]) {
@@ -1371,6 +1418,15 @@ impl State {
             }
             return;
         }
+        // Stress Test: the part, then its supports and loads
+        if self.tools.tool == Tool::Stress {
+            match c.hit.and_then(|h| h.instance.map(|i| (i, h.point))) {
+                Some((i, point)) => self.stress_pick(i, point),
+                None => self.message = Some("Stress Test: click a solid group or component (make one of a solid first).".into()),
+            }
+            self.refresh();
+            return;
+        }
         // Convert to Sheet Metal: the face that stays put, then the bend edges
         if self.tools.tool == Tool::SheetConvert {
             if self.readonly.is_some() {
@@ -1537,6 +1593,9 @@ impl State {
     fn set_tool(&mut self, tool: Tool) {
         if matches!(tool, Tool::Flange | Tool::SheetConvert) {
             self.sheet_open = true;
+        }
+        if tool == Tool::Stress {
+            self.stress_open = true;
         }
         self.tools.set_tool(tool);
         self.typed.clear();
@@ -1980,6 +2039,67 @@ impl State {
                 self.sheet_open = !self.sheet_open;
                 self.window.request_redraw();
             }
+            UiAction::StressPanel => {
+                self.stress_open = !self.stress_open;
+                if !self.stress_open {
+                    // shut: the part is drawn as it is again
+                    if let Some(s) = &mut self.stress {
+                        s.show = false;
+                    }
+                    if self.tools.tool == Tool::Stress {
+                        self.set_tool(Tool::Select);
+                    }
+                }
+                self.refresh();
+            }
+            UiAction::StressPick(hold) => {
+                if let Some(s) = &mut self.stress {
+                    s.hold = hold;
+                }
+                if self.tools.tool != Tool::Stress {
+                    self.set_tool(Tool::Stress);
+                }
+            }
+            UiAction::StressClear(supports) => {
+                if let Some(s) = &mut self.stress {
+                    s.clear(supports);
+                }
+                self.refresh();
+            }
+            UiAction::StressSet(set) => {
+                if let Some(s) = &mut self.stress {
+                    s.settings = set;
+                }
+            }
+            UiAction::StressRun => {
+                let state = self.model.state();
+                if let Some(s) = &mut self.stress {
+                    if s.state != state {
+                        self.message = Some("Stress Test: the model changed; click the part again to read it as it is now.".into());
+                    } else {
+                        match s.run(state) {
+                            Ok(()) => self.message = Some("Stress Test: solving…".into()),
+                            Err(e) => self.message = Some(format!("Stress Test: {e}.")),
+                        }
+                    }
+                }
+                self.window.request_redraw();
+            }
+            UiAction::StressShow(show, exaggerate) => {
+                if let Some(s) = &mut self.stress {
+                    s.show = show;
+                    s.exaggerate = exaggerate;
+                }
+                self.refresh();
+            }
+            UiAction::StressNew => {
+                if !self.stress.as_ref().is_some_and(|s| s.running()) {
+                    self.stress = None;
+                    self.set_tool(Tool::Stress);
+                    self.message = Some("Stress Test: click the solid group or component to test.".into());
+                    self.refresh();
+                }
+            }
             UiAction::SheetTab(t) => self.sheet_tab = t,
             UiAction::ConvertSheet(t, k, r, preset) => self.convert_sheet(t, k, r, preset),
             UiAction::ConvertReset => {
@@ -2152,6 +2272,19 @@ impl State {
     }
 
     fn render(&mut self) {
+        // the stress test's solver runs on its own thread: its result is taken here, and the window redraws while it works
+        let mut stress_done = false;
+        if let Some(s) = &mut self.stress {
+            if s.poll() {
+                stress_done = true;
+            } else if s.running() {
+                self.window.request_redraw();
+            }
+        }
+        if stress_done {
+            self.message = Some("Stress Test: done.".into());
+            self.refresh();
+        }
         let ctx = self.egui_ctx.clone();
         let (w, h) = self.size();
         let ppp = ctx.pixels_per_point();
@@ -2222,6 +2355,8 @@ impl State {
             sheet,
             face_for_part,
             flange_defaults: self.flange_defaults,
+            stress_open: self.stress_open,
+            stress: self.stress.as_ref().map(|s| s.view(self.model.state())),
             converting: self.convert.as_ref().and_then(|(i, fixed, bends)| {
                 let def = self.model.instances().get(*i)?.def;
                 Some((self.model.definition(def)?.name.clone(), fixed.is_some(), bends.len()))

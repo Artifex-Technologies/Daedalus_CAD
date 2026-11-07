@@ -108,6 +108,15 @@ pub enum UiAction {
     /// The selected part's flat pattern as DXF (true: inches), and the part alone as STEP.
     ExportFlatDxf(bool),
     ExportPartStep,
+    /// Stress Test: the panel opened or shut; clicks mark supports (true) or loads; clear the supports (true) or loads; the
+    /// panel's fields; Run; show the result (and exaggerate the bend); test another part.
+    StressPanel,
+    StressPick(bool),
+    StressClear(bool),
+    StressSet(crate::stressui::Settings),
+    StressRun,
+    StressShow(bool, bool),
+    StressNew,
     /// The window frame (Linux): start moving the window, maximize or restore, minimize, close.
     MoveWindow,
     ToggleMaximize,
@@ -210,6 +219,9 @@ pub struct UiView<'a> {
     pub flange_defaults: (f64, f64, usize, bool, bool),
     /// Convert to Sheet Metal under way: the solid's name, whether its fixed face is picked, and how many bend edges.
     pub converting: Option<(String, bool, usize)>,
+    /// The Stress Test panel: open, and the test under way (None: no part picked yet).
+    pub stress_open: bool,
+    pub stress: Option<crate::stressui::StressView>,
     /// The Outliner is open, and its rows: depth, name, component, selected, open for editing.
     pub outliner_open: bool,
     pub outline: Vec<(usize, String, bool, bool, bool)>,
@@ -289,8 +301,14 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView, fresh: bool) -> (
 /// radius to change (applied on Enter).
 fn tray(ctx: &egui::Context, v: &UiView, actions: &mut Vec<UiAction>) {
     // wider while Component Attributes is open: its rows have three fields
-    let width = if v.sheet_open { 360.0 } else if v.attributes_open { 340.0 } else { 230.0 };
+    let width = if v.sheet_open || v.stress_open { 360.0 } else if v.attributes_open { 340.0 } else { 230.0 };
     egui::SidePanel::right("tray").resizable(false).exact_width(width).show(ctx, |ui| {
+        if v.stress_open {
+            egui::ScrollArea::vertical().id_salt("stress").max_height(ui.available_height() * if v.sheet_open || v.info_open || v.outliner_open { 0.6 } else { 1.0 }).show(ui, |ui| {
+                crate::stressui::panel(ui, v, actions);
+            });
+            ui.add_space(10.0);
+        }
         if v.sheet_open {
             egui::ScrollArea::vertical().id_salt("sheet").max_height(ui.available_height() * if v.info_open || v.outliner_open { 0.7 } else { 1.0 }).show(ui, |ui| {
                 crate::sheetui::panel(ui, v, actions);
@@ -804,6 +822,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                         ui.close_menu();
                     }
                 });
+                tool_items(ui, v, &[Tool::Stress], &mut actions);
                 ui.menu_button("Solid Tools", |ui| {
                     tool_items(ui, v, &[Tool::OuterShell, Tool::SolidIntersect, Tool::SolidUnion, Tool::SolidSubtract, Tool::SolidTrim, Tool::SolidSplit], &mut actions);
                 });
@@ -1006,7 +1025,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
             );
         }
     }
-    if v.info_open || v.outliner_open || v.options_open || v.attributes_open || v.sheet_open {
+    if v.info_open || v.outliner_open || v.options_open || v.attributes_open || v.sheet_open || v.stress_open {
         tray(ctx, v, &mut actions);
     }
     actions
@@ -1161,6 +1180,7 @@ fn toolbar_groups() -> [Vec<Slot>; 4] {
             t(Tool::Interact),
             t(Tool::Flange),
             t(Tool::SheetConvert),
+            t(Tool::Stress),
         ],
         vec![
             Act(Icon::Iso, UiAction::Iso),

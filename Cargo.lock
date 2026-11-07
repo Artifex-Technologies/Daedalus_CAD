@@ -606,6 +606,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "daedalus-core",
+ "daedalus-fea",
  "daedalus-io",
  "daedalus-sheet",
  "egui",

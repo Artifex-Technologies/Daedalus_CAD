@@ -8,6 +8,7 @@ license.workspace = true
 daedalus-core.workspace = true
 daedalus-io.workspace = true
 daedalus-sheet.workspace = true
+daedalus-fea.workspace = true
 wgpu = "24"
 winit = "0.30"
 glam = "0.29"
