@@ -337,7 +337,7 @@ impl Model {
             let un = xf.inverse().ok_or(TopologyError::DegenerateNormal)?;
             let inner: Vec<Instance> = taken.iter().map(|&i| Instance { def: ctx.instances[i].def, xf: un.after(&ctx.instances[i].xf) }).collect();
             let name = s.new_name(component);
-            s.defs.push(Definition { name, component, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: part.transformed(&to_def), instances: inner } });
+            s.defs.push(Definition { name, component, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: part.transformed(&to_def), instances: inner } });
             let def = s.defs.len() - 1;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             for &i in taken.iter().rev() {
@@ -364,7 +364,7 @@ impl Model {
             let xf = Xform::translation(back.apply(lo));
             let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
             let name = s.new_name(component);
-            s.defs.push(Definition { name, component, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: mesh.transformed(&to_def), instances: Vec::new() } });
+            s.defs.push(Definition { name, component, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: mesh.transformed(&to_def), instances: Vec::new() } });
             let def = s.defs.len() - 1;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             ctx.instances.push(Instance { def, xf });
@@ -425,7 +425,7 @@ impl Model {
                 let xf = Xform::translation(back.apply(lo));
                 let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
                 let name = s.new_name(false);
-                s.defs.push(Definition { name, component: false, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: r.transformed(&to_def), instances: Vec::new() } });
+                s.defs.push(Definition { name, component: false, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: r.transformed(&to_def), instances: Vec::new() } });
                 let def = s.defs.len() - 1;
                 let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
                 ctx.instances.push(Instance { def, xf });

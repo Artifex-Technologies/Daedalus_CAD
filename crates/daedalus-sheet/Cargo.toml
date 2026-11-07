@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 daedalus-core.workspace = true
+daedalus-io.workspace = true
+serde_json = "1"
 # SolidCraft's B-rep kernel (MIT OR Apache-2.0; built on solidcore, Apache-2.0, a port of NVIDIA SMLib), pinned to the
 # commit that was read and assessed (2026-11-06). Its record crate is pinned to the same revision SolidCraft uses.
 solidcraft-kernel = { git = "https://github.com/tangency-labs/solidcraft", rev = "871014f955a76fd308ce156e68c93e6372906005" }
@@ -15,5 +17,3 @@ solidcraft-geom = { git = "https://github.com/tangency-labs/solidcraft", rev = "
 serde = { version = "1", features = ["derive"] }
 solidcore-record = { git = "https://github.com/tangency-labs/solidcore", rev = "f5e8e9a29e0c9b7cf6c4040a5bc8878382b3c62f" }
 
-[dev-dependencies]
-serde_json = "1"

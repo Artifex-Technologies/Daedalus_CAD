@@ -2,7 +2,7 @@
 // crates/doc/src/sheet.rs at commit 871014f955a76fd308ce156e68c93e6372906005, MIT OR Apache-2.0; see NOTICE.md).
 // Changes for Daedalus: the ties to SolidCraft's document are gone (rules as expressions, the document's
 // rule lookup, sketch-plane references, model state, converting a solid to a sheet, face names); rule values
-// are plain numbers (`RuleValues`); the error type and matrix helpers come from `crate::util`.
+// are plain numbers (`RuleValues`, which also reads back from text); the error type and matrix helpers come from `crate::util`.
 
 //! Sheet metal: rules (thickness, K-factor, bend radius, reliefs as expressions that may use
 //! parameters), and the sheet body model behind every sheet-metal feature.
@@ -516,7 +516,7 @@ pub struct ReliefOverride {
 }
 
 /// A rule's values (mm, unit-less K).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RuleValues {
     pub thickness: f64,
     pub k_factor: f64,

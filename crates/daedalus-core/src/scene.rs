@@ -120,6 +120,10 @@ pub struct Definition {
     pub cut: bool,
     /// Dynamic Components: its attributes (values and formulas; see `dynamic`), shared by its copies.
     pub attributes: Vec<crate::dynamic::Attribute>,
+    /// An exact part this definition stands for (a sheet-metal part): its own description, kept as text that the crate which
+    /// owns that kind of part reads (`daedalus-sheet`). `ctx` then holds the part's faces, made from it; the core treats them
+    /// as any component's.
+    pub part: Option<String>,
     pub ctx: Context,
 }
 
@@ -414,9 +418,9 @@ mod tests {
         }
         unit.add_face(vec![0, 1, 2]);
         let mut s = Scene::default();
-        s.defs.push(Definition { name: "Leaf".into(), component: true, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: unit, instances: vec![] } });
+        s.defs.push(Definition { name: "Leaf".into(), component: true, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: unit, instances: vec![] } });
         let inner = Instance { def: 0, xf: Xform::translation([0.0, 0.0, 1.0]) };
-        s.defs.push(Definition { name: "Box".into(), component: false, glue: false, cut: false, attributes: Vec::new(), ctx: Context { mesh: Mesh::new(), instances: vec![inner, inner] } });
+        s.defs.push(Definition { name: "Box".into(), component: false, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: Mesh::new(), instances: vec![inner, inner] } });
         s.root.instances.push(Instance { def: 1, xf: Xform::translation([5.0, 0.0, 0.0]) });
         let flat = s.flatten();
         assert_eq!(flat.faces.len(), 2);

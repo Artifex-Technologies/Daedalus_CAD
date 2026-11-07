@@ -588,6 +588,7 @@ name = "daedalus-sheet"
 version = "0.1.0"
 dependencies = [
  "daedalus-core",
+ "daedalus-io",
  "serde",
  "serde_json",
  "solidcore-record",

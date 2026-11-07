@@ -40,10 +40,30 @@ fn layer_color(name: &str) -> i32 {
     }
 }
 
+/// A line or an arc on a layer, for [`write_entities`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Shape {
+    Line { a: [f64; 2], b: [f64; 2] },
+    /// Counter-clockwise from `start` to `end` (degrees, as DXF has it); a whole turn is written as a CIRCLE.
+    Arc { center: [f64; 2], radius: f64, start: f64, end: f64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Entity {
+    pub layer: &'static str,
+    pub shape: Shape,
+}
+
 /// Writes line segments as an ASCII DXF with header units and a layer table.
 pub fn write_segments(segments: &[Segment], units: Units) -> String {
+    let entities: Vec<Entity> = segments.iter().map(|s| Entity { layer: s.layer, shape: Shape::Line { a: s.a, b: s.b } }).collect();
+    write_entities(&entities, units)
+}
+
+/// Writes lines and arcs as an ASCII DXF with header units and a layer table (true arcs: a cutter follows them exactly).
+pub fn write_entities(entities: &[Entity], units: Units) -> String {
     let mut layers: Vec<&str> = Vec::new();
-    for s in segments {
+    for s in entities {
         if !layers.contains(&s.layer) {
             layers.push(s.layer);
         }
@@ -60,12 +80,28 @@ pub fn write_segments(segments: &[Segment], units: Units) -> String {
     d.push_str("0\nENDTAB\n0\nENDSEC\n");
 
     d.push_str("0\nSECTION\n2\nENTITIES\n");
-    for s in segments {
-        let _ = write!(
-            d,
-            "0\nLINE\n8\n{}\n10\n{}\n20\n{}\n30\n0.0\n11\n{}\n21\n{}\n31\n0.0\n",
-            s.layer, s.a[0], s.a[1], s.b[0], s.b[1]
-        );
+    for e in entities {
+        match e.shape {
+            Shape::Line { a, b } => {
+                let _ = write!(d, "0\nLINE\n8\n{}\n10\n{}\n20\n{}\n30\n0.0\n11\n{}\n21\n{}\n31\n0.0\n", e.layer, a[0], a[1], b[0], b[1]);
+            }
+            Shape::Arc { center, radius, start, end } => {
+                if (end - start).abs() >= 360.0 - 1e-9 {
+                    let _ = write!(d, "0\nCIRCLE\n8\n{}\n10\n{}\n20\n{}\n30\n0.0\n40\n{}\n", e.layer, center[0], center[1], radius);
+                } else {
+                    let _ = write!(
+                        d,
+                        "0\nARC\n8\n{}\n10\n{}\n20\n{}\n30\n0.0\n40\n{}\n50\n{}\n51\n{}\n",
+                        e.layer,
+                        center[0],
+                        center[1],
+                        radius,
+                        start.rem_euclid(360.0),
+                        end.rem_euclid(360.0)
+                    );
+                }
+            }
+        }
     }
     d.push_str("0\nENDSEC\n0\nEOF\n");
     d
