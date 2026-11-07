@@ -9,6 +9,7 @@ pub mod merge;
 pub mod mesh;
 pub mod opening;
 pub mod profile;
+pub mod sandbox;
 pub mod scene;
 pub mod section;
 pub mod model;
