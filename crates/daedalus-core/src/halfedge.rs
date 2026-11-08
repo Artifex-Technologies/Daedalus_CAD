@@ -397,6 +397,16 @@ impl HalfEdgeMesh {
     /// becomes a face (its loose lines turn into the face's edges).
     fn close_loop(&mut self, new_line: usize, tol: f64) -> Option<usize> {
         let [a, b] = self.lines[new_line];
+        // a loop can only close where both ends already meet something (another loose line or a face): drawing an outline
+        // line by line, that is every line but the last, and skipping the search keeps a long outline from taking seconds
+        // (each search lists and sorts every edge)
+        let meets = |v: u32| {
+            self.lines.iter().enumerate().any(|(i, l)| i != new_line && (l[0] == v || l[1] == v))
+                || self.half_edges.iter().any(|h| h.origin == v)
+        };
+        if !meets(a) || !meets(b) {
+            return None;
+        }
         let mesh = self.to_mesh();
         let mut adjacent: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
         for (i, &[x, y]) in self.lines.iter().enumerate() {
