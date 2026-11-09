@@ -27,7 +27,8 @@ pub fn inside(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
 }
 
 /// Faces for the solid parts of `outlines` (closed, each listed once round, any winding), laid on `plane`, all facing the
-/// plane's normal. A face with a hole (the inside of an O) is one face with that hole, as the Line tool makes it.
+/// plane's normal. A face with a hole (the inside of an O) is one face with that hole, as the Line tool makes it; so is an
+/// opening that an outline reaches along a bridge of lines, out and back the same way (as some SketchUp faces come).
 ///
 /// The outlines are drawn as the Line tool would draw them line by line ([`faces_line_by_line`] does exactly that), with the
 /// same result, but in one pass: a logo of over 5,000 lines in a SketchUp model took over 6 s line by line.
@@ -66,21 +67,17 @@ fn in_order(outlines: &[Vec<[f64; 2]>]) -> (Vec<Ring<'_>>, Vec<Ring<'_>>) {
 }
 
 /// What is left of the drawn outlines (`m`) once the faces inside an even number of outlines (holes) are taken out, every
-/// face turned toward the plane's normal, and the loose lines dropped.
+/// face turned toward the plane's normal, and the loose lines dropped. A face drawn round faces already there gets its
+/// holes there first ([`uncover`]).
 fn cut_out(m: Mesh, rings: &[Ring<'_>], plane: &Plane) -> Mesh {
     let mut m = m;
-    let open: Vec<usize> = (0..m.faces.len())
-        .filter(|&f| {
-            let tri = m.triangulate_face(f);
-            let Some(t) = tri.first() else { return false };
-            let c = t.iter().fold([0.0f64; 3], |s, &v| {
-                let p = m.positions[v as usize];
-                [s[0] + p[0] / 3.0, s[1] + p[1] / 3.0, s[2] + p[2] / 3.0]
-            });
-            let q = plane.to_local(c);
-            rings.iter().filter(|r| inside(r, q)).count() % 2 == 0
-        })
-        .collect();
+    let tol = m.tolerance();
+    let mut inner: Vec<Option<[f64; 2]>> = (0..m.faces.len()).map(|f| point_inside(&m, f, plane, tol)).collect();
+    for f in uncover(&mut m, plane, &inner) {
+        inner[f] = point_inside(&m, f, plane, tol);
+    }
+    let even = |q: [f64; 2]| rings.iter().filter(|r| inside(r, q)).count() % 2 == 0;
+    let open: Vec<usize> = (0..m.faces.len()).filter(|&f| inner[f].is_some_and(even)).collect();
     for &f in open.iter().rev() {
         m.remove_face(f);
     }
@@ -98,6 +95,103 @@ fn cut_out(m: Mesh, rings: &[Ring<'_>], plane: &Plane) -> Mesh {
     m.seams.retain(|&[a, b]| edges.contains(&(a.min(b), a.max(b))));
     m.compact();
     m
+}
+
+/// A point inside face `f`, in the plane: the middle of its first triangle that is not a sliver (its middle at least ten
+/// times `tol` from its sides), else of its first (None if it has none). A sliver along a straight edge (corners in a row, a
+/// hair off straight on a plane far from the origin) has its middle on the face's edge, and a whole face was taken for open.
+fn point_inside(m: &Mesh, f: usize, plane: &Plane, tol: f64) -> Option<[f64; 2]> {
+    let tri = m.triangulate_face(f);
+    let clear = |t: &&[u32; 3]| {
+        let [a, b, c] = t.map(|v| m.positions[v as usize]);
+        let (u, w) = (sub(b, a), sub(c, a));
+        let twice = len([u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]]);
+        // the middle is a third of the shortest height from the nearest side
+        twice / (3.0 * len(u).max(len(w)).max(len(sub(c, b)))) > 10.0 * tol
+    };
+    let t = tri.iter().find(clear).or(tri.first())?;
+    let c = t.iter().fold([0.0f64; 3], |s, &v| {
+        let p = m.positions[v as usize];
+        [s[0] + p[0] / 3.0, s[1] + p[1] / 3.0, s[2] + p[2] / 3.0]
+    });
+    Some(plane.to_local(c))
+}
+
+/// Faces that an outline closed round after they were drawn, covering them with no hole there. An outline that runs out
+/// along a bridge of lines to an opening and back the same way (some SketchUp faces come so) closes the opening's loop
+/// first, as a face of its own, and its own loop later; drawn line by line, the outline then filled the opening in.
+///
+/// A face lies on another when a point inside it (`inner`) and all its corners are in that face's area (inside its outline,
+/// in none of its holes) and none of its corners is that face's. Each face lying on another, and not inside the outline of
+/// another face lying on the same one (an island in an opening goes with the opening), becomes a hole in the smallest face
+/// it lies on, as the Line tool cuts a hole round an outline drawn inside a face (`halfedge::closing`); holes of that face
+/// inside it go with it. Returns the faces whose `inner` point lies in one of their new holes.
+fn uncover(m: &mut Mesh, plane: &Plane, inner: &[Option<[f64; 2]>]) -> Vec<usize> {
+    let n = m.faces.len();
+    let flat: Vec<[f64; 2]> = m.positions.iter().map(|&p| plane.to_local(p)).collect();
+    let ring = |r: &[u32]| -> Vec<[f64; 2]> { r.iter().map(|&v| flat[v as usize]).collect() };
+    let outlines: Vec<Vec<[f64; 2]>> = m.faces.iter().map(|r| ring(r)).collect();
+    let holes: Vec<Vec<Vec<[f64; 2]>>> = (0..n).map(|f| m.holes_of(f).iter().map(|h| ring(h)).collect()).collect();
+    let boxes: Vec<[f64; 4]> = outlines
+        .iter()
+        .map(|r| r.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]))
+        .collect();
+    // in face g's own area
+    let on = |g: usize, q: [f64; 2]| {
+        let b = boxes[g];
+        q[0] >= b[0] && q[0] <= b[2] && q[1] >= b[1] && q[1] <= b[3] && inside(&outlines[g], q) && !holes[g].iter().any(|h| inside(h, q))
+    };
+    let size = |r: &[[f64; 2]]| (0..r.len()).map(|i| r[i][0] * r[(i + 1) % r.len()][1] - r[(i + 1) % r.len()][0] * r[i][1]).sum::<f64>().abs();
+    // the smallest face each face lies on
+    let mut corners: Vec<Option<HashSet<u32>>> = vec![None; n];
+    let mut under: Vec<Option<usize>> = vec![None; n];
+    for f in 0..n {
+        let Some(q) = inner[f] else { continue };
+        let mut best: Option<(f64, usize)> = None;
+        for g in (0..n).filter(|&g| g != f) {
+            if !on(g, q) {
+                continue;
+            }
+            let theirs = corners[g].get_or_insert_with(|| m.loops(g).flatten().copied().collect());
+            if m.faces[f].iter().any(|v| theirs.contains(v)) || !m.faces[f].iter().all(|&v| on(g, flat[v as usize])) {
+                continue;
+            }
+            let s = size(&outlines[g]);
+            if best.is_none_or(|(b, _)| s < b) {
+                best = Some((s, g));
+            }
+        }
+        under[f] = best.map(|(_, g)| g);
+    }
+    // (face, the face it lies on, the point inside it)
+    let lying: Vec<(usize, usize, [f64; 2])> = (0..n).filter_map(|f| Some((f, under[f]?, inner[f]?))).collect();
+    let mut cut: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(f, g, q) in &lying {
+        if !lying.iter().any(|&(h, on_g, _)| h != f && on_g == g && inside(&outlines[h], q)) {
+            cut[g].push(f);
+        }
+    }
+    let mut moved = Vec::new();
+    for g in 0..n {
+        if cut[g].is_empty() {
+            continue;
+        }
+        let up = newell(&m.positions, &m.faces[g]);
+        let within = |p: [f64; 2]| cut[g].iter().any(|&f| inside(&outlines[f], p));
+        let mut hs: Vec<Vec<u32>> = m.holes_of(g).iter().filter(|h| !within(flat[h[0] as usize])).cloned().collect();
+        for &f in &cut[g] {
+            // wound against the face's outline
+            let r = &m.faces[f];
+            let along = newell(&m.positions, r);
+            let same = along[0] * up[0] + along[1] * up[1] + along[2] * up[2] > 0.0;
+            hs.push(if same { r.iter().rev().copied().collect() } else { r.clone() });
+        }
+        m.set_holes(g, hs);
+        if inner[g].is_some_and(within) {
+            moved.push(g);
+        }
+    }
+    moved
 }
 
 /// The outlines (in drawing order) drawn line by line, as `HalfEdgeMesh::add_line` draws them, into what
@@ -773,10 +867,166 @@ mod tests {
                 assert!(counts.loops > 0, "{what}: a loop closed through earlier lines");
             }
         }
-        // drawn line by line, the loop at the end of the bridge comes out filled in, not as a hole; the one pass keeps that,
-        // so models open as they did
+        // the loop at the end of the bridge is an opening: a hole, not filled in (its loop closed first, as a face of its own,
+        // and the outline round it later)
         let cap = faces(&[keyhole], &Plane::ground()).unwrap();
-        assert_eq!((cap.faces.len(), cap.holes_of(0).len()), (1, 0));
+        assert_eq!((cap.faces.len(), cap.holes_of(0).len()), (1, 1));
+        assert!((area(&cap, &Plane::ground()) - (400.0 - 12.0)).abs() < 1e-9);
+    }
+
+    /// The area `cap`'s faces cover, worked out in the plane: each outline's, less its holes' (wound the other way); every
+    /// face must face the plane's normal.
+    fn area(cap: &Mesh, plane: &Plane) -> f64 {
+        let signed = |r: &[u32]| {
+            let p: Vec<[f64; 2]> = r.iter().map(|&v| plane.to_local(cap.positions[v as usize])).collect();
+            (0..p.len()).map(|i| p[i][0] * p[(i + 1) % p.len()][1] - p[(i + 1) % p.len()][0] * p[i][1]).sum::<f64>() / 2.0
+        };
+        (0..cap.faces.len())
+            .map(|f| {
+                assert!(signed(&cap.faces[f]) > 0.0, "face {f} faces the plane's normal");
+                cap.loops(f).map(|r| signed(r)).sum::<f64>()
+            })
+            .sum()
+    }
+
+    /// The holes of face `f`, each as its corners in the plane (rounded to a millionth, sorted): to compare with the openings
+    /// drawn.
+    fn holes_seen(cap: &Mesh, f: usize, plane: &Plane) -> Vec<Vec<[i64; 2]>> {
+        let flat = |h: &Vec<u32>| h.iter().map(|&v| plane.to_local(cap.positions[v as usize])).collect::<Vec<_>>();
+        let mut out: Vec<Vec<[i64; 2]>> = cap.holes_of(f).iter().map(|h| corners_of(&flat(h))).collect();
+        out.sort();
+        out
+    }
+
+    fn corners_of(r: &[[f64; 2]]) -> Vec<[i64; 2]> {
+        let mut c: Vec<[i64; 2]> = r.iter().map(|p| p.map(|x| (x * 1e6).round() as i64)).collect();
+        c.sort();
+        c.dedup();
+        c
+    }
+
+    /// Every way of drawing `ring`: from each corner, either way round.
+    fn every_start(ring: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+        let mut out = Vec::new();
+        for k in 0..ring.len() {
+            let mut r = ring.to_vec();
+            r.rotate_left(k);
+            out.push(r.clone());
+            r.reverse();
+            out.push(r);
+        }
+        out
+    }
+
+    #[test]
+    fn an_opening_reached_along_a_doubled_bridge_stays_open() {
+        // the keyhole: in along a bridge of three lines to a 4 x 3 loop, round it and back; drawn from a corner before the
+        // bridge, the loop closed first and the outline filled it in
+        let keyhole = vec![
+            [0.0, 0.0], [10.0, 0.0], [10.0, 1.0], [10.0, 2.0], [10.0, 3.0],
+            [8.0, 3.0], [8.0, 6.0], [12.0, 6.0], [12.0, 3.0], [10.0, 3.0],
+            [10.0, 2.0], [10.0, 1.0], [10.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0],
+        ];
+        let opening = corners_of(&[[10.0, 3.0], [8.0, 3.0], [8.0, 6.0], [12.0, 6.0], [12.0, 3.0]]);
+        // the loop wound against the outline (as a hole is) or with it: by the even-odd rule an opening either way
+        let mut with = keyhole.clone();
+        with[5..9].reverse();
+        for plane in planes() {
+            for (ring, how) in [(&keyhole, "against"), (&with, "with")] {
+                for r in every_start(ring) {
+                    same_both_ways(&[r.clone()], &plane);
+                    let cap = faces(&[r.clone()], &plane).unwrap();
+                    assert_eq!(cap.faces.len(), 1, "{how}, from {:?}", r[0]);
+                    assert_eq!(holes_seen(&cap, 0, &plane), vec![opening.clone()], "{how}, from {:?}", r[0]);
+                    assert!((area(&cap, &plane) - 388.0).abs() < 1e-6, "{how}, from {:?}: {}", r[0], area(&cap, &plane));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn several_openings_reached_along_doubled_bridges_stay_open() {
+        // a 30 x 20 plate: a bridge of two lines up from its bottom edge to opening A (4 x 2), from A's top on to opening B
+        // (2 x 2), a bridge of two lines in from the right edge to a diamond C, and a hole D of its own
+        let a = [[5.0, 4.0], [3.0, 4.0], [3.0, 6.0], [5.0, 6.0], [7.0, 6.0], [7.0, 4.0]];
+        let b = [[5.0, 9.0], [4.0, 9.0], [4.0, 11.0], [6.0, 11.0], [6.0, 9.0]];
+        let c = [[24.0, 10.0], [22.0, 8.0], [20.0, 10.0], [22.0, 12.0]];
+        let d = vec![[12.0, 12.0], [16.0, 12.0], [16.0, 16.0], [12.0, 16.0]];
+        let mut ring = vec![[0.0, 0.0], [5.0, 0.0], [5.0, 2.0]];
+        // round A (wound as a hole) from its bottom middle to its top middle, up to B, round B, back down, on round A
+        ring.extend(&a[..4]);
+        ring.push([5.0, 7.5]);
+        ring.extend(b);
+        ring.extend([b[0], [5.0, 7.5]]);
+        ring.extend(&a[3..]);
+        ring.extend([a[0], [5.0, 2.0], [5.0, 0.0], [30.0, 0.0], [30.0, 10.0], [27.0, 10.0]]);
+        ring.extend(c);
+        ring.extend([c[0], [27.0, 10.0], [30.0, 10.0], [30.0, 20.0], [0.0, 20.0]]);
+        let openings = {
+            let mut o = vec![corners_of(&a), corners_of(&b), corners_of(&c), corners_of(&d)];
+            o.sort();
+            o
+        };
+        let want = 600.0 - 8.0 - 4.0 - 8.0 - 16.0;
+        for plane in planes() {
+            for r in every_start(&ring) {
+                let outlines = vec![r.clone(), d.clone()];
+                same_both_ways(&outlines, &plane);
+                let cap = faces(&outlines, &plane).unwrap();
+                assert_eq!(cap.faces.len(), 1, "from {:?}", r[0]);
+                assert_eq!(holes_seen(&cap, 0, &plane), openings, "from {:?}", r[0]);
+                assert!((area(&cap, &plane) - want).abs() < 1e-6, "from {:?}: {}", r[0], area(&cap, &plane));
+            }
+        }
+        // a bridge out to a square of its own: two faces, as the loops enclose
+        let pair = vec![
+            [0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [7.0, 2.0], [7.0, 0.0], [9.0, 0.0],
+            [9.0, 4.0], [7.0, 4.0], [7.0, 2.0], [4.0, 2.0], [4.0, 4.0], [0.0, 4.0],
+        ];
+        for plane in planes() {
+            for r in every_start(&pair) {
+                same_both_ways(&[r.clone()], &plane);
+                let cap = faces(&[r.clone()], &plane).unwrap();
+                assert_eq!((cap.faces.len(), cap.holes.iter().flatten().count()), (2, 0), "from {:?}", r[0]);
+                assert!((area(&cap, &plane) - 24.0).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn plates_that_came_out_empty_have_their_face() {
+        // two of the random plates below, as they failed: nothing came out at all
+        // in along a bridge of three lines to an opening wound with the outline: the outline's loop closed last, and the
+        // point `closing` tries (just inside its first corner) lay in the opening, closed first, so its lines were left
+        let ring = vec![
+            [120.0, 390.0], [120.0, 0.0], [60.0, 0.0], [60.0, 80.0], [60.0, 160.0], [60.0, 240.0], [90.0, 240.0], [90.0, 300.0],
+            [60.0, 300.0], [30.0, 300.0], [30.0, 240.0], [60.0, 240.0], [60.0, 160.0], [60.0, 80.0], [60.0, 0.0], [0.0, 0.0], [0.0, 390.0],
+        ];
+        let plane = Plane::ground();
+        same_both_ways(&[ring.clone()], &plane);
+        let cap = faces(&[ring], &plane).unwrap();
+        assert_eq!((cap.faces.len(), cap.holes_of(0).len()), (1, 1));
+        assert!((area(&cap, &plane) - (120.0 * 390.0 - 60.0 * 60.0)).abs() < 1e-6);
+        // 4 x 13 mm with two openings, on a sloping plane far from the origin: the plate's first triangle was a sliver along
+        // its bottom edge (corners in a row there, a hair off straight so far out), and the plate was taken for open
+        let ring: Vec<[f64; 2]> = [
+            [1.0, 3.0], [2.0, 3.0], [2.0, 1.5], [2.0, 0.0], [0.0, 0.0], [0.0, 13.0], [2.0, 13.0], [2.0, 10.0], [3.0, 10.0], [3.0, 8.0],
+            [2.0, 8.0], [1.0, 8.0], [1.0, 10.0], [2.0, 10.0], [2.0, 13.0], [4.0, 13.0], [4.0, 0.0], [2.0, 0.0], [2.0, 1.5], [2.0, 3.0],
+            [3.0, 3.0], [3.0, 5.0], [2.0, 5.0], [1.0, 5.0],
+        ]
+        .iter()
+        .map(|p| [p[0] * 0.001, p[1] * 0.001])
+        .collect();
+        let plane = Plane {
+            origin: [709.2129494994879, 205.93247283250093, 176.2825476936996],
+            u: [-0.42598999065417575, 0.904727875033402, 0.0],
+            v: [0.6838495430777648, 0.3219897037590494, 0.654730809650418],
+            normal: [0.5923532141339216, 0.2789087714839825, -0.7558621348463674],
+        };
+        same_both_ways(&[ring.clone()], &plane);
+        let cap = faces(&[ring], &plane).unwrap();
+        assert_eq!((cap.faces.len(), cap.holes_of(0).len()), (1, 2));
+        assert!((area(&cap, &plane) - 44e-6).abs() < 1e-15, "{}", area(&cap, &plane));
     }
 
     #[test]
@@ -820,24 +1070,139 @@ mod tests {
         }
     }
 
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn unit(&mut self) -> f64 {
+            self.next() as f64 / (1u64 << 31) as f64
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    #[test]
+    fn random_plates_keep_every_opening_reached_along_a_bridge() {
+        // a plate in columns 4 wide, each with up to two 2 x 2 openings, one above the other: the lower reached along a
+        // bridge up from the bottom edge, the upper from the top edge, from the bottom edge (no lower one) or on from the
+        // lower one; each wound as a hole or the other way, bridges of one to three lines; plain triangular holes in some
+        // free places; drawn from any corner, either way round, at any size, on the ground or a sloping plane far away:
+        // one face, a hole for each opening, and the area the outlines enclose. PROFILE_CASES=n for more
+        let cases: usize = std::env::var("PROFILE_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(200);
+        let mut rng = Rng(11);
+        let (mut openings_seen, mut chained) = (0, 0);
+        for case in 0..cases {
+            let cols = 1 + rng.below(5);
+            let (w, h) = (4.0 * cols as f64, 13.0);
+            // the opening with its bottom middle at (x, y), from there round (clockwise: as a hole), its top middle 4th
+            let opening = |x: f64, y: f64, clockwise: bool| {
+                let mut r = vec![[x, y], [x - 1.0, y], [x - 1.0, y + 2.0], [x, y + 2.0], [x + 1.0, y + 2.0], [x + 1.0, y]];
+                if !clockwise {
+                    r[1..].reverse();
+                }
+                r
+            };
+            // a bridge from (x, y0) to (x, y1), both ends included
+            let bridge = |rng: &mut Rng, x: f64, y0: f64, y1: f64| {
+                let k = rng.below(3);
+                (0..=k + 1).map(|i| [x, y0 + (y1 - y0) * i as f64 / (k + 1) as f64]).collect::<Vec<_>>()
+            };
+            let mut walk = vec![[0.0, 0.0]];
+            let mut tops = Vec::new();
+            let (mut holes, mut plain) = (Vec::new(), Vec::new());
+            for c in 0..cols {
+                let x = 4.0 * c as f64 + 2.0;
+                let (lower, upper) = (rng.below(3) > 0, rng.below(2) == 0);
+                // the upper one reached from below (the bottom edge, or on from the lower one), or else from the top edge
+                let from_below = upper && rng.below(2) == 0;
+                if lower || from_below {
+                    let first = if lower { 3.0 } else { 8.0 };
+                    let up = bridge(&mut rng, x, 0.0, first);
+                    walk.extend(&up);
+                    let o = opening(x, first, rng.below(4) > 0);
+                    holes.push(corners_of(&o));
+                    for (i, &p) in o.iter().enumerate().skip(1) {
+                        walk.push(p);
+                        if i == 3 && lower && from_below {
+                            // at its top middle, on to the upper one and back
+                            chained += 1;
+                            let on = bridge(&mut rng, x, 5.0, 8.0);
+                            walk.extend(&on[1..]);
+                            let o2 = opening(x, 8.0, rng.below(4) > 0);
+                            holes.push(corners_of(&o2));
+                            walk.extend(&o2[1..]);
+                            walk.extend(on.iter().rev());
+                        }
+                    }
+                    walk.extend(up.iter().rev());
+                }
+                if upper && !from_below {
+                    tops.push(x);
+                }
+                // plain holes where nothing else is
+                if !upper && rng.below(3) == 0 {
+                    plain.push(vec![[x - 1.0, 8.0], [x + 1.0, 8.0], [x, 10.0]]);
+                }
+                if !lower && !from_below && rng.below(3) == 0 {
+                    plain.push(vec![[x - 1.0, 3.0], [x + 1.0, 3.0], [x, 5.0]]);
+                }
+            }
+            walk.extend([[w, 0.0], [w, h]]);
+            for &x in tops.iter().rev() {
+                let down = bridge(&mut rng, x, h, 10.0);
+                walk.extend(&down);
+                let mut o = opening(x, 8.0, rng.below(4) > 0);
+                holes.push(corners_of(&o));
+                o.rotate_left(3);
+                walk.extend(&o[1..]);
+                walk.extend(down.iter().rev());
+            }
+            walk.push([0.0, h]);
+            let n = holes.len();
+            openings_seen += n;
+            holes.extend(plain.iter().map(|r| corners_of(r)));
+            let want = w * h - 4.0 * n as f64 - 2.0 * plain.len() as f64;
+            // any size, from any corner, either way round
+            let s = [0.001, 0.05, 1.0, 30.0][rng.below(4)];
+            let k = rng.below(walk.len());
+            walk.rotate_left(k);
+            if rng.below(2) == 0 {
+                walk.reverse();
+            }
+            let mut outlines: Vec<Vec<[f64; 2]>> = vec![walk];
+            outlines.extend(plain.iter().map(|r| if rng.below(2) == 0 { r.iter().rev().copied().collect() } else { r.clone() }));
+            let outlines: Vec<Vec<[f64; 2]>> = outlines.iter().map(|r| r.iter().map(|p| [p[0] * s, p[1] * s]).collect()).collect();
+            let mut holes: Vec<Vec<[i64; 2]>> = holes.iter().map(|r| r.iter().map(|p| p.map(|c| (c as f64 * s).round() as i64)).collect()).collect();
+            for r in &mut holes {
+                r.sort();
+            }
+            holes.sort();
+            let plane = if rng.below(2) == 0 {
+                Plane::ground()
+            } else {
+                let o = [rng.unit() * 2000.0 - 1000.0, rng.unit() * 2000.0 - 1000.0, rng.unit() * 200.0];
+                Plane::from_point_normal(o, [rng.unit() - 0.5, rng.unit() - 0.5, rng.unit() - 0.5]).unwrap_or(Plane::ground())
+            };
+            let what = format!("case {case}: {outlines:?} on {plane:?}");
+            same_both_ways(&outlines, &plane);
+            let cap = faces(&outlines, &plane).unwrap();
+            assert_eq!(cap.faces.len(), 1, "{what}");
+            assert_eq!(holes_seen(&cap, 0, &plane), holes, "{what}");
+            let got = area(&cap, &plane);
+            assert!((got - want * s * s).abs() <= 1e-9 * want * s * s, "{what}: area {got}, not {}", want * s * s);
+        }
+        assert!(openings_seen > cases && chained > cases / 10, "{openings_seen} openings, {chained} reached from another");
+    }
+
     #[test]
     fn many_random_outlines_are_drawn_as_line_by_line() {
         // squares, triangles, stars and keyholes, on a half-unit lattice (so corners land on corners and edges, edges along
         // edges) or anywhere, nested, touching and crossing, on the ground or on a sloping plane far away;
         // PROFILE_CASES=n for more
-        struct Rng(u64);
-        impl Rng {
-            fn next(&mut self) -> u64 {
-                self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                self.0 >> 33
-            }
-            fn unit(&mut self) -> f64 {
-                self.next() as f64 / (1u64 << 31) as f64
-            }
-            fn below(&mut self, n: usize) -> usize {
-                (self.next() % n as u64) as usize
-            }
-        }
         fn shape(rng: &mut Rng) -> Vec<[f64; 2]> {
             let lattice = rng.below(2) == 0;
             let at = |rng: &mut Rng, span: f64| if lattice { (rng.below((span * 2.0) as usize + 1) as f64) * 0.5 } else { rng.unit() * span };

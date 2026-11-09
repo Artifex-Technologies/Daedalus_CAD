@@ -634,7 +634,7 @@ pub(crate) enum Closing {
 /// What the loop `ring` (corners, from the new line's first end back round to its other end, as `close_loop` finds it) makes
 /// in `mesh`: nothing when it has under three corners, does not lie in one plane (within `tol`) or overlaps a face's edge
 /// without meeting it; a hole in the face it lies on (wound as that face is); else a face of its own, facing up if it lies
-/// flat, else toward the front (-Y), else toward +X.
+/// flat, else toward the front (-Y), else toward +X. A face lying wholly inside the loop is not one it lies on.
 pub(crate) fn closing(mesh: &Mesh, mut ring: Vec<u32>, tol: f64) -> Option<Closing> {
     if ring.len() < 3 {
         return None;
@@ -656,13 +656,31 @@ pub(crate) fn closing(mesh: &Mesh, mut ring: Vec<u32>, tol: f64) -> Option<Closi
     if pts.iter().any(|&p| dot(sub(p, pts[0]), n).abs() > tol) {
         return None;
     }
-    // not over a face already there: the middle of the new face (a point just inside its first corner) is in none
+    // not over a face already there: the middle of the new face (a point just inside its first corner) is in none. A face
+    // that lies inside the loop (every corner of its outline inside it, none of them the loop's) does not count: drawn first,
+    // the loop closed round it later, as an outline that reaches an opening along a bridge of lines and back closes the
+    // opening's loop first
     let probe = {
         let k = pts.len();
         let (p0, p1, pl) = (pts[0], pts[1], pts[k - 1]);
         [(p0[0] + p1[0] + pl[0]) / 3.0, (p0[1] + p1[1] + pl[1]) / 3.0, (p0[2] + p1[2] + pl[2]) / 3.0]
     };
-    let host = (0..mesh.faces.len()).find(|&f| crate::imprint::on_face(mesh, f, probe, tol));
+    let within = |f: usize| {
+        mesh.faces[f].iter().all(|&v| {
+            let p = mesh.positions[v as usize];
+            !ring.contains(&v) && dot(sub(p, pts[0]), n).abs() <= tol && point_in_ring(&pts, p, n)
+        })
+    };
+    let mut host = None;
+    for f in (0..mesh.faces.len()).filter(|&f| crate::imprint::on_face(mesh, f, probe, tol)) {
+        if crate::imprint::on_face_all(mesh, f, &pts, tol) {
+            host = Some(f);
+            break;
+        }
+        if !within(f) {
+            return None; // it overlaps the face's edge without meeting it: leave the lines
+        }
+    }
 
     // which way it faces: up if it lies flat, else toward the front (-Y), else toward +X
     let want = if n[2].abs() > 0.1 { n[2] > 0.0 } else if n[1].abs() > 0.1 { n[1] < 0.0 } else { n[0] > 0.0 };
@@ -671,10 +689,6 @@ pub(crate) fn closing(mesh: &Mesh, mut ring: Vec<u32>, tol: f64) -> Option<Closi
     }
     // drawn inside a face (a rectangle on a box's top): the face gets a hole there, filled by the new face
     if let Some(f) = host {
-        let all_inside = crate::imprint::on_face_all(mesh, f, &pts, tol);
-        if !all_inside {
-            return None; // it overlaps the face's edge without meeting it: leave the lines
-        }
         let (hn, _) = crate::imprint::face_plane(mesh, &mesh.faces[f])?;
         // the ring's normal now (it may have been turned round above), to wind as the face around it does
         let now = if want { n } else { n.map(|c| -c) };

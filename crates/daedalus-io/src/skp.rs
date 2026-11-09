@@ -585,6 +585,22 @@ end
     }
 
     #[test]
+    fn an_opening_reached_along_a_bridge_comes_in_as_a_hole() {
+        // a 20 m plate whose outline runs up a bridge of three edges to a 4 x 3 opening, round it and back down, with a 3 x 3
+        // hole of its own: one face, both openings holes, as SketchUp shows it (the bridge's opening came in filled before)
+        let text = "daedalus-skp 1\ntop\n\
+            v 0 0 0\nv 10 0 0\nv 10 1 0\nv 10 2 0\nv 10 3 0\nv 8 3 0\nv 8 6 0\nv 12 6 0\nv 12 3 0\nv 20 0 0\nv 20 20 0\nv 0 20 0\n\
+            v 3 14 0\nv 6 14 0\nv 6 17 0\nv 3 17 0\n\
+            f -1 0 0 1 2 16 0 1 2 3 4 5 6 7 8 4 3 2 1 9 10 11 4 15 14 13 12\nend\n";
+        let s = read(text.as_bytes()).unwrap();
+        let m = &s.root.mesh;
+        assert_eq!((m.faces.len(), m.holes_of(0).len()), (1, 2));
+        let area = |r: &Vec<u32>| newell(&m.positions, r)[2] / 2.0;
+        assert!((m.loops(0).map(area).sum::<f64>() - (400.0 - 12.0 - 9.0)).abs() < 1e-9);
+        assert!(HalfEdgeMesh::from_mesh(m).is_ok());
+    }
+
+    #[test]
     fn bad_files_are_refused() {
         assert!(read(b"hello\n").is_err());
         assert!(read(b"daedalus-skp 1\ntop\nf -1 0 0 1 1 3 0 1 2\nend\n").unwrap_err().to_string().contains("vertex not defined"));
