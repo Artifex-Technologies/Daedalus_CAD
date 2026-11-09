@@ -25,8 +25,10 @@ Arch setup (packages, Vulkan driver) is in `README.md`. CI: `.github/workflows/c
 - `crates/daedalus-core`: `Mesh` (interchange, `pick_face`, `edges`), `HalfEdgeMesh` (topology, `push_pull`,
   `split_face`, `erase_face`), `Model` (document + undo/redo), `merge` (coplanar faces), `sketch` (workplanes and shapes), `triangulate`
   (ear clipping), `inspect` (solid checks and repair), `sheetmetal` (flat patterns)
-- `crates/daedalus-io`: `MeshImporter` / `MeshExporter` per format (`.daedalus` native, STL, OBJ, DXF, DAE), `dxf2d`
-  (flat-pattern DXF), images/PSD
+- `crates/daedalus-io`: `MeshImporter` / `MeshExporter` per format (`.ddls` native, earlier `.daedalus`; STEP in `step.rs`,
+  our own AP214 reader and writer: flat faces, assemblies, colours, units, loose lines as wireframe, soft edges in an
+  invisible "Soft edges" layer; STL, OBJ, DXF, DAE), `formats.rs` (where Save writes, what each format leaves out),
+  `dxf2d` (flat-pattern DXF), images/PSD
 - `crates/daedalus-app`: CLI (`inspect`, `flatten`, stats)
 - `crates/daedalus-sheet`: exact solids (B-rep) on SolidCraft's kernel (MIT/Apache, git dependency pinned to commit
   871014f; solidcore underneath is Apache-2.0; notices in the crate's `NOTICE.md`). `sheet.rs` is SolidCraft's sheet-metal
@@ -80,7 +82,12 @@ the current state is:
   (`300mm`, `4' 6 1/2"`); once a number is being typed, unit letters, `'`, `"`, `/` and spaces go to the Measurements box.
 - Coplanar faces merge (`core/src/merge.rs`, 2026-11-05): after every push/pull (one undo step), in Repair, and by Tools >
   Merge Coplanar Faces. A group whose outline would have a hole or a pinch is left alone.
-- Native format: `.daedalus` (text, versioned, `crates/daedalus-io/src/native.rs`); File menu with New/Open/Save/Save As/
+- Saving (2026-11-08, `formats::save_target`): Save keeps the format a model was opened in when Daedalus writes it (STEP,
+  `.ddls`, OBJ, STL, DAE, DXF), in place with no dialog; `.daedalus` saves to its own path. New models: the dialog with
+  STEP chosen. `.skp`/`.dskp`, and STEP files read only in part, are saved beside themselves as STEP. A lossy save shows
+  a notice of what was left out (`save_scene_with`) with "also save a full copy (.ddls)". STEP opens with `step::read`
+  (units taken, unread faces named). File > Export STEP for Fabrication is the exact exporter in daedalus-sheet.
+- Native format: `.ddls` (was `.daedalus`, still read; text, versioned, `crates/daedalus-io/src/native.rs`); File menu with New/Open/Save/Save As/
   Import/Export, a dot in the title while unsaved, and a question before unsaved changes are thrown away (2026-11-05).
 - Window frame (2026-11-06): on Linux the window has no system frame (Hyprland draws none, so it could not be moved or
   resized with the mouse). The menu bar is the title bar: the title in its empty part, drag to move, double-click to
