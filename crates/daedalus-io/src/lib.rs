@@ -1,6 +1,7 @@
 //! File format import/export for Daedalus CAD.
 //!
-//! Each format implements [`MeshImporter`] and/or [`MeshExporter`]. `.daedalus` (native.rs) is Daedalus's own. Formats with
+//! Each format implements [`MeshImporter`] and/or [`MeshExporter`]. `.daedalus` (native.rs) is Daedalus's own; STEP
+//! (step.rs) holds a whole model too, groups and components as an assembly. Formats with
 //! licensing or SDK constraints (DWG, SKP, FBX) belong in their own optional
 //! modules or crates so they can be feature-gated.
 
@@ -15,6 +16,7 @@ pub mod image_io;
 pub mod native;
 pub mod obj;
 pub mod skp;
+pub mod step;
 pub mod stl;
 mod weld;
 
@@ -64,7 +66,7 @@ pub fn import_mesh(path: &Path) -> Result<Mesh, IoError> {
     if ext == "dskp" {
         return Ok(skp::read(&std::fs::read(path)?)?.flatten());
     }
-    let importers: [&dyn MeshImporter; 5] = [&native::Native, &stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae];
+    let importers: [&dyn MeshImporter; 6] = [&native::Native, &stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae, &step::Step];
     let importer = importers
         .iter()
         .find(|i| i.extensions().contains(&ext.as_str()))
@@ -72,30 +74,41 @@ pub fn import_mesh(path: &Path) -> Result<Mesh, IoError> {
     importer.import(&std::fs::read(path)?)
 }
 
-/// Opens a model: a `.daedalus` file whole (groups, components, notes), any other format as its geometry.
+/// Opens a model: a `.daedalus` file whole (groups, components, notes), a STEP file whole (its assembly as groups and
+/// components; refused, naming them, if it has faces Daedalus cannot read yet), any other format as its geometry.
 pub fn open_scene(path: &Path) -> Result<daedalus_core::scene::Scene, IoError> {
     match extension(path).as_deref() {
         Some("daedalus") => return native::read_scene(&std::fs::read(path)?),
         // a SketchUp model, as skp-convert describes it (skp.rs)
         Some("dskp") => return skp::read(&std::fs::read(path)?),
+        Some("step" | "stp") => return step::read_scene(&std::fs::read(path)?),
         _ => {}
     }
     Ok(daedalus_core::scene::Scene::from_mesh(import_mesh(path)?))
 }
 
-/// Saves a model: whole to a `.daedalus` file; to any other format, its geometry with every instance put in place.
+/// Saves a model: whole to a `.daedalus` file; to STEP as an assembly (in millimetres; `step::write` takes other units and
+/// says what STEP cannot hold); to any other format, its geometry with every instance put in place.
 pub fn save_scene(scene: &daedalus_core::scene::Scene, path: &Path) -> Result<(), IoError> {
-    if extension(path).as_deref() == Some("daedalus") {
-        std::fs::write(path, native::write_scene(scene))?;
-        return Ok(());
+    match extension(path).as_deref() {
+        Some("daedalus") => {
+            std::fs::write(path, native::write_scene(scene))?;
+            Ok(())
+        }
+        Some("step" | "stp") => {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let written = step::write(scene, &step::WriteOptions { name, ..Default::default() })?;
+            std::fs::write(path, written.text)?;
+            Ok(())
+        }
+        _ => export_mesh(&scene.flatten(), path),
     }
-    export_mesh(&scene.flatten(), path)
 }
 
 /// Exports a mesh, choosing the exporter from the file extension.
 pub fn export_mesh(mesh: &Mesh, path: &Path) -> Result<(), IoError> {
     let ext = extension(path).ok_or_else(|| IoError::Unsupported("no file extension".into()))?;
-    let exporters: [&dyn MeshExporter; 5] = [&native::Native, &stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae];
+    let exporters: [&dyn MeshExporter; 6] = [&native::Native, &stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae, &step::Step];
     let exporter = exporters
         .iter()
         .find(|e| e.extensions().contains(&ext.as_str()))

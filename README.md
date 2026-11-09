@@ -111,7 +111,7 @@ no source from those projects is used.
 | FBX | todo | `fbxcel` |
 | Daedalus (`.daedalus`) | open + save | native: plain text, versioned (version 6 holds sheet-metal parts) |
 | SKP | import | through `tools/skp-convert` (OpenSKP, installed apart), which writes `.dskp` for Daedalus to read |
-| STEP | export | sheet-metal parts exact; other closed groups and components as flat-faced solids |
+| STEP (`.step`, `.stp`) | read (flat faces) + write | AP214, our own reader and writer (`daedalus-io/src/step.rs`, from the standard): every face a plane with its holes, closed shells as solids and the rest as surfaces, groups and components as an assembly (each written once), colours, units. Curved faces (cylinders, B-splines...) are named, not read yet. File > Export STEP writes sheet-metal parts exact (AP242, `daedalus-sheet`) |
 | DWG | todo | LibreDWG is GPLv3, so isolate in an optional crate |
 | F3D/F3Z/CAM360 | blocked | no public spec; use STEP instead |
 | RBZ | later | needs a reimplementation of the public SketchUp Ruby API |
