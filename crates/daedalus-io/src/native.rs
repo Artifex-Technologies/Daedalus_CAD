@@ -1,4 +1,5 @@
-//! `.daedalus`: Daedalus's own file. Plain UTF-8 text, so it is readable, diffable and survives a version-control merge:
+//! `.ddls` (named `.daedalus` until 2026-11-08; those still open, and save back to their own name): Daedalus's own file, the
+//! one format that keeps everything. Plain UTF-8 text, so it is readable, diffable and survives a version-control merge:
 //!
 //! ```text
 //! daedalus 5
@@ -429,7 +430,7 @@ pub fn write_scene(scene: &Scene) -> Vec<u8> {
 
 impl MeshImporter for Native {
     fn extensions(&self) -> &'static [&'static str] {
-        &["daedalus"]
+        &["ddls", "daedalus"]
     }
 
     /// The file's geometry as one mesh (groups and components put in place).
@@ -440,7 +441,7 @@ impl MeshImporter for Native {
 
 impl MeshExporter for Native {
     fn extensions(&self) -> &'static [&'static str] {
-        &["daedalus"]
+        &["ddls", "daedalus"]
     }
 
     fn export(&self, mesh: &Mesh) -> Result<Vec<u8>, IoError> {

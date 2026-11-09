@@ -4,6 +4,7 @@
 //! there is no portal, the built-in browser (filedlg.rs) is used instead.
 
 use crate::filedlg::Purpose;
+use daedalus_io::formats::Format;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use zbus::zvariant::{OwnedValue, Value};
@@ -17,22 +18,37 @@ pub enum Answer {
     NoPortal,
 }
 
+/// A save format's patterns: its endings.
+fn globs(f: Format) -> Vec<&'static str> {
+    match f {
+        Format::Step => vec!["*.step", "*.stp"],
+        Format::Native => vec!["*.ddls"],
+        Format::Obj => vec!["*.obj"],
+        Format::Stl => vec!["*.stl"],
+        Format::Dae => vec!["*.dae"],
+        Format::Dxf => vec!["*.dxf"],
+    }
+}
+
 /// The filters offered, the first one selected: (label, glob patterns).
 fn filters(purpose: Purpose) -> Vec<(&'static str, Vec<&'static str>)> {
-    let models = vec!["*.daedalus", "*.skp", "*.dskp", "*.stl", "*.obj", "*.dxf", "*.dae"];
+    let models = vec!["*.ddls", "*.daedalus", "*.step", "*.stp", "*.skp", "*.dskp", "*.stl", "*.obj", "*.dxf", "*.dae"];
     match purpose {
         Purpose::Open => vec![
             ("Models Daedalus opens", models),
-            ("Daedalus models (.daedalus)", vec!["*.daedalus"]),
+            ("Daedalus models (.ddls, .daedalus)", vec!["*.ddls", "*.daedalus"]),
+            ("STEP (.step, .stp)", vec!["*.step", "*.stp"]),
             ("SketchUp models (.skp)", vec!["*.skp", "*.dskp"]),
             ("All files", vec!["*"]),
         ],
         Purpose::Import => vec![
-            ("STL, OBJ, DXF, COLLADA", vec!["*.stl", "*.obj", "*.dxf", "*.dae"]),
+            ("STEP, STL, OBJ, DXF, COLLADA", vec!["*.step", "*.stp", "*.stl", "*.obj", "*.dxf", "*.dae"]),
             ("SketchUp models (.skp)", vec!["*.skp", "*.dskp"]),
             ("All files", vec!["*"]),
         ],
-        Purpose::SaveAs => vec![("Daedalus model (.daedalus)", vec!["*.daedalus"])],
+        // the format it starts in first (selected), then the others Save writes
+        Purpose::SaveAs(first) => std::iter::once(first).chain(Format::SAVE.into_iter().filter(|&f| f != first)).map(|f| (f.label(), globs(f))).collect(),
+        Purpose::Copy => vec![(Format::Native.label(), globs(Format::Native))],
         Purpose::Texture => vec![("Images", vec!["*.jpg", "*.jpeg", "*.png", "*.bmp"]), ("All files", vec!["*"])],
         Purpose::Step | Purpose::PartStep => vec![("STEP (.step)", vec!["*.step", "*.stp"])],
         Purpose::FlatDxf => vec![("DXF flat pattern (.dxf)", vec!["*.dxf"])],
@@ -49,11 +65,12 @@ fn filters(purpose: Purpose) -> Vec<(&'static str, Vec<&'static str>)> {
 fn title(purpose: Purpose) -> &'static str {
     match purpose {
         Purpose::Open => "Open a model",
-        Purpose::SaveAs => "Save the model as",
+        Purpose::SaveAs(_) => "Save the model",
+        Purpose::Copy => "Save a full copy of the model (.ddls)",
         Purpose::Import => "Import a model",
         Purpose::Export => "Export the model as",
         Purpose::Texture => "Choose an image for the texture",
-        Purpose::Step => "Export the model as STEP",
+        Purpose::Step => "Export exact solids for fabrication (STEP)",
         Purpose::PartStep => "Export the part as STEP",
         Purpose::FlatDxf => "Export the flat pattern as DXF",
         Purpose::BendTable => "Choose your fabricator's bend table (CSV)",
@@ -106,7 +123,7 @@ fn request(purpose: Purpose, folder: Option<PathBuf>, name: &str) -> Option<Answ
     opts.insert("modal", Value::from(true));
     opts.insert("current_filter", Value::from(filters[0].clone()));
     opts.insert("filters", Value::from(filters));
-    let saving = matches!(purpose, Purpose::SaveAs | Purpose::Export | Purpose::Step | Purpose::PartStep | Purpose::FlatDxf);
+    let saving = matches!(purpose, Purpose::SaveAs(_) | Purpose::Copy | Purpose::Export | Purpose::Step | Purpose::PartStep | Purpose::FlatDxf);
     if saving && !name.is_empty() {
         opts.insert("current_name", Value::from(name));
     }
@@ -125,15 +142,41 @@ fn request(purpose: Purpose, folder: Option<PathBuf>, name: &str) -> Option<Answ
         return Some(Answer::Cancelled);
     }
     let uris: Vec<String> = results.get("uris").and_then(|v| Vec::<String>::try_from(v.clone()).ok()).unwrap_or_default();
+    // a name typed without an ending takes the one of the filter chosen (the format picked in the dialog)
+    let picked = results.get("current_filter").and_then(|v| <(String, Vec<(u32, String)>)>::try_from(v.clone()).ok()).and_then(|(_, pats)| filter_ending(&pats));
     Some(match uris.first().and_then(|u| path_from_uri(u)) {
-        Some(p) => Answer::Chosen(p),
+        Some(mut p) => {
+            if p.extension().is_none() {
+                if let Some(e) = picked {
+                    p.set_extension(e);
+                }
+            }
+            Answer::Chosen(p)
+        }
         None => Answer::Cancelled,
     })
+}
+
+/// The ending a filter's first pattern names (`*.step` -> `step`; none for `*`).
+fn filter_ending(patterns: &[(u32, String)]) -> Option<String> {
+    patterns.iter().find_map(|(kind, p)| (*kind == 0).then(|| p.strip_prefix("*.")).flatten()).filter(|e| !e.is_empty() && !e.contains('*')).map(str::to_string)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_offers_every_format_the_one_it_starts_in_first() {
+        let f = filters(Purpose::SaveAs(Format::Obj));
+        assert_eq!(f.len(), 6);
+        assert_eq!(f[0], (Format::Obj.label(), vec!["*.obj"]));
+        assert_eq!(f[1].1, vec!["*.step", "*.stp"]);
+        assert_eq!(filters(Purpose::SaveAs(Format::Step))[0].0, "STEP (.step): opens in every CAD program");
+        assert!(filters(Purpose::Open)[0].1.contains(&"*.ddls") && filters(Purpose::Open)[0].1.contains(&"*.stp"));
+        assert_eq!(filter_ending(&[(0, "*.step".into()), (0, "*.stp".into())]).as_deref(), Some("step"));
+        assert_eq!(filter_ending(&[(0, "*".into())]), None);
+    }
 
     #[test]
     fn uris_become_paths() {

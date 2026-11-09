@@ -20,6 +20,7 @@ use camera::Camera;
 use daedalus_core::inspect;
 use daedalus_core::scene::{Scene, Section};
 use daedalus_core::{HalfEdgeMesh, Mesh, Model, Plane};
+use daedalus_io::formats::SaveTo;
 use glam::DVec3;
 use render::{FaceStyle, LineVertex, Renderer, Style, UiFrame};
 use filedlg::{FileDialog, Outcome, Purpose};
@@ -150,11 +151,18 @@ struct State {
     view_saved_at: std::time::Instant,
     /// Clicks in a row at about the same place: 2 is a double-click, 3 a triple-click (Select tool).
     clicks: (u32, std::time::Instant, (f32, f32)),
-    /// The document's file (None until it is saved), how many times the whole document was replaced (open, new, repair), and the
-    /// (replacement, model state) it was saved or opened at: it is unchanged while those match.
+    /// The document's file (None for a new model or an import, until it is saved; a SketchUp model's own file), how many times
+    /// the whole document was replaced (open, new, repair), and the (replacement, model state) it was saved or opened at: it is
+    /// unchanged while those match.
     path: Option<PathBuf>,
     doc: u64,
     saved: (u64, u64),
+    /// The document's file was not read whole (a STEP file with curved faces): Save asks for a new file rather than write
+    /// over it.
+    partial: bool,
+    /// A note in a small window until it is closed, work going on meanwhile: what a save left out, or what an opened file held
+    /// that Daedalus does not read.
+    notice: Option<Notice>,
     dialog: Option<FileDialog>,
     /// "Save changes?" while something would throw the changes away, and what to do once they are saved.
     ask: Option<Pending>,
@@ -165,9 +173,11 @@ struct State {
     toolbar_left: bool,
     /// Sends events to the window (the file chooser's answer comes back this way).
     proxy: EventLoopProxy<AppEvent>,
-    /// The desktop's file chooser is open; and the name it was asked with (for the built-in one, should there be no portal).
+    /// The desktop's file chooser is open; and the name and place it was asked with (for the built-in one, should there be no
+    /// portal).
     picking: bool,
     pending_name: String,
+    pending_at: Option<PathBuf>,
     /// Text being typed into: its number in the notes and the words so far.
     label_edit: Option<(usize, String)>,
     /// The text box opens this frame (its words get selected).
@@ -187,6 +197,14 @@ struct Text3dForm {
     depth: String,
     /// The font's file (None: the built-in one), remembered between runs.
     font: Option<PathBuf>,
+}
+
+/// The notice's window: its title, its lines, and where its "also save a full copy" button saves (None: no button).
+#[derive(Debug, Clone)]
+struct Notice {
+    title: String,
+    lines: Vec<String>,
+    copy: Option<PathBuf>,
 }
 
 /// Something that replaces the document or ends the program, held while the person is asked about unsaved changes.
@@ -287,10 +305,12 @@ impl State {
             views: Vec::new(),
             view_saved_at: std::time::Instant::now(),
             clicks: (0, std::time::Instant::now(), (0.0, 0.0)),
-            // a .daedalus file opened at start is the document's file; an import is a new, unsaved document
-            path: path.filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("daedalus"))),
+            // a file given at start is opened below, as File > Open opens it
+            path: None,
             doc: 0,
             saved: (0, 0),
+            partial: false,
+            notice: None,
             dialog: None,
             ask: None,
             after_save: None,
@@ -303,6 +323,7 @@ impl State {
             proxy,
             picking: false,
             pending_name: String::new(),
+            pending_at: None,
             cut_lines: Vec::new(),
             text3d: Text3dForm {
                 text: "Enter text".into(),
@@ -314,6 +335,9 @@ impl State {
         };
         s.load_bend_table();
         s.refresh();
+        if let Some(p) = path {
+            s.open_file(&p, false);
+        }
         s
     }
 
@@ -347,6 +371,8 @@ impl State {
         self.readonly = readonly;
         self.doc += 1;
         self.path = path;
+        self.partial = false;
+        self.notice = None;
         // an import is a new, unsaved document; an opened file or an empty one is unchanged
         self.saved = if mesh.positions.is_empty() || self.path.is_some() { (self.doc, self.model.state()) } else { (u64::MAX, 0) };
         let units = self.tools.units;
@@ -382,32 +408,47 @@ impl State {
         }
     }
 
-    /// Save: to the document's file, or ask where (Save As) when it has none. `then` runs once it is saved.
+    /// File > Save (Ctrl+S): in place, in the format the file was opened in when Daedalus writes it; else the Save dialog
+    /// (a new model; a SketchUp model, beside it as STEP; a file read in part), as `formats::save_target` decides. `then`
+    /// runs once it is saved.
     fn save(&mut self, then: Option<Pending>) {
-        match self.path.clone() {
-            Some(p) => {
+        match daedalus_io::formats::save_target(self.path.as_deref(), !self.partial, false) {
+            SaveTo::File(p) => {
                 if self.save_to(&p) {
                     if let Some(t) = then {
                         self.carry_out(t);
                     }
                 }
             }
-            None => self.save_as(then),
+            SaveTo::Ask { folder, name, format } => self.ask_where(then, folder, &name, format),
         }
     }
 
+    /// File > Save As: the Save dialog, starting at the document's file and in its format (STEP when Daedalus does not write
+    /// it).
     fn save_as(&mut self, then: Option<Pending>) {
-        self.after_save = then;
-        let name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        self.choose(Purpose::SaveAs, &name);
+        if let SaveTo::Ask { folder, name, format } = daedalus_io::formats::save_target(self.path.as_deref(), !self.partial, true) {
+            self.ask_where(then, folder, &name, format);
+        }
     }
 
+    fn ask_where(&mut self, then: Option<Pending>, folder: Option<PathBuf>, name: &str, format: daedalus_io::formats::Format) {
+        self.after_save = then;
+        let at = folder.map(|f| f.join(name));
+        self.choose_at(Purpose::SaveAs(format), at.as_deref(), name);
+    }
+
+    /// Saves the document to `path` in the format its ending names, the lengths of a STEP file in the units shown. What that
+    /// format could not hold is shown in a notice, with a button to keep everything in a `.ddls` copy too.
     fn save_to(&mut self, path: &Path) -> bool {
-        match daedalus_io::save_scene(&self.document(), path) {
-            Ok(()) => {
+        let opts = daedalus_io::SaveOptions { units: self.tools.units };
+        match daedalus_io::save_scene_with(&self.document(), path, &opts) {
+            Ok(left_out) => {
                 self.path = Some(path.to_path_buf());
+                self.partial = false;
                 self.saved = (self.doc, self.model.state());
                 self.message = Some(format!("Saved {}.", short(path)));
+                self.notice = saved_notice(path, &left_out);
                 true
             }
             Err(e) => {
@@ -417,29 +458,84 @@ impl State {
         }
     }
 
+    /// The notice's button: a full copy as `.ddls` beside the file just saved; the Save dialog first when a file of that name
+    /// is there already, so it is not written over unasked.
+    fn full_copy(&mut self, copy: PathBuf) {
+        if copy.exists() {
+            self.choose_at(Purpose::Copy, Some(&copy), &short(&copy));
+        } else {
+            self.save_copy(&copy);
+        }
+    }
+
+    /// Writes the whole document to a `.ddls` file; the document's own file and its saved state stay as they are.
+    fn save_copy(&mut self, path: &Path) {
+        match std::fs::write(path, daedalus_io::native::write_scene(&self.document())) {
+            Ok(()) => {
+                self.message = Some(format!("Saved a full copy as {}.", short(path)));
+                self.notice = None;
+            }
+            Err(e) => self.message = Some(format!("The full copy was not saved: {e}.")),
+        }
+    }
+
     fn open_file(&mut self, path: &Path, import: bool) {
-        // a SketchUp model: read through skp-convert (OpenSKP), then opened as a new, unsaved Daedalus model
-        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("skp") || e.eq_ignore_ascii_case("skb")) {
+        // the document's file, unless it is imported: Save writes it again (a SketchUp model: Save asks, beside it)
+        let file = (!import).then(|| path.to_path_buf());
+        let verb = if import { "Imported" } else { "Opened" };
+        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        // a SketchUp model: read through skp-convert (OpenSKP)
+        if ext == "skp" || ext == "skb" {
             match from_sketchup(path) {
                 Ok(scene) => {
-                    self.replace(&scene, None);
-                    self.message = Some(format!("Opened {} from SketchUp. File > Save keeps it as a Daedalus model; the .skp is not changed.", short(path)));
+                    self.replace(&scene, file);
+                    self.message = Some(format!("{verb} {} from SketchUp. Save writes a STEP file beside it; the .skp is not changed.", short(path)));
                 }
                 Err(e) => self.message = Some(e),
             }
             return;
         }
+        // STEP: what Daedalus reads of it, in the file's own units; what it does not read (curved faces) is named
+        if ext == "step" || ext == "stp" {
+            match std::fs::read(path).map_err(daedalus_io::IoError::from).and_then(|b| daedalus_io::step::read(&b)) {
+                Ok(r) => {
+                    if let Some(u) = r.units {
+                        self.tools.units = u;
+                    }
+                    self.replace(&r.scene, file);
+                    self.message = Some(format!("{verb} {} (lengths in {}).", short(path), self.tools.units.name().to_lowercase()));
+                    if !r.skipped.is_empty() {
+                        self.partial = !import;
+                        let mut lines = vec!["Daedalus does not read these yet, so they are not in the model:".to_string()];
+                        lines.extend(r.skipped.iter().map(|l| format!("•  {l}")));
+                        if !import {
+                            lines.push("Save writes a new STEP file beside it, so the file stays whole.".into());
+                        }
+                        self.notice = Some(Notice { title: format!("{} is not all read", short(path)), lines, copy: None });
+                    }
+                }
+                Err(e) => self.message = Some(format!("Could not open {}: {e}.", short(path))),
+            }
+            return;
+        }
         match daedalus_io::open_scene(path) {
             Ok(m) => {
-                self.replace(&m, if import { None } else { Some(path.to_path_buf()) });
-                self.message = Some(format!("{} {}.", if import { "Imported" } else { "Opened" }, short(path)));
+                self.replace(&m, file);
+                self.message = Some(format!("{verb} {}.", short(path)));
             }
             Err(e) => self.message = Some(format!("Could not open {}: {e}.", short(path))),
         }
     }
 
-    /// Asks for a file: the desktop's own dialog (Minos on Yggdrasil) through the portal, else the built-in browser.
+    /// Asks for a file: the desktop's own dialog (Minos on Yggdrasil) through the portal, else the built-in browser; starting
+    /// in the document's folder.
     fn choose(&mut self, purpose: Purpose, name: &str) {
+        let at = self.path.clone();
+        self.choose_at(purpose, at.as_deref(), name);
+    }
+
+    /// [`State::choose`], starting in the folder `at` is in.
+    fn choose_at(&mut self, purpose: Purpose, at: Option<&Path>, name: &str) {
         #[cfg(target_os = "linux")]
         {
             if self.picking {
@@ -447,14 +543,15 @@ impl State {
             }
             self.picking = true;
             let proxy = self.proxy.clone();
-            portal::ask(purpose, self.path.as_deref(), name, move |answer| {
+            portal::ask(purpose, at, name, move |answer| {
                 let _ = proxy.send_event(AppEvent::Picked(purpose, answer));
             });
             self.pending_name = name.to_string();
+            self.pending_at = at.map(Path::to_path_buf);
         }
         #[cfg(not(target_os = "linux"))]
         {
-            self.dialog = Some(FileDialog::new(purpose, self.path.as_deref(), name));
+            self.dialog = Some(FileDialog::new(purpose, at, name));
         }
     }
 
@@ -464,11 +561,14 @@ impl State {
         self.picking = false;
         match answer {
             portal::Answer::Chosen(mut path) => {
-                // a save dialog may hand back a name without its ending
+                // a save dialog may hand back a name without its ending (the portal adds the chosen filter's when it says)
                 if path.extension().is_none() {
                     match purpose {
-                        Purpose::SaveAs => {
-                            path.set_extension("daedalus");
+                        Purpose::SaveAs(f) => {
+                            path.set_extension(f.extension());
+                        }
+                        Purpose::Copy => {
+                            path.set_extension(daedalus_io::formats::Format::Native.extension());
                         }
                         Purpose::Export => {
                             path.set_extension("stl");
@@ -487,7 +587,8 @@ impl State {
             portal::Answer::Cancelled => self.after_save = None,
             portal::Answer::NoPortal => {
                 let name = std::mem::take(&mut self.pending_name);
-                self.dialog = Some(FileDialog::new(purpose, self.path.as_deref(), &name));
+                let at = self.pending_at.take();
+                self.dialog = Some(FileDialog::new(purpose, at.as_deref(), &name));
             }
         }
         self.window.request_redraw();
@@ -498,13 +599,14 @@ impl State {
         match purpose {
             Purpose::Open => self.open_file(&path, false),
             Purpose::Import => self.open_file(&path, true),
-            Purpose::SaveAs => {
+            Purpose::SaveAs(_) => {
                 if self.save_to(&path) {
                     if let Some(t) = self.after_save.take() {
                         self.carry_out(t);
                     }
                 }
             }
+            Purpose::Copy => self.save_copy(&path),
             Purpose::Export => match daedalus_io::save_scene(&self.document(), &path) {
                 Ok(()) => self.message = Some(format!("Exported {}.", short(&path))),
                 Err(e) => self.message = Some(format!("Not exported: {e}.")),
@@ -2197,7 +2299,8 @@ impl State {
                 self.choose(Purpose::Export, &stem);
             }
             UiAction::ExportStep => {
-                let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|n| format!("{}.step", n.to_string_lossy())).unwrap_or_default();
+                // a name of its own: the model may be saved as STEP under its own name already
+                let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|n| format!("{} fabrication.step", n.to_string_lossy())).unwrap_or_else(|| "fabrication.step".into());
                 self.choose(Purpose::Step, &stem);
             }
             UiAction::ExportPartStep => match self.sheet_part() {
@@ -2617,8 +2720,36 @@ impl State {
         let context_at = self.context_at;
         let context_fresh = std::mem::take(&mut self.context_fresh);
         let mut context_open = context_at.is_some();
+        // the notice: drawn beside the work, which goes on (true: its button pressed, false: closed)
+        let notice = self.notice.take();
+        let mut notice_answer: Option<bool> = None;
         let out = ctx.run(raw, |ctx| {
             actions = ui::draw(ctx, &view);
+            if let Some(n) = &notice {
+                egui::Window::new(n.title.as_str())
+                    .id(egui::Id::new("notice"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -40.0])
+                    .show(ctx, |ui| {
+                        ui.set_max_width(380.0);
+                        for line in &n.lines {
+                            ui.label(line);
+                        }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if let Some(copy) = &n.copy {
+                                let label = format!("Also save a full copy ({})", short(copy));
+                                if ui.button(label).on_hover_text("A .ddls file keeps everything; the file just saved stays as it is.").clicked() {
+                                    notice_answer = Some(true);
+                                }
+                            }
+                            if ui.button("Close").clicked() {
+                                notice_answer = Some(false);
+                            }
+                        });
+                    });
+            }
             if let Some((x, y)) = context_at {
                 let (picked, open) = ui::context_menu(ctx, egui::pos2(x / ppp, y / ppp), &view, context_fresh);
                 actions.extend(picked);
@@ -2723,6 +2854,19 @@ impl State {
             }
         });
         self.dialog = if dialog_out.is_some() { None } else { dialog };
+        // a notice set while drawing (none is) wins over the one shown
+        if self.notice.is_none() {
+            self.notice = notice;
+        }
+        match notice_answer {
+            Some(true) => {
+                if let Some(copy) = self.notice.as_ref().and_then(|n| n.copy.clone()) {
+                    self.full_copy(copy);
+                }
+            }
+            Some(false) => self.notice = None,
+            None => {}
+        }
         self.label_edit = label_edit;
         if label_done {
             self.finish_label();
@@ -2873,6 +3017,30 @@ type Tris = Vec<Vec<[u32; 3]>>;
 /// A file's name for a message (the whole path would run into the Measurements box).
 fn short(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string())
+}
+
+/// After a save: what the file's format left out, in a notice with a button to save a full `.ddls` copy beside it; none when
+/// nothing was left out.
+fn saved_notice(path: &Path, left_out: &[String]) -> Option<Notice> {
+    (!left_out.is_empty()).then(|| Notice {
+        title: format!("Saved {}", short(path)),
+        lines: std::iter::once("These are not in it (the file's format has no place for them):".to_string()).chain(left_out.iter().map(|l| format!("•  {l}"))).collect(),
+        copy: Some(path.with_extension(daedalus_io::formats::Format::Native.extension())),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_save_that_left_something_out_says_what_and_offers_a_full_copy() {
+        assert!(saved_notice(Path::new("/m/house.step"), &[]).is_none(), "nothing left out: no notice");
+        let n = saved_notice(Path::new("/m/house.step"), &["1 guide".to_string(), "2 textures".to_string()]).unwrap();
+        assert_eq!(n.title, "Saved house.step");
+        assert_eq!(n.lines[1..], ["•  1 guide".to_string(), "•  2 textures".to_string()]);
+        assert_eq!(n.copy, Some(PathBuf::from("/m/house.ddls")), "the copy goes beside the file, as .ddls");
+    }
 }
 
 /// Events from outside the window: the desktop switched between light and dark; the file chooser answered.
@@ -3112,19 +3280,10 @@ impl ApplicationHandler<AppEvent> for App {
 }
 
 fn main() {
-    let (scene, title, path) = match std::env::args().nth(1) {
-        Some(arg) => {
-            let path = PathBuf::from(&arg);
-            match daedalus_io::open_scene(&path) {
-                Ok(m) => (m, format!("Daedalus - {arg}"), Some(path)),
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        None => (Scene::default(), "Daedalus".to_string(), None),
-    };
+    // a file given (the file manager opening one, say) is opened once the window is up, as File > Open opens it: a SketchUp
+    // model through skp-convert, a STEP file with what it does not read named; a file that does not open says why there
+    let path = std::env::args().nth(1).map(PathBuf::from);
+    let (scene, title) = (Scene::default(), "Daedalus".to_string());
     let event_loop = EventLoop::<AppEvent>::with_user_event().build().expect("event loop");
     let mut app = App { proxy: event_loop.create_proxy(), scene, path, title, state: None };
     event_loop.run_app(&mut app).expect("run app");

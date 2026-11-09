@@ -1,4 +1,5 @@
-//! A whole model to STEP (File > Export > STEP): every sheet-metal part as its exact solid, every other closed group or
+//! A whole model to STEP for fabrication (File > Export STEP for Fabrication; saving as STEP is daedalus-io's
+//! `step.rs`): every sheet-metal part as its exact solid, every other closed group or
 //! component (and closed loose geometry) as an exact solid of its flat faces, all placed as they are in the model and in mm. What is
 //! not a closed solid is left out and named, so the person knows what the file holds.
 

@@ -2,17 +2,22 @@
 //! keeps no GTK or Qt dependency and looks the same on every desktop: the folder's path with Up and Home, its folders and the files
 //! of the kinds that fit, a name box, and the action button. Hidden files are left out.
 
+use daedalus_io::formats::Format;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
     Open,
-    SaveAs,
+    /// Save the model somewhere new (Save As, or Save of a new model or one Daedalus does not write): the format it starts
+    /// in, which a name typed without an ending gets.
+    SaveAs(Format),
+    /// A full copy of the model as `.ddls` (the left-out notice's button), the document's own file left as it is.
+    Copy,
     Import,
     Export,
     /// An image for a texture (Paint Bucket).
     Texture,
-    /// File > Export STEP (the whole model), a sheet-metal part as STEP, its flat pattern as DXF.
+    /// File > Export STEP for Fabrication (exact solids), a sheet-metal part as STEP, its flat pattern as DXF.
     Step,
     PartStep,
     FlatDxf,
@@ -24,11 +29,13 @@ impl Purpose {
     fn title(self) -> &'static str {
         match self {
             Purpose::Open => "Open",
-            Purpose::SaveAs => "Save As",
+            Purpose::SaveAs(_) => "Save",
+            Purpose::Copy => "Save Copy",
             Purpose::Import => "Import",
             Purpose::Export => "Export",
             Purpose::Texture => "Texture",
-            Purpose::Step | Purpose::PartStep => "Export STEP",
+            Purpose::Step => "Export STEP for Fabrication",
+            Purpose::PartStep => "Export STEP",
             Purpose::FlatDxf => "Export flat pattern",
             Purpose::BendTable => "Bend table",
         }
@@ -37,9 +44,16 @@ impl Purpose {
     /// The file kinds it shows, the first being the default for a name typed without one.
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
-            Purpose::Open => &["daedalus", "skp", "dskp"],
-            Purpose::SaveAs => &["daedalus"],
-            Purpose::Import => &["stl", "obj", "dxf", "dae", "skp", "dskp"],
+            Purpose::Open => &["ddls", "daedalus", "step", "stp", "skp", "dskp", "stl", "obj", "dxf", "dae"],
+            // the format it starts in first, then the others Save writes
+            Purpose::SaveAs(Format::Step) => &["step", "stp", "ddls", "obj", "stl", "dae", "dxf", "daedalus"],
+            Purpose::SaveAs(Format::Native) => &["ddls", "step", "stp", "obj", "stl", "dae", "dxf", "daedalus"],
+            Purpose::SaveAs(Format::Obj) => &["obj", "step", "stp", "ddls", "stl", "dae", "dxf", "daedalus"],
+            Purpose::SaveAs(Format::Stl) => &["stl", "step", "stp", "ddls", "obj", "dae", "dxf", "daedalus"],
+            Purpose::SaveAs(Format::Dae) => &["dae", "step", "stp", "ddls", "obj", "stl", "dxf", "daedalus"],
+            Purpose::SaveAs(Format::Dxf) => &["dxf", "step", "stp", "ddls", "obj", "stl", "dae", "daedalus"],
+            Purpose::Copy => &["ddls"],
+            Purpose::Import => &["step", "stp", "stl", "obj", "dxf", "dae", "skp", "dskp"],
             Purpose::Export => &["stl", "obj", "dxf", "dae"],
             Purpose::Texture => &["jpg", "jpeg", "png", "bmp"],
             Purpose::Step | Purpose::PartStep => &["step", "stp"],
@@ -49,7 +63,7 @@ impl Purpose {
     }
 
     fn writes(self) -> bool {
-        matches!(self, Purpose::SaveAs | Purpose::Export | Purpose::Step | Purpose::PartStep | Purpose::FlatDxf)
+        matches!(self, Purpose::SaveAs(_) | Purpose::Copy | Purpose::Export | Purpose::Step | Purpose::PartStep | Purpose::FlatDxf)
     }
 }
 
@@ -195,6 +209,10 @@ impl FileDialog {
                         go_now = true;
                     }
                 });
+                // this browser has no list of formats: the name's ending chooses one
+                if let Purpose::SaveAs(f) = self.purpose {
+                    ui.label(egui::RichText::new(format!("{}. Another ending saves in that format; .ddls keeps everything.", f.label())).weak().small());
+                }
                 if let Some(p) = &self.confirm_replace {
                     ui.colored_label(egui::Color32::from_rgb(190, 110, 0), format!("{} already exists. Press Replace to overwrite it.", p.file_name().unwrap_or_default().to_string_lossy()));
                 }

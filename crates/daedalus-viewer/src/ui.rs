@@ -84,7 +84,8 @@ pub enum UiAction {
     SaveAs,
     Import,
     Export,
-    /// File > Export > STEP: the whole model (sheet parts exact, closed solids flat-faced).
+    /// File > Export STEP for Fabrication: exact solids (sheet parts with true bends, closed solids flat-faced), for a shop;
+    /// not the same as saving as STEP, which keeps the whole model.
     ExportStep,
     /// Sheet metal: the panel opened or shut, and its tab (0 Drawing, 1 3D, 2 Flat pattern).
     SheetMetal,
@@ -673,7 +674,9 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
                     actions.push(UiAction::Export);
                     ui.close_menu();
                 }
-                if ui.button("Export STEP…").on_hover_text("Sheet-metal parts with true bends; other closed groups and components as solids").clicked() {
+                // not the same as saving as STEP (the whole model, for any CAD program): exact solids for a shop
+                let fabrication = "Exact solids for a fabrication shop: sheet-metal parts with true bends, other closed groups and components as solids; open surfaces and loose lines are left out. Save (STEP) keeps the whole model.";
+                if ui.button("Export STEP for Fabrication…").on_hover_text(fabrication).clicked() {
                     actions.push(UiAction::ExportStep);
                     ui.close_menu();
                 }

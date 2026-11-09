@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Daedalus's own model files: .ddls, and .daedalus (their name before 2026-11-08). STEP (model/step) comes with
+     shared-mime-info itself. install.sh puts this in ~/.local/share/mime/packages. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-daedalus-model">
+    <comment>Daedalus model</comment>
+    <generic-icon name="x-office-drawing"/>
+    <glob pattern="*.ddls"/>
+    <glob pattern="*.daedalus"/>
+    <magic priority="50">
+      <match type="string" value="daedalus " offset="0"/>
+    </magic>
+  </mime-type>
+</mime-info>

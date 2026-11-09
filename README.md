@@ -109,9 +109,9 @@ no source from those projects is used.
 | PSD | load | flattened composite only (`psd` crate) |
 | PDF | todo | `pdfium-render` needs the pdfium library at runtime |
 | FBX | todo | `fbxcel` |
-| Daedalus (`.daedalus`) | open + save | native: plain text, versioned (version 6 holds sheet-metal parts) |
+| Daedalus (`.ddls`) | open + save | native, keeps everything: plain text, versioned (version 6 holds sheet-metal parts); `.daedalus`, its earlier name, still opens and saves under its own name |
 | SKP | import | through `tools/skp-convert` (OpenSKP, installed apart), which writes `.dskp` for Daedalus to read |
-| STEP (`.step`, `.stp`) | read (flat faces) + write | AP214, our own reader and writer (`daedalus-io/src/step.rs`, from the standard): every face a plane with its holes, closed shells as solids and the rest as surfaces, loose lines as wireframe, soft edges in an invisible "Soft edges" layer, groups and components as an assembly (each written once), colours, units. Curved faces (cylinders, B-splines...) are named, not read yet. File > Export STEP writes sheet-metal parts exact (AP242, `daedalus-sheet`) |
+| STEP (`.step`, `.stp`) | read (flat faces) + write | what new models are saved as. AP214, our own reader and writer (`daedalus-io/src/step.rs`, from the standard): every face a plane with its holes, closed shells as solids and the rest as surfaces, loose lines as wireframe, soft edges in an invisible "Soft edges" layer, groups and components as an assembly (each written once), colours, units. Curved faces (cylinders, B-splines...) are named, not read yet. File > Export STEP for Fabrication writes sheet-metal parts exact (AP242, `daedalus-sheet`) |
 | DWG | todo | LibreDWG is GPLv3, so isolate in an optional crate |
 | F3D/F3Z/CAM360 | blocked | no public spec; use STEP instead |
 | RBZ | later | needs a reimplementation of the public SketchUp Ruby API |
@@ -147,13 +147,23 @@ licence notes below). Here a house modelled in SketchUp, opened in Daedalus:
 ![A two-part house modelled in SketchUp, opened in Daedalus with its walls, rooms and roof](docs/images/sketchup-import.png)
 
 ## Saving
-File > Save writes Daedalus's own `.daedalus` file: plain text (`v x y z` per vertex, `f` and vertex numbers per face) with
-a version on the first line, so it is readable, diffable and kept bit-exact. It also holds lines, colours, groups and
-components, guides, dimensions, text, the section plane and the drawing axes. Exporting to another format puts every group
-in place as plain geometry. Open, Save As, Import (STL, OBJ, DXF, DAE) and
-Export use the desktop's own file dialog (Minos on the Yggdrasil desktop), or a file browser built into the window where
-there is none. The title shows a dot while there are unsaved changes, and New, Open,
-Import or closing the window asks before throwing them away.
+Files are meant to be shared, so they should not need Daedalus to be opened. File > Save (Ctrl+S) keeps the format a model
+was opened in when Daedalus writes it (STEP, `.ddls`, OBJ, STL, DAE, DXF) and writes the file in place, with no dialog; a
+`.daedalus` file is saved back under its own name. A new model asks where, with STEP chosen to start with; `.ddls` (keeps
+everything), OBJ, STL, DAE and DXF are offered too. A SketchUp model (`.skp`, or `.dskp`) is saved beside itself as STEP,
+never over the `.skp`, and so is a STEP file Daedalus read only in part (curved faces); after that, Save goes to the file
+chosen. When the format cannot hold everything, a notice says what was left out (STEP: notes, textures, Dynamic Component
+formulas, sheet-metal steps; STL: groups and components, colours, lines, the faces' shapes, the unit, and so on), with a
+button to save a full `.ddls` copy beside it too. File > Export STEP for Fabrication is something else: exact solids for a
+shop (sheet-metal parts with true bends), leaving out what is not a closed solid.
+
+`.ddls` is Daedalus's own file: plain text (`v x y z` per vertex, `f` and vertex numbers per face) with a version on the
+first line, so it is readable, diffable and kept bit-exact. It holds lines, colours, groups and components, guides,
+dimensions, text, the section plane, the drawing axes, textures, Dynamic Components and sheet-metal parts. Opening a STEP
+file takes its length unit; what Daedalus does not read yet (curved faces) is named in a notice. Open, Save As, Import
+(STEP, STL, OBJ, DXF, DAE) and Export use the desktop's own file dialog (Minos on the Yggdrasil desktop), or a file browser
+built into the window where there is none. The title shows a dot while there are unsaved changes, and New, Open, Import or
+closing the window asks before throwing them away.
 
 The demo models in these pictures are drawn by `cargo run -p daedalus-io --example demo_models -- FOLDER`, with the same
 calls the tools make.
