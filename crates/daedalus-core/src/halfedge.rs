@@ -279,10 +279,7 @@ impl HalfEdgeMesh {
     /// split off, if any. A line that is already there (or has no length) changes nothing.
     pub fn add_line(&mut self, a: [f64; 3], b: [f64; 3]) -> Result<Option<usize>, TopologyError> {
         let mut m = self.to_mesh();
-        // the model's own tolerance, with the new line in it (a first line on an empty model has only itself)
-        let span = (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt();
-        let reach = a.iter().chain(b.iter()).fold(0.0f64, |r, c| r.max(c.abs()));
-        let tol = m.tolerance().max(span * 1e-7).max(reach * 1e-12).max(1e-10);
+        let tol = line_tolerance(m.tolerance(), a, b);
         let (added, split) = crate::imprint::add_segment(&mut m, a, b, tol);
         *self = Self::from_mesh(&m)?;
         let mut made = split.then(|| self.face_count() - 1);
@@ -394,8 +391,8 @@ impl HalfEdgeMesh {
 
     /// Loose line number `new_line` may close a loop: the shortest path of other loose lines and face edges from one of
     /// its ends back to the other, if it lies in one plane with at least three corners and covers no face already there,
-    /// becomes a face (its loose lines turn into the face's edges).
-    fn close_loop(&mut self, new_line: usize, tol: f64) -> Option<usize> {
+    /// becomes a face (its loose lines turn into the face's edges). What the loop becomes is [`closing`]'s choice.
+    pub(crate) fn close_loop(&mut self, new_line: usize, tol: f64) -> Option<usize> {
         let [a, b] = self.lines[new_line];
         // a loop can only close where both ends already meet something (another loose line or a face): drawing an outline
         // line by line, that is every line but the last, and skipping the search keeps a long outline from taking seconds
@@ -448,73 +445,34 @@ impl HalfEdgeMesh {
             }
             v = prev;
         }
-        if ring.len() < 3 {
-            return None;
-        }
-        // one plane: every corner within tol of the plane through the first, by the ring's normal
-        let pts: Vec<[f64; 3]> = ring.iter().map(|&v| self.positions[v as usize]).collect();
-        let mut n = [0.0f64; 3];
-        for i in 0..pts.len() {
-            let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
-            n[0] += (p[1] - q[1]) * (p[2] + q[2]);
-            n[1] += (p[2] - q[2]) * (p[0] + q[0]);
-            n[2] += (p[0] - q[0]) * (p[1] + q[1]);
-        }
-        let len = dot(n, n).sqrt();
-        if len < 1e-12 {
-            return None;
-        }
-        let n = n.map(|c| c / len);
-        if pts.iter().any(|&p| dot(sub(p, pts[0]), n).abs() > tol) {
-            return None;
-        }
-        // not over a face already there: the middle of the new face (a point just inside its first corner) is in none
-        let probe = {
-            let k = pts.len();
-            let (p0, p1, pl) = (pts[0], pts[1], pts[k - 1]);
-            
-            [(p0[0] + p1[0] + pl[0]) / 3.0, (p0[1] + p1[1] + pl[1]) / 3.0, (p0[2] + p1[2] + pl[2]) / 3.0]
-        };
-        let host = (0..mesh.faces.len()).find(|&f| crate::imprint::on_face(&mesh, f, probe, tol));
-
-        // which way it faces: up if it lies flat, else toward the front (-Y), else toward +X
-        let want = if n[2].abs() > 0.1 { n[2] > 0.0 } else if n[1].abs() > 0.1 { n[1] < 0.0 } else { n[0] > 0.0 };
-        if !want {
-            ring.reverse();
-        }
+        let plan = closing(&mesh, ring, tol)?;
         used.sort_unstable_by(|x, y| y.cmp(x));
         let mut m = self.to_mesh();
         for &i in &used {
             m.lines.remove(i);
         }
-        // drawn inside a face (a rectangle on a box's top): the face gets a hole there, filled by the new face
-        if let Some(f) = host {
-            let all_inside = pts.iter().all(|&p| crate::imprint::on_face(&mesh, f, p, tol));
-            if !all_inside {
-                return None; // it overlaps the face's edge without meeting it: leave the lines
-            }
-            let (hn, _) = crate::imprint::face_plane(&mesh, &mesh.faces[f])?;
-            // the ring's normal now (it may have been turned round above), to wind as the face around it does
-            let now = if want { n } else { n.map(|c| -c) };
-            if dot(hn, now) < 0.0 {
-                ring.reverse();
-            }
-            let inner = crate::imprint::cut_hole(&mut m, f, &ring)?;
-            let h = Self::from_mesh(&m).ok()?;
-            *self = h;
-            return Some(inner);
-        }
-        // the other winding when this one runs the same way as a neighbouring face's edge
-        for attempt in 0..2 {
-            let mut trial = m.clone();
-            let face: Vec<u32> = if attempt == 0 { ring.clone() } else { ring.iter().rev().copied().collect() };
-            trial.faces.push(face);
-            if let Ok(h) = Self::from_mesh(&trial) {
+        match plan {
+            // drawn inside a face (a rectangle on a box's top): the face gets a hole there, filled by the new face
+            Closing::Hole { host, ring } => {
+                let inner = crate::imprint::cut_hole(&mut m, host, &ring)?;
+                let h = Self::from_mesh(&m).ok()?;
                 *self = h;
-                return Some(self.face_count() - 1);
+                Some(inner)
+            }
+            Closing::Face(ring) => {
+                // the other winding when this one runs the same way as a neighbouring face's edge
+                for attempt in 0..2 {
+                    let mut trial = m.clone();
+                    let face: Vec<u32> = if attempt == 0 { ring.clone() } else { ring.iter().rev().copied().collect() };
+                    trial.faces.push(face);
+                    if let Ok(h) = Self::from_mesh(&trial) {
+                        *self = h;
+                        return Some(self.face_count() - 1);
+                    }
+                }
+                None
             }
         }
-        None
     }
 
     /// Extrudes `face` along its normal by `distance` (negative pushes inward).
@@ -655,6 +613,77 @@ impl HalfEdgeMesh {
         }
         Ok(new_face as usize)
     }
+}
+
+/// How close a new line's ends must come to what is there to join it (`HalfEdgeMesh::add_line`): the model's own
+/// tolerance (`model`, [`Mesh::tolerance`]), with the new line in it (a first line on an empty model has only itself).
+pub(crate) fn line_tolerance(model: f64, a: [f64; 3], b: [f64; 3]) -> f64 {
+    let span = (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt();
+    let reach = a.iter().chain(b.iter()).fold(0.0f64, |r, c| r.max(c.abs()));
+    model.max(span * 1e-7).max(reach * 1e-12).max(1e-10)
+}
+
+/// What a closed loop of lines becomes (see [`closing`]).
+pub(crate) enum Closing {
+    /// A new face, wound as given.
+    Face(Vec<u32>),
+    /// A hole cut in face `host` and a new face filling it (`imprint::cut_hole`), wound as given.
+    Hole { host: usize, ring: Vec<u32> },
+}
+
+/// What the loop `ring` (corners, from the new line's first end back round to its other end, as `close_loop` finds it) makes
+/// in `mesh`: nothing when it has under three corners, does not lie in one plane (within `tol`) or overlaps a face's edge
+/// without meeting it; a hole in the face it lies on (wound as that face is); else a face of its own, facing up if it lies
+/// flat, else toward the front (-Y), else toward +X.
+pub(crate) fn closing(mesh: &Mesh, mut ring: Vec<u32>, tol: f64) -> Option<Closing> {
+    if ring.len() < 3 {
+        return None;
+    }
+    // one plane: every corner within tol of the plane through the first, by the ring's normal
+    let pts: Vec<[f64; 3]> = ring.iter().map(|&v| mesh.positions[v as usize]).collect();
+    let mut n = [0.0f64; 3];
+    for i in 0..pts.len() {
+        let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+        n[0] += (p[1] - q[1]) * (p[2] + q[2]);
+        n[1] += (p[2] - q[2]) * (p[0] + q[0]);
+        n[2] += (p[0] - q[0]) * (p[1] + q[1]);
+    }
+    let len = dot(n, n).sqrt();
+    if len < 1e-12 {
+        return None;
+    }
+    let n = n.map(|c| c / len);
+    if pts.iter().any(|&p| dot(sub(p, pts[0]), n).abs() > tol) {
+        return None;
+    }
+    // not over a face already there: the middle of the new face (a point just inside its first corner) is in none
+    let probe = {
+        let k = pts.len();
+        let (p0, p1, pl) = (pts[0], pts[1], pts[k - 1]);
+        [(p0[0] + p1[0] + pl[0]) / 3.0, (p0[1] + p1[1] + pl[1]) / 3.0, (p0[2] + p1[2] + pl[2]) / 3.0]
+    };
+    let host = (0..mesh.faces.len()).find(|&f| crate::imprint::on_face(mesh, f, probe, tol));
+
+    // which way it faces: up if it lies flat, else toward the front (-Y), else toward +X
+    let want = if n[2].abs() > 0.1 { n[2] > 0.0 } else if n[1].abs() > 0.1 { n[1] < 0.0 } else { n[0] > 0.0 };
+    if !want {
+        ring.reverse();
+    }
+    // drawn inside a face (a rectangle on a box's top): the face gets a hole there, filled by the new face
+    if let Some(f) = host {
+        let all_inside = crate::imprint::on_face_all(mesh, f, &pts, tol);
+        if !all_inside {
+            return None; // it overlaps the face's edge without meeting it: leave the lines
+        }
+        let (hn, _) = crate::imprint::face_plane(mesh, &mesh.faces[f])?;
+        // the ring's normal now (it may have been turned round above), to wind as the face around it does
+        let now = if want { n } else { n.map(|c| -c) };
+        if dot(hn, now) < 0.0 {
+            ring.reverse();
+        }
+        return Some(Closing::Hole { host: f, ring });
+    }
+    Some(Closing::Face(ring))
 }
 
 /// Whether `p` lies inside the polygon `ring` (in the plane with this normal), seen along the normal's main axis.

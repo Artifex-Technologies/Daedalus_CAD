@@ -7,7 +7,7 @@ use crate::Mesh;
 
 type V = [f64; 3];
 
-fn sub(a: V, b: V) -> V {
+pub(crate) fn sub(a: V, b: V) -> V {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 fn add(a: V, b: V) -> V {
@@ -19,7 +19,7 @@ fn scale(a: V, s: f64) -> V {
 fn dot(a: V, b: V) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-fn len(a: V) -> f64 {
+pub(crate) fn len(a: V) -> f64 {
     dot(a, a).sqrt()
 }
 
@@ -69,17 +69,27 @@ pub fn face_plane(m: &Mesh, ring: &[u32]) -> Option<(V, V)> {
 
 /// Whether `p` lies in the face's plane (within `tol`) and inside its outline (even-odd rule, in the plane).
 pub fn inside_face(m: &Mesh, ring: &[u32], p: V, tol: f64) -> bool {
-    let Some((n, o)) = face_plane(m, ring) else { return false };
+    inside_plane(m, ring, face_plane(m, ring), p, tol)
+}
+
+/// The two axes a face with normal `n` is seen along in 2D: the normal's largest axis dropped.
+fn axes(n: V) -> (usize, usize) {
+    let k = (0..3).max_by(|&i, &j| n[i].abs().total_cmp(&n[j].abs())).unwrap_or(2);
+    match k {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    }
+}
+
+/// [`inside_face`] with the face's plane (`face_plane` of `ring`) already worked out.
+fn inside_plane(m: &Mesh, ring: &[u32], plane: Option<(V, V)>, p: V, tol: f64) -> bool {
+    let Some((n, o)) = plane else { return false };
     if dot(sub(p, o), n).abs() > tol {
         return false;
     }
     // drop the normal's largest axis to work in 2D
-    let k = (0..3).max_by(|&i, &j| n[i].abs().total_cmp(&n[j].abs())).unwrap_or(2);
-    let (x, y) = match k {
-        0 => (1, 2),
-        1 => (0, 2),
-        _ => (0, 1),
-    };
+    let (x, y) = axes(n);
     let mut inside = false;
     for i in 0..ring.len() {
         let a = m.positions[ring[i] as usize];
@@ -99,13 +109,35 @@ pub fn on_face(m: &Mesh, f: usize, p: V, tol: f64) -> bool {
     inside_face(m, &m.faces[f], p, tol) && !m.holes_of(f).iter().any(|h| inside_face(m, h, p, tol))
 }
 
+/// Whether every point of `ps` lies on face `f` ([`on_face`] for each), each loop's plane worked out once, and a point
+/// beyond a hole's span across the even-odd ray not tested against its edges (no edge could count): quick on a face with
+/// hundreds of holes.
+pub fn on_face_all(m: &Mesh, f: usize, ps: &[V], tol: f64) -> bool {
+    let outline = &m.faces[f];
+    let plane = face_plane(m, outline);
+    if !ps.iter().all(|&p| inside_plane(m, outline, plane, p, tol)) {
+        return false;
+    }
+    m.holes_of(f).iter().all(|h| {
+        let plane = face_plane(m, h);
+        let Some((n, _)) = plane else { return true }; // a hole without a plane holds no point
+        let (_, y) = axes(n);
+        let (lo, hi) = h.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+            let c = m.positions[v as usize][y];
+            (lo.min(c), hi.max(c))
+        });
+        ps.iter().all(|&p| p[y] < lo || p[y] >= hi || !inside_plane(m, h, plane, p, tol))
+    })
+}
+
 /// Gives each hole of face `from` that lies inside face `to`'s outline to `to` (after a face is split or a ring cut).
 fn rehome_holes(m: &mut Mesh, from: usize, to: usize, tol: f64) {
     let holes = m.holes_of(from).to_vec();
     if holes.is_empty() {
         return;
     }
-    let (moved, kept): (Vec<Vec<u32>>, Vec<Vec<u32>>) = holes.into_iter().partition(|h| inside_face(m, &m.faces[to], m.positions[h[0] as usize], tol));
+    let plane = face_plane(m, &m.faces[to]);
+    let (moved, kept): (Vec<Vec<u32>>, Vec<Vec<u32>>) = holes.into_iter().partition(|h| inside_plane(m, &m.faces[to], plane, m.positions[h[0] as usize], tol));
     let mut theirs = m.holes_of(to).to_vec();
     theirs.extend(moved);
     m.set_holes(from, kept);
