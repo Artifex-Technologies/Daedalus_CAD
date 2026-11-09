@@ -249,6 +249,34 @@ pub struct Texture {
     pub size: [f64; 2],
 }
 
+/// One context's own geometry as it is placed in the model ([`Scene::flatten`] and [`Scene::parts`] are made of these): a
+/// definition's mesh (or a level's loose geometry outside an open group), where it goes, and the Material that paints its
+/// unpainted faces (Dynamic Components).
+#[derive(Debug, Clone, Copy)]
+pub struct Piece<'a> {
+    /// In its own coordinates.
+    pub mesh: &'a Mesh,
+    /// Its coordinates to the model's.
+    pub xf: Xform,
+    pub paint: Option<crate::Paint>,
+}
+
+impl Piece<'_> {
+    /// The geometry in the model, painted: what is added to a flattened model for this piece.
+    pub fn placed(&self) -> Mesh {
+        let mut m = self.mesh.transformed(&self.xf);
+        if let Some(p) = self.paint {
+            // a Material paints what is left unpainted, as SketchUp's default material does
+            for f in 0..m.faces.len() {
+                if m.color_of(f).is_none() {
+                    m.set_color(f, Some(p));
+                }
+            }
+        }
+        m
+    }
+}
+
 impl Scene {
     pub fn from_mesh(mesh: Mesh) -> Scene {
         Scene { root: Context { mesh, instances: Vec::new() }, ..Default::default() }
@@ -298,42 +326,33 @@ impl Scene {
     /// Adds instance `inst`'s geometry (and everything nested in it), placed by `parent` then its own transform, to `out`, as
     /// its Dynamic Component attributes draw it (Hidden, Copies, Material; `crate::model::dc_view`).
     pub fn flatten_instance(&self, inst: &Instance, parent: &Xform, out: &mut Mesh) {
-        self.place(inst, parent, out, 0, None, &HashMap::new());
+        self.place(inst, parent, 0, None, &HashMap::new(), &mut |p| out.append(&p.placed()));
     }
 
     /// Definition `def`'s own content (its geometry and what is placed in it), in its own coordinates.
     pub fn flatten_contents(&self, def: usize, out: &mut Mesh) {
-        self.flatten_def(def, &Xform::IDENTITY, out, 0, None, &HashMap::new());
+        self.walk_def(def, &Xform::IDENTITY, 0, None, &HashMap::new(), &mut |p| out.append(&p.placed()));
     }
 
-    /// One instance and the copies its attributes add, each its definition placed; `paint` is the material inherited from
-    /// around it, `parent` the values of the component it sits in.
-    fn place(&self, inst: &Instance, parent_xf: &Xform, out: &mut Mesh, depth: usize, paint: Option<crate::Paint>, parent: &HashMap<String, f64>) {
+    /// One instance and the copies its attributes add, each its definition placed, piece by piece into `out`; `paint` is the
+    /// material inherited from around it, `parent` the values of the component it sits in.
+    fn place<'a>(&'a self, inst: &Instance, parent_xf: &Xform, depth: usize, paint: Option<crate::Paint>, parent: &HashMap<String, f64>, out: &mut dyn FnMut(Piece<'a>)) {
         let Some(view) = crate::model::dc_view(self, inst, parent) else { return };
         let paint = view.paint.or(paint);
         for xf in &view.xfs {
-            self.flatten_def(inst.def, &parent_xf.after(xf), out, depth, paint, &view.values);
+            self.walk_def(inst.def, &parent_xf.after(xf), depth, paint, &view.values, out);
         }
     }
 
-    fn flatten_def(&self, def: usize, xf: &Xform, out: &mut Mesh, depth: usize, paint: Option<crate::Paint>, values: &HashMap<String, f64>) {
+    fn walk_def<'a>(&'a self, def: usize, xf: &Xform, depth: usize, paint: Option<crate::Paint>, values: &HashMap<String, f64>, out: &mut dyn FnMut(Piece<'a>)) {
         // a definition cannot hold itself, but a damaged file could say so
         let Some(d) = self.defs.get(def) else { return };
         if depth > 64 {
             return;
         }
-        let mut m = d.ctx.mesh.transformed(xf);
-        if let Some(p) = paint {
-            // a Material paints what is left unpainted, as SketchUp's default material does
-            for f in 0..m.faces.len() {
-                if m.color_of(f).is_none() {
-                    m.set_color(f, Some(p));
-                }
-            }
-        }
-        out.append(&m);
+        out(Piece { mesh: &d.ctx.mesh, xf: *xf, paint });
         for i in &d.ctx.instances {
-            self.place(i, xf, out, depth + 1, paint, values);
+            self.place(i, xf, depth + 1, paint, values, out);
         }
     }
 
@@ -349,16 +368,30 @@ impl Scene {
     /// While the context at `path` is open: each of its instances as placed in the model (by index), and everything
     /// outside it (shown faded). The open context's own loose geometry is not included.
     pub fn parts(&self, path: &[usize]) -> (Vec<(usize, Mesh)>, Mesh) {
-        let mut outside = Mesh::new();
+        let joined = |pieces: &[Piece]| {
+            let mut m = Mesh::new();
+            for p in pieces {
+                m.append(&p.placed());
+            }
+            m
+        };
+        let (inside, outside) = self.part_pieces(path);
+        (inside.iter().map(|(i, pieces)| (*i, joined(pieces))).collect(), joined(&outside))
+    }
+
+    /// [`Scene::parts`] piece by piece: each part is its pieces' [`Piece::placed`] meshes one after the other, in this order.
+    /// A drawing kept piece by piece only has to redo the pieces whose geometry or place changed.
+    pub fn part_pieces(&self, path: &[usize]) -> (Vec<(usize, Vec<Piece<'_>>)>, Vec<Piece<'_>>) {
+        let mut outside = Vec::new();
         let mut c = &self.root;
         let mut w = Xform::IDENTITY;
         // the values of the component each level sits in, for its instances' Parent! references
         let mut values = HashMap::new();
         for &step in path {
-            outside.append(&c.mesh.transformed(&w));
+            outside.push(Piece { mesh: &c.mesh, xf: w, paint: None });
             for (i, inst) in c.instances.iter().enumerate() {
                 if i != step {
-                    self.place(inst, &w, &mut outside, 0, None, &values);
+                    self.place(inst, &w, 0, None, &values, &mut |p| outside.push(p));
                 }
             }
             let Some(inst) = c.instances.get(step) else { break };
@@ -371,9 +404,9 @@ impl Scene {
             .iter()
             .enumerate()
             .map(|(i, inst)| {
-                let mut m = Mesh::new();
-                self.place(inst, &w, &mut m, 0, None, &values);
-                (i, m)
+                let mut pieces = Vec::new();
+                self.place(inst, &w, 0, None, &values, &mut |p| pieces.push(p));
+                (i, pieces)
             })
             .collect();
         (inside, outside)

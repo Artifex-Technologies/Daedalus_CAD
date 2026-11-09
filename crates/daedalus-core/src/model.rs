@@ -1,4 +1,4 @@
-use crate::scene::{Context, Definition, Instance, Notes, Scene, Xform};
+use crate::scene::{Context, Definition, Instance, Notes, Piece, Scene, Xform};
 use crate::{HalfEdgeMesh, Mesh, Paint, TopologyError};
 
 /// Merges coplanar faces of `m` in place; returns where `face` went (or `face` when nothing could be rebuilt).
@@ -233,6 +233,17 @@ pub struct Model {
     /// is a comparison with the number at the save (undoing back to it counts as unchanged).
     state: u64,
     next_state: u64,
+    /// See [`Model::revision`], and the stamp it had when the scene last changed (edits of the geometry being edited
+    /// alone leave that one: see [`Model::parts_revision`]).
+    revision: u64,
+    scene_revision: u64,
+}
+
+/// Stamps for [`Model::revision`]: one count for all models, so no stamp is ever given out twice.
+static REVISIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn fresh_revision() -> u64 {
+    REVISIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[derive(Debug, Clone)]
@@ -253,14 +264,35 @@ impl Model {
     }
 
     pub fn from_mesh(mesh: HalfEdgeMesh) -> Self {
-        Model { mesh, ..Default::default() }
+        let revision = fresh_revision();
+        Model { mesh, revision, scene_revision: revision, ..Default::default() }
     }
 
     /// A whole scene (an opened file): its top level must be editable.
     pub fn from_scene(mut scene: Scene) -> Result<Self, TopologyError> {
         let mesh = HalfEdgeMesh::from_mesh(&scene.root.mesh)?;
         scene.root.mesh = Mesh::new();
-        Ok(Model { mesh, scene, ..Default::default() })
+        let revision = fresh_revision();
+        Ok(Model { mesh, scene, revision, scene_revision: revision, ..Default::default() })
+    }
+
+    /// A stamp that changes whenever anything here may have changed: an edit (even one that failed), undo, redo, opening
+    /// or closing a group. Unlike [`Model::state`] it never comes back, so what is worked out from the model and kept is up
+    /// to date while the stamp it was made at is still this one. A new, empty model has 0; a copy keeps its model's stamp
+    /// until either changes; no other model ever has it.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// As [`Model::revision`], for [`Model::parts`] (and [`Model::with_part_pieces`]): at the top level an edit of the
+    /// loose geometry alone leaves it, as no part is made of that geometry there. Inside an open group every change counts
+    /// (copies of a component outside it show the geometry being edited).
+    pub fn parts_revision(&self) -> u64 {
+        if self.open.is_empty() {
+            self.scene_revision
+        } else {
+            self.revision
+        }
     }
 
     /// The geometry being edited: the top level, or the inside of the open group or component (in model coordinates).
@@ -288,6 +320,25 @@ impl Model {
     /// top level). For drawing and picking.
     pub fn parts(&self) -> (Vec<(usize, Mesh)>, Mesh) {
         self.document().parts(&self.open)
+    }
+
+    /// [`Model::parts`] piece by piece ([`Scene::part_pieces`] of the [`Model::document`]), handed to `f`, without copying
+    /// the scene: while `f` runs, the open context's geometry stands in its definition as a save would write it.
+    pub fn with_part_pieces<R>(&mut self, f: impl for<'s> FnOnce(Vec<(usize, Vec<Piece<'s>>)>, Vec<Piece<'s>>) -> R) -> R {
+        // at the top level no part is made of the loose geometry being edited
+        let live = if self.open.is_empty() {
+            None
+        } else {
+            let back = self.scene.world(&self.open).inverse().unwrap_or(Xform::IDENTITY);
+            let local = self.mesh.to_mesh().transformed(&back);
+            self.scene.ctx_mut(&self.open).map(|c| std::mem::replace(&mut c.mesh, local))
+        };
+        let (inside, outside) = self.scene.part_pieces(&self.open);
+        let r = f(inside, outside);
+        if let (Some(stale), Some(c)) = (live, self.scene.ctx_mut(&self.open)) {
+            c.mesh = stale;
+        }
+        r
     }
 
     pub fn notes(&self) -> &Notes {
@@ -362,6 +413,8 @@ impl Model {
         self.mesh = s.mesh;
         self.scene = s.scene;
         self.open = s.open;
+        self.revision = fresh_revision();
+        self.scene_revision = self.revision;
         now
     }
 
@@ -369,7 +422,7 @@ impl Model {
         &mut self,
         f: impl FnOnce(&mut HalfEdgeMesh) -> Result<R, TopologyError>,
     ) -> Result<R, TopologyError> {
-        self.edit_scene(|m, _, _| f(m))
+        self.edit_with(false, |m, _, _| f(m))
     }
 
     /// An edit that may change the scene too (groups, notes): one undo step, undone whole when it fails.
@@ -377,9 +430,24 @@ impl Model {
         &mut self,
         f: impl FnOnce(&mut HalfEdgeMesh, &mut Scene, &[usize]) -> Result<R, TopologyError>,
     ) -> Result<R, TopologyError> {
+        self.edit_with(true, f)
+    }
+
+    /// An edit as one undo step; `scene`: `f` may change the scene (else it only gets to see the geometry being edited).
+    fn edit_with<R>(
+        &mut self,
+        scene: bool,
+        f: impl FnOnce(&mut HalfEdgeMesh, &mut Scene, &[usize]) -> Result<R, TopologyError>,
+    ) -> Result<R, TopologyError> {
         let before = self.snapshot();
         let open = self.open.clone();
-        match f(&mut self.mesh, &mut self.scene, &open) {
+        let scene_before = self.scene_revision;
+        let done = f(&mut self.mesh, &mut self.scene, &open);
+        self.revision = fresh_revision();
+        if scene {
+            self.scene_revision = self.revision;
+        }
+        match done {
             Ok(r) => {
                 self.undo.push((before, self.state));
                 self.redo.clear();
@@ -389,6 +457,10 @@ impl Model {
             }
             Err(e) => {
                 self.restore(before);
+                if !scene {
+                    // `f` never saw the scene, and what was put back is a copy of it
+                    self.scene_revision = scene_before;
+                }
                 Err(e)
             }
         }
@@ -1045,6 +1117,8 @@ impl Model {
         }
         self.open.push(i);
         self.mesh = mesh;
+        self.revision = fresh_revision();
+        self.scene_revision = self.revision;
         Ok(())
     }
 
@@ -1064,6 +1138,8 @@ impl Model {
         let outer = if self.open.is_empty() { outer } else { outer.transformed(&w) };
         // it was editable when it was opened
         self.mesh = HalfEdgeMesh::from_mesh(&outer).unwrap_or_default();
+        self.revision = fresh_revision();
+        self.scene_revision = self.revision;
         true
     }
 
@@ -2081,5 +2157,111 @@ mod tests {
         m.set_part(def, "{converted}".into(), part_faces.clone()).unwrap();
         let d = m.definition(def).unwrap();
         assert!(d.component && d.part.as_deref() == Some("{converted}") && d.ctx.mesh == part_faces);
+    }
+
+    #[test]
+    fn the_revision_changes_with_every_change_and_never_comes_back() {
+        let (mut m, i, _) = cube_component();
+        let mut seen = vec![Model::new().revision()];
+        let mut fresh = |m: &Model| {
+            assert!(!seen.contains(&m.revision()), "a stamp given out again");
+            seen.push(m.revision());
+        };
+        fresh(&m);
+        m.transform_instances(&[i], &Xform::translation([2.0, 0.0, 0.0])).unwrap();
+        fresh(&m);
+        assert!(m.push_pull(99, 1.0).is_err());
+        fresh(&m);
+        // undo and redo bring the state back, not the stamp
+        m.undo();
+        fresh(&m);
+        m.redo();
+        fresh(&m);
+        m.open(i).unwrap();
+        fresh(&m);
+        m.close();
+        fresh(&m);
+        // looking leaves it be
+        let r = m.revision();
+        let _ = (m.parts(), m.document(), m.flatten(), m.outline());
+        m.with_part_pieces(|_, _| ());
+        assert!(!m.close() && !m.redo());
+        assert_eq!(m.revision(), r);
+        // a copy keeps it until either changes; another model has its own
+        let mut copy = m.clone();
+        assert_eq!(copy.revision(), r);
+        copy.undo();
+        assert_ne!(copy.revision(), r);
+        assert_eq!(m.revision(), r);
+        fresh(&Model::from_mesh(m.mesh().clone()));
+    }
+
+    #[test]
+    fn the_parts_revision_stays_while_only_the_top_levels_loose_geometry_changes() {
+        let (mut m, i, _) = cube_component();
+        let parts = |m: &Model| m.parts_revision();
+        let r = parts(&m);
+        // drawing on the ground, pulling it up, an edit that fails: no part changes
+        let f = m.add_rectangle([3.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+        m.push_pull(f, 1.0).unwrap();
+        assert!(m.erase_face(99).is_err());
+        assert_eq!(parts(&m), r);
+        assert_ne!(m.revision(), r);
+        // a group moved, an undo, a group opened: they may
+        m.transform_instances(&[i], &Xform::translation([0.0, 2.0, 0.0])).unwrap();
+        let moved = parts(&m);
+        assert_ne!(moved, r);
+        m.undo();
+        let undone = parts(&m);
+        assert!(undone != moved && undone != r);
+        m.open(i).unwrap();
+        let opened = parts(&m);
+        assert!(opened != undone);
+        // inside a component every edit counts: its other copies show it
+        m.add_rectangle([0.2, 0.2, 1.0], [0.1, 0.0, 0.0], [0.0, 0.1, 0.0]).unwrap();
+        assert_ne!(parts(&m), opened);
+        assert_eq!(parts(&m), m.revision());
+        m.close();
+        assert_eq!(parts(&m), m.revision());
+    }
+
+    #[test]
+    fn the_parts_pieces_add_up_to_the_parts() {
+        // a component placed twice, one copy open and changed (the other, outside, shows the change), nested in a group;
+        // a mirrored copy; a dynamic component drawing copies of itself
+        use crate::dynamic::Attribute;
+        let (mut m, i, def) = cube_component();
+        m.set_attributes(def, vec![Attribute { name: "Copies".into(), formula: "2".into(), label: None }, Attribute { name: "X".into(), formula: "=COPY*1.5".into(), label: None }]).unwrap();
+        let copies = m.copy_instances(&[i], &Xform::from_fn(|p| [-p[0] - 3.0, p[1], p[2]])).unwrap();
+        let g = m.make_group(&[], &[i], false).unwrap();
+        m.add_rectangle([0.0, -5.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
+        let joined = |pieces: &[Piece]| {
+            let mut mesh = Mesh::new();
+            for p in pieces {
+                mesh.append(&p.placed());
+            }
+            mesh
+        };
+        let check = |m: &mut Model| {
+            let (inside, outside) = m.parts();
+            let (pieces_inside, pieces_outside) = m.with_part_pieces(|inside, outside| (inside.iter().map(|(k, ps)| (*k, joined(ps))).collect::<Vec<_>>(), joined(&outside)));
+            assert_eq!(pieces_inside, inside);
+            assert_eq!(pieces_outside, outside);
+            let doc = m.document();
+            let (a, b) = doc.part_pieces(m.open_path());
+            assert_eq!((a.iter().map(|(k, ps)| (*k, joined(ps))).collect::<Vec<_>>(), joined(&b)), (inside, outside));
+        };
+        check(&mut m);
+        m.open(g).unwrap();
+        check(&mut m);
+        m.open(0).unwrap();
+        check(&mut m);
+        let top = (0..m.mesh().face_count()).find(|&f| m.mesh().face_normal(f)[2] > 0.9).unwrap();
+        m.push_pull(top, 0.5).unwrap();
+        check(&mut m);
+        assert!(m.parts().1.faces.len() > 6 * 3, "the copies outside are drawn too");
+        m.close_all();
+        check(&mut m);
+        assert_eq!(copies.len(), 1);
     }
 }

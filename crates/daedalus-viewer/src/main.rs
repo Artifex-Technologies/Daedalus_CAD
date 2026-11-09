@@ -7,6 +7,7 @@ mod frame;
 mod portal;
 mod theme;
 mod icons;
+mod pieces;
 mod settings;
 mod sheetui;
 mod stressui;
@@ -121,11 +122,14 @@ struct State {
     owners: Vec<usize>,
     faded_from: usize,
     faded_vertex: u32,
-    /// The instances and the outside, as of the model state they were built for (rebuilt when it changes), each with its
-    /// faces' triangles.
-    parts: Option<((u64, u64, usize), Vec<(usize, Mesh, Tris)>, (Mesh, Tris))>,
-    /// The geometry being edited, split into triangles, as of the state it was split for (none while a preview runs).
-    active_tris: Option<((u64, u64, usize), Tris)>,
+    /// The instances and the outside, piece by piece with their triangles and edges, as of the document and the model's
+    /// parts revision they were built for (rebuilt when either changes, from `piece_cache`: only the pieces an edit changed
+    /// are split again).
+    parts: Option<((u64, u64), pieces::Parts)>,
+    piece_cache: pieces::PieceCache,
+    /// The geometry being edited split into triangles, and its edges, as of the document, revision and read-only import they
+    /// were worked out for (none while a preview runs).
+    active: Option<((u64, u64, bool), Tris, Vec<(u32, u32)>)>,
     /// `display`'s faces as triangles, and its edges to draw and snap to: worked out in refresh, not on every mouse move.
     tris: Tris,
     edges: Vec<(u32, u32)>,
@@ -265,7 +269,8 @@ impl State {
             faded_from: 0,
             faded_vertex: 0,
             parts: None,
-            active_tris: None,
+            piece_cache: pieces::PieceCache::default(),
+            active: None,
             tris: Vec::new(),
             edges: Vec::new(),
             tools,
@@ -335,8 +340,10 @@ impl State {
         let (model, readonly) = load(scene);
         let mesh = scene.flatten();
         self.model = model;
+        // the old document's pieces are of no more use (keeping them would be harmless, only memory)
         self.parts = None;
-        self.active_tris = None;
+        self.piece_cache = pieces::PieceCache::default();
+        self.active = None;
         self.readonly = readonly;
         self.doc += 1;
         self.path = path;
@@ -596,51 +603,48 @@ impl State {
         };
         self.active_faces = self.display.faces.len();
         self.active_vertices = self.display.positions.len() as u32;
-        // its triangles: kept while the model is unchanged (a highlight or a hover does not split every face again)
-        let key = (self.doc, self.model.state(), self.model.open_depth() + if self.readonly.is_some() { 1 << 20 } else { 0 });
-        self.tris = match (&preview, &self.active_tris) {
-            (None, Some((k, t))) if *k == key => t.clone(),
+        // its triangles and edges: kept while the model is unchanged (a highlight or a hover does not split every face again)
+        let key = (self.doc, self.model.revision(), self.readonly.is_some());
+        (self.tris, self.edges) = match (&preview, &self.active) {
+            (None, Some((k, t, e))) if *k == key => (t.clone(), e.clone()),
             _ => {
-                let t = self.display.face_triangles();
-                self.active_tris = if preview.is_none() { Some((key, t.clone())) } else { None };
-                t
+                let (t, e) = (self.display.face_triangles(), self.display.visible_edges());
+                self.active = if preview.is_none() { Some((key, t.clone(), e.clone())) } else { None };
+                (t, e)
             }
         };
         self.owners.clear();
         let mut highlight = if preview.is_some() { Vec::new() } else { self.tools.highlight() };
         if self.readonly.is_none() {
-            // the groups and components, rebuilt only when the model changed
-            let key = (self.doc, self.model.state(), self.model.open_depth());
+            // the groups and components, rebuilt when they may have changed: only the pieces an edit changed are split again
+            let key = (self.doc, self.model.parts_revision());
             if self.parts.as_ref().is_none_or(|p| p.0 != key) {
-                let (inside, outside) = self.model.parts();
-                let inside = inside.into_iter().map(|(i, m)| {
-                    let t = m.face_triangles();
-                    (i, m, t)
-                });
-                let ot = outside.face_triangles();
-                self.parts = Some((key, inside.collect(), (outside, ot)));
+                let cache = &mut self.piece_cache;
+                let parts = self.model.with_part_pieces(|inside, outside| cache.build(inside, outside));
+                self.parts = Some((key, parts));
             }
             let lit = self.tools.highlight_instances();
             let moving = self.tools.preview_instances();
-            let (_, inside, (outside, outside_tris)) = self.parts.as_ref().expect("built above");
-            let tris = &mut self.tris;
+            let (_, parts) = self.parts.as_ref().expect("built above");
+            let (tris, edges) = (&mut self.tris, &mut self.edges);
             let state = self.model.state();
             let mut stress = self.stress.as_mut();
-            for (i, m, t) in inside {
+            for (i, placed) in &parts.inside {
                 // the part under a stress test: painted with its supports and loads, or drawn as the result
                 if let Some((sm, st)) = stress.as_mut().filter(|s| s.instance == *i && moving.is_none()).and_then(|s| s.display(state)) {
                     let base = self.display.positions.len() as u32;
                     tris.extend(st.iter().map(|ts| ts.iter().map(|tri| tri.map(|v| v + base)).collect::<Vec<_>>()));
+                    edges.extend(sm.visible_edges().into_iter().map(|(a, b)| (a + base, b + base)));
                     self.display.append(sm);
                     self.owners.extend(std::iter::repeat_n(*i, sm.faces.len()));
                     continue;
                 }
-                let mut place = |m: &Mesh, owners: &mut Vec<usize>, display: &mut Mesh, lit_now: bool| {
+                let mut place = |xf: Option<&daedalus_core::scene::Xform>, owners: &mut Vec<usize>, display: &mut Mesh, lit_now: bool| {
                     let from = display.faces.len();
-                    let base = display.positions.len() as u32;
-                    tris.extend(t.iter().map(|ts| ts.iter().map(|tri| tri.map(|v| v + base)).collect::<Vec<_>>()));
-                    display.append(m);
-                    owners.extend(std::iter::repeat_n(*i, m.faces.len()));
+                    for p in placed {
+                        pieces::append(display, tris, edges, p, xf);
+                        owners.extend(std::iter::repeat_n(*i, p.mesh.faces.len()));
+                    }
                     if lit_now {
                         highlight.extend(from..display.faces.len());
                     }
@@ -648,18 +652,18 @@ impl State {
                 match &moving {
                     Some((ids, xf, copy)) if ids.contains(i) => {
                         if *copy {
-                            place(m, &mut self.owners, &mut self.display, false);
+                            place(None, &mut self.owners, &mut self.display, false);
                         }
-                        place(&m.transformed(xf), &mut self.owners, &mut self.display, true);
+                        place(Some(xf), &mut self.owners, &mut self.display, true);
                     }
-                    _ => place(m, &mut self.owners, &mut self.display, lit.contains(i)),
+                    _ => place(None, &mut self.owners, &mut self.display, lit.contains(i)),
                 }
             }
             self.faded_from = self.display.faces.len();
             self.faded_vertex = self.display.positions.len() as u32;
-            let base = self.faded_vertex;
-            self.tris.extend(outside_tris.iter().map(|ts| ts.iter().map(|tri| tri.map(|v| v + base)).collect::<Vec<_>>()));
-            self.display.append(outside);
+            for p in &parts.outside {
+                pieces::append(&mut self.display, &mut self.tris, &mut self.edges, p, None);
+            }
         } else {
             self.faded_from = self.display.faces.len();
             self.faded_vertex = self.display.positions.len() as u32;
@@ -677,10 +681,11 @@ impl State {
             None => Vec::new(),
         };
         highlight.sort_unstable();
-        self.edges = self.display.visible_edges();
+        // `self.edges` is the display's visible edges, put together piece by piece above (each piece's own vertices follow
+        // the ones before, so the lists add up in order: what `self.display.visible_edges()` gives, without sorting it all)
         self.sync_textures();
         let tiles: Vec<[f64; 2]> = self.model.textures().iter().map(|t| t.size).collect();
-        self.gpu.set_scene(&self.display, &self.tris, &highlight, &self.tools.edges, &self.flagged, (self.faded_from, self.faded_vertex), &tiles);
+        self.gpu.set_scene(&self.display, &self.tris, &self.edges, &highlight, &self.tools.edges, &self.flagged, (self.faded_from, self.faded_vertex), &tiles);
         self.shown_highlight = highlight;
         self.window.request_redraw();
     }

@@ -139,28 +139,26 @@ impl Mesh {
 
     /// Undirected edges as (low, high) vertex pairs, each listed once, sorted.
     pub fn edges(&self) -> Vec<(u32, u32)> {
-        let mut out: Vec<(u32, u32)> = self
-            .face_edges()
-            .map(|(_, a, b)| (a.min(b), a.max(b)))
-            .collect();
-        out.sort_unstable();
-        out.dedup();
-        out
+        sorted_pairs(self.face_edges().map(|(_, a, b)| [a, b]))
     }
 
     /// Every edge to draw and snap to: the faces' edges and the loose lines, (low, high), each once, sorted.
     pub fn all_edges(&self) -> Vec<(u32, u32)> {
-        let mut out = self.edges();
-        out.extend(self.lines.iter().map(|&[a, b]| (a.min(b), a.max(b))));
-        out.sort_unstable();
-        out.dedup();
-        out
+        sorted_pairs(self.face_edges().map(|(_, a, b)| [a, b]).chain(self.lines.iter().copied()))
     }
 
     /// The edges to draw and snap to: [`Mesh::all_edges`] without the hidden seams.
     pub fn visible_edges(&self) -> Vec<(u32, u32)> {
-        let hidden: std::collections::HashSet<(u32, u32)> = self.seams.iter().map(|&[a, b]| (a.min(b), a.max(b))).collect();
-        self.all_edges().into_iter().filter(|e| !hidden.contains(e)).collect()
+        let hidden = sorted_pairs(self.seams.iter().copied());
+        // both sorted, so walked side by side (an imported model has tens of thousands of seams)
+        let mut seam = hidden.iter().peekable();
+        self.all_edges()
+            .into_iter()
+            .filter(|e| {
+                while seam.next_if(|s| *s < e).is_some() {}
+                seam.peek() != Some(&e)
+            })
+            .collect()
     }
 
     /// Nearest face hit by a ray, as (face index, distance along the ray).
@@ -445,6 +443,15 @@ impl Mesh {
     }
 }
 
+/// Vertex pairs as (low, high), each once, sorted. Sorted as one number each (low in the high half), which orders them as
+/// the pairs order, only quicker.
+fn sorted_pairs(pairs: impl Iterator<Item = [u32; 2]>) -> Vec<(u32, u32)> {
+    let mut keys: Vec<u64> = pairs.map(|[a, b]| (a.min(b) as u64) << 32 | a.max(b) as u64).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys.into_iter().map(|k| ((k >> 32) as u32, k as u32)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,6 +467,56 @@ mod tests {
         assert_eq!(m.triangles().len(), 2);
         assert_eq!(m.edges(), vec![(0, 1), (0, 3), (1, 2), (2, 3)]);
         assert_eq!(m.bounds(), Some(([0.0; 3], [1.0, 1.0, 0.0])));
+    }
+
+    #[test]
+    fn visible_edges_are_all_edges_less_the_seams() {
+        // a strip of quads, every other inner edge a seam (some given twice, some the wrong way round), and loose lines (one
+        // along a face edge)
+        let mut m = Mesh::new();
+        for i in 0..40 {
+            m.add_vertex([i as f64, 0.0, 0.0]);
+            m.add_vertex([i as f64, 1.0, 0.0]);
+        }
+        for i in 0..39u32 {
+            m.add_face(vec![2 * i, 2 * i + 2, 2 * i + 3, 2 * i + 1]);
+            if i % 2 == 1 {
+                m.seams.push(if i % 4 == 1 { [2 * i, 2 * i + 1] } else { [2 * i + 1, 2 * i] });
+            }
+        }
+        m.seams.push([2, 3]);
+        m.seams.push([79, 78]);
+        m.lines.extend([[0, 79], [5, 3], [0, 2], [70, 9]]);
+        // a hole in the last quad
+        let hole: Vec<u32> = [[38.2, 0.2], [38.8, 0.2], [38.8, 0.8], [38.2, 0.8]].iter().rev().map(|p| m.add_vertex([p[0], p[1], 0.0])).collect();
+        m.set_holes(38, vec![hole]);
+        // the ways they were worked out before, word for word
+        let old_edges = |m: &Mesh| {
+            let mut out: Vec<(u32, u32)> = m.face_edges().map(|(_, a, b)| (a.min(b), a.max(b))).collect();
+            out.sort_unstable();
+            out.dedup();
+            out
+        };
+        let old_all = |m: &Mesh| {
+            let mut out = old_edges(m);
+            out.extend(m.lines.iter().map(|&[a, b]| (a.min(b), a.max(b))));
+            out.sort_unstable();
+            out.dedup();
+            out
+        };
+        let old_visible = |m: &Mesh| {
+            let hidden: std::collections::HashSet<(u32, u32)> = m.seams.iter().map(|&[a, b]| (a.min(b), a.max(b))).collect();
+            old_all(m).into_iter().filter(|e| !hidden.contains(e)).collect::<Vec<_>>()
+        };
+        assert_eq!(m.edges(), old_edges(&m));
+        assert_eq!(m.all_edges(), old_all(&m));
+        assert_eq!(m.visible_edges(), old_visible(&m));
+        assert_eq!(m.visible_edges().len(), m.all_edges().len() - 20);
+        m.seams.clear();
+        assert_eq!(m.visible_edges(), m.all_edges());
+        // vertex numbers using the high bits keep their order
+        let big = [[u32::MAX, 0], [7, u32::MAX - 1], [0, u32::MAX], [u32::MAX - 1, u32::MAX], [7, 1 << 31]];
+        assert_eq!(sorted_pairs(big.into_iter()), vec![(0, u32::MAX), (7, 1 << 31), (7, u32::MAX - 1), (u32::MAX - 1, u32::MAX)]);
     }
 
     #[test]

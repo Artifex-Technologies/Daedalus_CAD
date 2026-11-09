@@ -145,6 +145,16 @@ the current state is:
   (`triangulate_with_holes`). `.daedalus` 4 writes `h` lines; older files' two-face rings (seams) are joined back
   (`Mesh::join_seamed_faces`). SketchUp faces come in with their holes (pinched outlines allowed). OBJ/DAE export a face
   with holes as triangles (`Mesh::polygons`). Not yet: Follow Me sweeps only a profile's outline.
+- No stutter on every edit of a big model (2026-11-08, `viewer/src/pieces.rs`): groups and components are drawn piece by
+  piece (`Scene::part_pieces`: each definition's own geometry where it is placed), and a piece keeps its triangles and edges
+  while its geometry (compared bit for bit) and its place stay the same, so an edit splits again only what it changed (undo,
+  redo, opening and closing groups mostly find theirs kept). Rebuilt when `Model::parts_revision` moves (`Model::revision`
+  changes with every change and, unlike `state`, never comes back: drawing caches key on these). The edges come from the
+  pieces too (the whole display's were sorted twice on every refresh). Rings from 160 corners are clipped by
+  `triangulate::ears_fast`: exactly the plain loop's triangles, each ear tested only against the corners near it. Checked on
+  all 29 of my SketchUp models (358,166 faces, the same triangles and edges). Per edit on my two biggest models: about 60 and
+  50 ms before; now 1 and 4 ms at the top level, 9 and 13 ms inside their biggest group. Not yet: the geometry being edited
+  is still split whole after each edit (a per-face cache would make big open groups cheaper too).
 - Curves (2026-11-06, `core/src/curve.rs`): arcs and circles stay segments but are recognised from their shape (3+ equal
   segments in a plane, same centre and radius, same turn of at most 60 degrees: rectangles and hexagons are not curves).
   A Select click on a segment takes the whole curve. Entity Info (right-click menu or View menu; a panel on the right)

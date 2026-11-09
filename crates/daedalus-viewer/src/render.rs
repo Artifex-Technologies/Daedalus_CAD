@@ -166,11 +166,12 @@ const FADED_EDGE: [f32; 4] = [0.62, 0.63, 0.66, 1.0];
 /// Selected edges: SketchUp's selection blue, a little deeper than the selected faces' tint so a thin line still shows it.
 const SELECTED_EDGE: [f32; 4] = [0.05, 0.33, 0.95, 1.0];
 
-/// `selected`: edges drawn in the selection colour, as vertex pairs (lower number first), sorted.
-fn edge_vertices(mesh: &Mesh, faded_vertex: u32, selected: &[[u32; 2]]) -> Vec<LineVertex> {
-    mesh.visible_edges()
-        .into_iter()
-        .flat_map(|(a, b)| {
+/// `edges`: the mesh's edges to draw (`Mesh::visible_edges`). `selected`: edges drawn in the selection colour, as vertex
+/// pairs (lower number first), sorted.
+fn edge_vertices(mesh: &Mesh, edges: &[(u32, u32)], faded_vertex: u32, selected: &[[u32; 2]]) -> Vec<LineVertex> {
+    edges
+        .iter()
+        .flat_map(|&(a, b)| {
             let color = if a.min(b) >= faded_vertex {
                 FADED_EDGE
             } else if selected.binary_search(&[a.min(b), a.max(b)]).is_ok() {
@@ -514,13 +515,14 @@ impl Renderer {
     /// Uploads the model after an edit, a selection change or a preview step.
     /// `faded`: faces from this number on, and edges between vertices from that number on, lie outside the open group
     /// or component and are drawn faded.
-    /// `tris`: each face's triangles (`Mesh::face_triangles`), kept by the caller so a highlight change does not split
-    /// every face again.
+    /// `tris`: each face's triangles (`Mesh::face_triangles`), and `edges` its edges to draw (`Mesh::visible_edges`), kept
+    /// by the caller so a highlight change does not work them out again.
     /// `selected_edges`: edges drawn in the selection colour (vertex pairs, lower number first, sorted).
     /// `tiles`: each texture's tile size, by number (see `face_vertices`).
-    pub fn set_scene(&mut self, mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], selected_edges: &[[u32; 2]], flagged: &[usize], faded: (usize, u32), tiles: &[[f64; 2]]) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_scene(&mut self, mesh: &Mesh, tris: &[Vec<[u32; 3]>], edges: &[(u32, u32)], selected: &[usize], selected_edges: &[[u32; 2]], flagged: &[usize], faded: (usize, u32), tiles: &[[f64; 2]]) {
         let faces = face_vertices(mesh, tris, selected, flagged, faded.0, tiles);
-        let edges = edge_vertices(mesh, faded.1, selected_edges);
+        let edges = edge_vertices(mesh, edges, faded.1, selected_edges);
         self.faces = (self.buffer(bytemuck::cast_slice(&faces)), faces.len() as u32);
         self.edges = (self.buffer(bytemuck::cast_slice(&edges)), edges.len() as u32);
     }
