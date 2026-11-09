@@ -15,14 +15,19 @@
 //! - paint is face colour (STYLED_ITEM, SURFACE_STYLE_USAGE, COLOUR_RGB; a texture leaves its colour);
 //! - lengths are in the units asked for (millimetres when unsure), with the model's tolerance as the uncertainty;
 //! - a face a few micrometres off flat (as converted SketchUp faces are) is still one PLANE; one further off is written as
-//!   its triangles (see `flatness`).
+//!   its triangles (see `flatness`), the edges between them soft;
+//! - loose lines are wireframe, as other programs show them: POLYLINEs (chained where they meet end to end) in a
+//!   GEOMETRIC_CURVE_SET of each part's GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION;
+//! - soft edges (drawn smooth, so curved surfaces show no facets) are the EDGE_CURVEs of a PRESENTATION_LAYER_ASSIGNMENT
+//!   named "Soft edges", made invisible (INVISIBILITY): edges only, never faces.
 //!
-//! What STEP has no place for (notes, loose lines, soft edges, textures, Dynamic Component formulas, sheet-metal steps) is
-//! listed in [`Written::left_out`], for the caller to say so or keep a `.daedalus` file beside it.
+//! What STEP has no place for (notes, textures, Dynamic Component formulas, sheet-metal steps) is listed in
+//! [`Written::left_out`], for the caller to tell the person.
 //!
 //! Reading takes what this writer writes and flat-faced STEP from other programs: ADVANCED_FACE or FACE_SURFACE on a PLANE
 //! bounded by lines, polylines, circles or ellipses (curved edges in segments, as Daedalus draws circles), faceted B-reps,
-//! assemblies with their placements (MAPPED_ITEM copies too), colours and units. Faces on curved surfaces (cylinders, cones,
+//! assemblies with their placements (MAPPED_ITEM copies too), colours, units, wireframe curves as loose lines, and edges in
+//! the "Soft edges" layer or any layer made invisible as soft edges. Faces on curved surfaces (cylinders, cones,
 //! spheres, tori, B-splines) are not read yet: [`read`] names them in [`Read::skipped`] and reads the rest, and
 //! [`read_scene`] refuses such a file, naming them, rather than open it with faces missing.
 
@@ -410,10 +415,11 @@ struct Tally {
     faces: usize,
     solids: usize,
     shells: usize,
-    /// Faces with no area, holes with none, and faces not flat (written as their triangles).
+    /// Faces with no area, holes with none, faces not flat (written as their triangles), loose lines of no length.
     degenerate: usize,
     holes_dropped: usize,
     split: usize,
+    lines_dropped: usize,
 }
 
 /// A loop without repeated corners (a corner at the same place as the one before it), or None if fewer than three are left
@@ -445,13 +451,15 @@ fn flatness(mesh: &Mesh) -> f64 {
     (tol * 1000.0).min(1e-4).max(tol * 100.0)
 }
 
-/// A mesh's faces ready to write. A face whose corners are not in one plane is written as its triangles, so the file
-/// stays exact; faces with no area are left out. A face faces the way its loops together wind, and the loop round the most
-/// area is its outline (a converted face may list a hole first).
-fn polys(mesh: &Mesh, tally: &mut Tally) -> Vec<Poly> {
+/// A mesh's faces ready to write, and the edges inside faces written as triangles. A face whose corners are not in one plane
+/// is written as its triangles, so the file stays exact, the edges between them soft so it still looks one face; faces with
+/// no area are left out. A face faces the way its loops together wind, and the loop round the most area is its outline (a
+/// converted face may list a hole first).
+fn polys(mesh: &Mesh, tally: &mut Tally) -> (Vec<Poly>, Vec<(u32, u32)>) {
     let flat = flatness(mesh);
     let pos = &mesh.positions;
     let mut out = Vec::with_capacity(mesh.faces.len());
+    let mut inner = Vec::new();
     for f in 0..mesh.faces.len() {
         let rgb = mesh.color_of(f).map(|c| c.rgb);
         let Some(outline) = clean(mesh, &mesh.faces[f]) else {
@@ -478,16 +486,58 @@ fn polys(mesh: &Mesh, tally: &mut Tally) -> Vec<Poly> {
         let (lo, hi) = loops.iter().flatten().map(|&v| dot(sub(pos[v as usize], at), u)).fold((0.0f64, 0.0f64), |(lo, hi), d| (lo.min(d), hi.max(d)));
         if (hi - lo) / 2.0 > flat {
             tally.split += 1;
+            let key = |a: u32, b: u32| (a.min(b), a.max(b));
+            let own: HashSet<(u32, u32)> = loops.iter().flat_map(|l| (0..l.len()).map(move |i| key(l[i], l[(i + 1) % l.len()]))).collect();
             for t in mesh.triangulate_face(f) {
                 let t = t.to_vec();
                 let n = area_normal(pos, &t);
                 if let Some(u) = unit(n).filter(|_| length(n) > 1e-12 * size * size) {
+                    inner.extend((0..3).map(|i| key(t[i], t[(i + 1) % 3])).filter(|e| !own.contains(e)));
                     out.push(Poly { loops: vec![t], normal: u, rgb });
                 }
             }
             continue;
         }
         out.push(Poly { loops, normal: u, rgb });
+    }
+    (out, inner)
+}
+
+/// Loose lines as chains, each from a corner where one must start (an end, or where more than two lines meet) through the
+/// corners where just two meet, so a polyline drawn comes back whole; a closed ring of lines goes round once.
+fn chains(lines: &[[u32; 2]]) -> Vec<Vec<u32>> {
+    let mut at: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (k, &[a, b]) in lines.iter().enumerate() {
+        at.entry(a).or_default().push(k);
+        at.entry(b).or_default().push(k);
+    }
+    let walk = |start: u32, used: &mut [bool]| -> Option<Vec<u32>> {
+        let mut chain = vec![start];
+        let mut v = start;
+        while let Some(&k) = at[&v].iter().find(|&&k| !used[k]) {
+            used[k] = true;
+            let [a, b] = lines[k];
+            v = if a == v { b } else { a };
+            chain.push(v);
+            if at[&v].len() != 2 || v == start {
+                break;
+            }
+        }
+        (chain.len() > 1).then_some(chain)
+    };
+    let mut used = vec![false; lines.len()];
+    let mut starts: Vec<u32> = at.iter().filter(|(_, ks)| ks.len() != 2).map(|(&v, _)| v).collect();
+    starts.sort_unstable();
+    let mut out = Vec::new();
+    for s in starts {
+        while let Some(c) = walk(s, &mut used) {
+            out.push(c);
+        }
+    }
+    for k in 0..lines.len() {
+        if !used[k] {
+            out.extend(walk(lines[k][0], &mut used));
+        }
     }
     out
 }
@@ -604,7 +654,13 @@ struct Writer {
     directions: HashMap<[u64; 3], u64>,
     looks: HashMap<[u8; 3], u64>,
     styled: Vec<u64>,
+    /// EDGE_CURVEs drawn smooth (soft edges), for the "Soft edges" layer.
+    soft: Vec<u64>,
 }
+
+/// The layer that holds the soft edges (made invisible), and what it says about them.
+const SOFT_LAYER: &str = "Soft edges";
+const SOFT_NOTE: &str = "edges drawn smooth: the faces on either side show as one surface";
 
 /// `(#1,#2,#3)`
 fn id_list(ids: &[u64]) -> String {
@@ -622,7 +678,7 @@ fn id_list(ids: &[u64]) -> String {
 
 impl Writer {
     fn new(unit: Scale) -> Writer {
-        Writer { data: String::new(), next: 1, unit, directions: HashMap::new(), looks: HashMap::new(), styled: Vec::new() }
+        Writer { data: String::new(), next: 1, unit, directions: HashMap::new(), looks: HashMap::new(), styled: Vec::new(), soft: Vec::new() }
     }
 
     /// Adds an entity; returns its number.
@@ -698,13 +754,17 @@ impl Writer {
         self.styled.push(s);
     }
 
-    /// A mesh's faces as solids and other shells (for an ADVANCED_BREP_SHAPE_REPRESENTATION and a surface model).
-    fn geometry(&mut self, mesh: &Mesh, tally: &mut Tally) -> (Vec<u64>, Vec<u64>) {
-        let polys = polys(mesh, tally);
+    /// A mesh's faces as solids and other shells (for an ADVANCED_BREP_SHAPE_REPRESENTATION and a surface model), and its
+    /// loose lines as a GEOMETRIC_CURVE_SET (for a wireframe representation). Its soft edges are kept for the "Soft edges"
+    /// layer.
+    fn geometry(&mut self, mesh: &Mesh, tally: &mut Tally) -> (Vec<u64>, Vec<u64>, Option<u64>) {
+        let (polys, inner) = polys(mesh, tally);
+        // soft: the mesh's own soft edges, and those inside a face written as triangles
+        let soft: HashSet<(u32, u32)> = mesh.seams.iter().map(|&[a, b]| (a.min(b), a.max(b))).chain(inner).collect();
         let mut points: HashMap<u32, u64> = HashMap::new();
         let (mut solids, mut others) = (Vec::new(), Vec::new());
         for shell in shells(mesh, &polys) {
-            let s = self.shell(mesh, &polys, &shell, &mut points);
+            let s = self.shell(mesh, &polys, &shell, &mut points, &soft);
             tally.faces += shell.faces.len();
             if shell.solid {
                 solids.push(self.add(format_args!("MANIFOLD_SOLID_BREP('',#{s})")));
@@ -714,7 +774,26 @@ impl Writer {
                 tally.shells += 1;
             }
         }
-        (solids, others)
+        let wire = self.wireframe(mesh, &mut points, tally);
+        (solids, others, wire)
+    }
+
+    /// A mesh's loose lines, as POLYLINEs (chained where they meet end to end) in one GEOMETRIC_CURVE_SET; their corners are
+    /// the same CARTESIAN_POINTs as the faces' where they meet them.
+    fn wireframe(&mut self, mesh: &Mesh, points: &mut HashMap<u32, u64>, tally: &mut Tally) -> Option<u64> {
+        let pos = &mesh.positions;
+        let n = pos.len();
+        let lines: Vec<[u32; 2]> = mesh.lines.iter().copied().filter(|&[a, b]| (a as usize) < n && (b as usize) < n && pos[a as usize] != pos[b as usize]).collect();
+        tally.lines_dropped += mesh.lines.len() - lines.len();
+        if lines.is_empty() {
+            return None;
+        }
+        let mut curves = Vec::new();
+        for chain in chains(&lines) {
+            let corners: Vec<u64> = chain.iter().map(|&v| self.cartesian(mesh, v, points)).collect();
+            curves.push(self.add(format_args!("POLYLINE('',{})", id_list(&corners))));
+        }
+        Some(self.add(format_args!("GEOMETRIC_CURVE_SET('',{})", id_list(&curves))))
     }
 
     fn cartesian(&mut self, mesh: &Mesh, v: u32, points: &mut HashMap<u32, u64>) -> u64 {
@@ -750,8 +829,8 @@ impl Writer {
     }
 
     /// One shell: its faces, each edge and corner written once (a shell's own; its points are shared with the part's other
-    /// shells).
-    fn shell(&mut self, mesh: &Mesh, polys: &[Poly], shell: &Shell, points: &mut HashMap<u32, u64>) -> u64 {
+    /// shells). Its edges in `soft` go to the soft-edges layer.
+    fn shell(&mut self, mesh: &Mesh, polys: &[Poly], shell: &Shell, points: &mut HashMap<u32, u64>, soft: &HashSet<(u32, u32)>) -> u64 {
         let mut vertices: HashMap<u32, u64> = HashMap::new();
         let mut edges: HashMap<(u32, u32), u64> = HashMap::new();
         let mut faces = Vec::with_capacity(shell.faces.len());
@@ -768,6 +847,9 @@ impl Writer {
                         None => {
                             let e = self.edge(mesh, key, points, &mut vertices);
                             edges.insert(key, e);
+                            if soft.contains(&key) {
+                                self.soft.push(e);
+                            }
                             e
                         }
                     };
@@ -848,7 +930,7 @@ pub fn write(scene: &Scene, opts: &WriteOptions) -> Result<Written, IoError> {
     let mut taken = HashSet::new();
     for &pi in &order {
         let part = &plan.parts[pi];
-        let (solids, shells) = w.geometry(&part.mesh, &mut tally);
+        let (solids, shells, wire) = w.geometry(&part.mesh, &mut tally);
         // its shape: its own axes, where each part in it is placed, and its solids and surfaces beside them
         let origin = w.placement([0.0; 3], Z, X);
         let placed: Vec<u64> = part.children.iter().map(|(_, xf)| w.placement(xf.origin(), column(xf, 2), column(xf, 0))).collect();
@@ -861,6 +943,11 @@ pub fn write(scene: &Scene, opts: &WriteOptions) -> Result<Written, IoError> {
         if !shells.is_empty() {
             let model = w.add(format_args!("SHELL_BASED_SURFACE_MODEL('',{})", id_list(&shells)));
             let rep = w.add(format_args!("MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#{model}),#{ctx})"));
+            w.add(format_args!("SHAPE_REPRESENTATION_RELATIONSHIP('','',#{shape},#{rep})"));
+        }
+        // loose lines are wireframe: what other programs show them as
+        if let Some(set) = wire {
+            let rep = w.add(format_args!("GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION('',(#{set}),#{ctx})"));
             w.add(format_args!("SHAPE_REPRESENTATION_RELATIONSHIP('','',#{shape},#{rep})"));
         }
         let id = product_id(&part.name, part.kind, &mut taken);
@@ -892,6 +979,12 @@ pub fn write(scene: &Scene, opts: &WriteOptions) -> Result<Written, IoError> {
     if !w.styled.is_empty() {
         let styled = std::mem::take(&mut w.styled);
         w.add(format_args!("MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',{},#{ctx})", id_list(&styled)));
+    }
+    // soft edges: a layer of the edges drawn smooth, made invisible (edges only, never faces)
+    if !w.soft.is_empty() {
+        let soft = std::mem::take(&mut w.soft);
+        let layer = w.add(format_args!("PRESENTATION_LAYER_ASSIGNMENT({},{},{})", string(SOFT_LAYER), string(SOFT_NOTE), id_list(&soft)));
+        w.add(format_args!("INVISIBILITY((#{layer}))"));
     }
     w.add(format_args!("PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,{})", id_list(&products)));
 
@@ -927,15 +1020,6 @@ fn left_out(scene: &Scene, plan: &Plan, tally: &Tally) -> Vec<String> {
     if !n.axes.is_default() {
         out.push("the drawing axes".into());
     }
-    let contexts = || std::iter::once(&scene.root).chain(scene.defs.iter().map(|d| &d.ctx));
-    let lines: usize = contexts().map(|c| c.mesh.lines.len()).sum();
-    if lines > 0 {
-        out.push(count(lines, "loose line", "loose lines"));
-    }
-    let seams: usize = contexts().map(|c| c.mesh.seams.len()).sum();
-    if seams > 0 {
-        out.push(format!("{} (they come back as ordinary edges)", count(seams, "soft edge", "soft edges")));
-    }
     if !scene.textures.is_empty() {
         out.push(format!("{} (the faces keep their colours)", count(scene.textures.len(), "texture", "textures")));
     }
@@ -944,7 +1028,7 @@ fn left_out(scene: &Scene, plan: &Plan, tally: &Tally) -> Vec<String> {
     }
     let parts = scene.defs.iter().enumerate().filter(|(i, d)| d.part.is_some() && plan.reached[*i]).count();
     if parts > 0 {
-        out.push(format!("{} (as their faces; File > Export STEP writes them exact)", count(parts, "sheet-metal part", "sheet-metal parts")));
+        out.push(format!("{} (as their faces; File > Export STEP for Fabrication writes them exact)", count(parts, "sheet-metal part", "sheet-metal parts")));
     }
     let unplaced = plan.reached.iter().filter(|r| !**r).count();
     if unplaced > 0 {
@@ -964,6 +1048,9 @@ fn left_out(scene: &Scene, plan: &Plan, tally: &Tally) -> Vec<String> {
     }
     if tally.holes_dropped > 0 {
         out.push(count(tally.holes_dropped, "hole with no area", "holes with no area"));
+    }
+    if tally.lines_dropped > 0 {
+        out.push(count(tally.lines_dropped, "loose line with no length", "loose lines with no length"));
     }
     out
 }
@@ -1659,11 +1746,16 @@ struct Index {
     styled: Vec<(u64, bool)>,
     /// Representations used by MAPPED_ITEMs (read through them, not on their own).
     mapped: HashSet<u64>,
+    /// What is drawn smooth or not at all: the items of the "Soft edges" layer and of any layer made invisible (of them,
+    /// edges become soft edges).
+    soft: HashSet<u64>,
 }
 
 impl Index {
     fn of(file: &File) -> Index {
         let mut x = Index::default();
+        let mut layers: HashMap<u64, Vec<u64>> = HashMap::new();
+        let mut hidden: Vec<u64> = Vec::new();
         let link = |x: &mut Index, a: Option<u64>, b: Option<u64>| {
             if let (Some(a), Some(b)) = (a, b) {
                 x.linked.entry(a).or_default().push(b);
@@ -1704,6 +1796,13 @@ impl Index {
                             x.mapped.insert(r);
                         }
                     }
+                    "PRESENTATION_LAYER_ASSIGNMENT" => {
+                        layers.insert(id, ids(p, 2).collect::<Vec<u64>>());
+                        if text(p, 0).trim().eq_ignore_ascii_case(SOFT_LAYER) {
+                            x.soft.extend(ids(p, 2));
+                        }
+                    }
+                    "INVISIBILITY" => hidden.extend(ids(p, 0)),
                     _ => {}
                 },
                 Ent::Many(_) => {
@@ -1717,6 +1816,12 @@ impl Index {
                         }
                     }
                 }
+            }
+        }
+        // a layer made invisible: its edges are not drawn either
+        for l in hidden {
+            if let Some(items) = layers.get(&l) {
+                x.soft.extend(items.iter().copied());
             }
         }
         x
@@ -1735,6 +1840,8 @@ struct Builder {
     /// CARTESIAN_POINT -> vertex
     points: HashMap<u64, u32>,
     edges: HashMap<u64, EdgeRead>,
+    /// Soft edges already marked (two faces share each).
+    soft_done: HashSet<u64>,
 }
 
 struct Reader<'f> {
@@ -2071,10 +2178,83 @@ impl<'f> Reader<'f> {
                 }
             }
             "MAPPED_ITEM" => self.mapped(p, scale, b, depth),
+            // wireframe: loose lines
+            "GEOMETRIC_CURVE_SET" | "GEOMETRIC_SET" => {
+                for c in ids(p, 1) {
+                    self.wire(c, scale, b);
+                }
+            }
             // placements and points: nothing to draw
             "AXIS2_PLACEMENT_3D" | "AXIS2_PLACEMENT_2D" | "CARTESIAN_POINT" | "DIRECTION" => {}
             other => self.skip(format!("items of type {other}")),
         }
+    }
+
+    /// One curve of a wireframe as loose lines: a polyline's segments (a B-spline of degree 1 is one), a line trimmed at both
+    /// ends, a circle or ellipse whole or trimmed at two points (in segments). A point is passed over.
+    fn wire(&mut self, c: u64, scale: Scale, b: &mut Builder) {
+        let f = self.f;
+        let chain = |b: &mut Builder, run: &[u32]| b.mesh.lines.extend(run.windows(2).filter(|w| w[0] != w[1]).map(|w| [w[0], w[1]]));
+        let poly = |r: &mut Self, corners: &[u64], b: &mut Builder| {
+            let run: Vec<u32> = corners.iter().filter_map(|&cp| r.vertex_at(cp, scale, b)).collect();
+            chain(b, &run);
+        };
+        match f.simple(c) {
+            Some(("POLYLINE", p)) => return poly(self, &ids(p, 1).collect::<Vec<u64>>(), b),
+            Some(("B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE", p)) if num(p.get(1)) == Some(1.0) => return poly(self, &ids(p, 2).collect::<Vec<u64>>(), b),
+            Some(("CARTESIAN_POINT", _)) => return,
+            Some(("CIRCLE" | "ELLIPSE", p)) => {
+                let Some(position) = at(p, 1) else { return };
+                let r1 = num(p.get(2)).unwrap_or(0.0);
+                let r2 = if f.simple(c).is_some_and(|(k, _)| k == "ELLIPSE") { num(p.get(3)).unwrap_or(0.0) } else { r1 };
+                let ax = self.axes(position, scale);
+                let start = plus(ax.origin(), times(column(&ax, 0), scale.metres(r1)));
+                let first = b.mesh.add_vertex(start);
+                let along = self.arc(position, r1, r2, true, start, start, true, scale, b);
+                let run: Vec<u32> = std::iter::once(first).chain(along).chain(std::iter::once(first)).collect();
+                return chain(b, &run);
+            }
+            Some(("TRIMMED_CURVE", p)) => {
+                // TRIMMED_CURVE(name, basis, trim_1, trim_2, sense_agreement, master): a trim is a point, a parameter, or both
+                let point = |trim: &[P]| trim.iter().find_map(|t| if let P::Ref(id) = t { f.rec(*id, "CARTESIAN_POINT").map(|_| *id) } else { None });
+                let parameter = |trim: &[P]| trim.iter().find_map(|t| if let P::Typed(name, v) = t { (name == "PARAMETER_VALUE").then(|| num(Some(v))).flatten() } else { None });
+                let (t1, t2) = (list(p, 2), list(p, 3));
+                let basis = at(p, 1).and_then(|id| f.simple(id).map(|(k, q)| (id, k, q)));
+                match basis {
+                    Some((_, "LINE", q)) => {
+                        // LINE(name, pnt, VECTOR(name, orientation, magnitude))
+                        let origin = at(q, 1).and_then(|cp| self.point(cp));
+                        let vector = at(q, 2).and_then(|v| f.simple(v)).and_then(|(_, v)| Some((at(v, 1).and_then(|d| self.direction(d))?, num(v.get(2))?)));
+                        let end = |r: &mut Self, trim: &[P], b: &mut Builder| match (point(trim), parameter(trim), origin, vector) {
+                            (Some(cp), _, _, _) => r.vertex_at(cp, scale, b),
+                            (None, Some(t), Some(o), Some((d, m))) => Some(b.mesh.add_vertex(plus(o, times(d, t * m)).map(|x| scale.metres(x)))),
+                            _ => None,
+                        };
+                        if let (Some(a), Some(z)) = (end(self, t1, b), end(self, t2, b)) {
+                            return chain(b, &[a, z]);
+                        }
+                    }
+                    Some((id, "CIRCLE" | "ELLIPSE", q)) => {
+                        if let (Some(a), Some(z), Some(position)) = (point(t1), point(t2), at(q, 1)) {
+                            let r1 = num(q.get(2)).unwrap_or(0.0);
+                            let r2 = if f.simple(id).is_some_and(|(k, _)| k == "ELLIPSE") { num(q.get(3)).unwrap_or(0.0) } else { r1 };
+                            if let (Some(va), Some(vz)) = (self.vertex_at(a, scale, b), self.vertex_at(z, scale, b)) {
+                                let (pa, pz) = (b.mesh.positions[va as usize], b.mesh.positions[vz as usize]);
+                                let along = self.arc(position, r1, r2, flag(p, 4).unwrap_or(true), pa, pz, va == vz, scale, b);
+                                let run: Vec<u32> = std::iter::once(va).chain(along).chain(std::iter::once(vz)).collect();
+                                return chain(b, &run);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                let of = at(p, 1).map(|id| f.type_name(id)).unwrap_or_default();
+                return self.skip(format!("wireframe curves of type TRIMMED_CURVE of {of}"));
+            }
+            _ => {}
+        }
+        let t = f.type_name(c);
+        self.skip(format!("wireframe curves of type {t}"));
     }
 
     /// A MAPPED_ITEM: a copy of another representation, placed; that representation becomes a component, read once.
@@ -2191,10 +2371,11 @@ impl<'f> Reader<'f> {
         let f = self.f;
         let mut outer: Option<Vec<u32>> = None;
         let mut rings: Vec<Vec<u32>> = Vec::new();
+        let mut used = Vec::new();
         for bound in bounds.iter().filter_map(|x| if let P::Ref(id) = x { Some(*id) } else { None }) {
             let Some((kind, p)) = f.simple(bound) else { continue };
             let Some(lp) = at(p, 1) else { continue };
-            let mut ring = match self.ring(lp, scale, b) {
+            let mut ring = match self.ring(lp, scale, b, &mut used) {
                 Ok(r) => r,
                 Err(Some(what)) => return self.skip(format!("faces bounded by {what}")),
                 Err(None) => continue,
@@ -2257,10 +2438,20 @@ impl<'f> Reader<'f> {
         if let Some(c) = colour {
             b.mesh.set_color(face, Some(Paint::from(c)));
         }
+        // its edges drawn smooth: soft edges again, each segment of one (the faces either side share it: marked once)
+        for e in used {
+            if self.index.soft.contains(&e) && b.soft_done.insert(e) {
+                if let Some(Ok((start, end, along))) = b.edges.get(&e) {
+                    let run: Vec<u32> = std::iter::once(*start).chain(along.iter().copied()).chain(std::iter::once(*end)).collect();
+                    b.mesh.seams.extend(run.windows(2).filter(|w| w[0] != w[1]).map(|w| [w[0], w[1]]));
+                }
+            }
+        }
     }
 
-    /// A loop's vertices in order, or what kind of edge or loop could not be read (None: a loop of no length, a VERTEX_LOOP).
-    fn ring(&mut self, lp: u64, scale: Scale, b: &mut Builder) -> Result<Vec<u32>, Option<String>> {
+    /// A loop's vertices in order, or what kind of edge or loop could not be read (None: a loop of no length, a VERTEX_LOOP);
+    /// the edges it runs along are added to `used`.
+    fn ring(&mut self, lp: u64, scale: Scale, b: &mut Builder, used: &mut Vec<u64>) -> Result<Vec<u32>, Option<String>> {
         let f = self.f;
         match f.simple(lp) {
             Some(("EDGE_LOOP", p)) => {
@@ -2268,6 +2459,7 @@ impl<'f> Reader<'f> {
                 for oe in ids(p, 1) {
                     let (edge, forward) = self.oriented_edge(oe, 0)?;
                     let (start, end, along) = self.edge(edge, scale, b)?;
+                    used.push(edge);
                     if forward {
                         out.push(start);
                         out.extend_from_slice(&along);
@@ -2857,7 +3049,126 @@ mod tests {
         let w = written(&Scene::from_mesh(m));
         assert_eq!(w.faces, 2);
         assert_eq!(w.left_out, vec!["1 face not flat (written as triangles)".to_string()]);
-        assert_eq!(read_back(&w).scene.root.mesh.faces.len(), 2);
+        let back = read_back(&w).scene.root.mesh;
+        assert_eq!(back.faces.len(), 2);
+        assert_eq!(back.seams.len(), 1, "the edge between the two triangles is soft: it still looks one face");
+    }
+
+    /// Loose lines or soft edges as pairs of corner positions, in an order that survives a write and a read.
+    fn pairs(m: &Mesh, list: &[[u32; 2]]) -> Vec<[[i64; 3]; 2]> {
+        let mut out: Vec<[[i64; 3]; 2]> = list
+            .iter()
+            .map(|&[a, b]| {
+                let (p, q) = (key(m.positions[a as usize]), key(m.positions[b as usize]));
+                if p <= q { [p, q] } else { [q, p] }
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    #[test]
+    fn loose_lines_and_soft_edges_come_back() {
+        let mut m = cube(1.0);
+        // a chain of three lines from a corner of the cube, a ring of three, three lines meeting at a point, one of no length
+        let chain = [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 1.0, 0.0]].map(|p| m.add_vertex(p));
+        m.lines.extend([[0, chain[0]], [chain[0], chain[1]], [chain[1], chain[2]]]);
+        let ring = [[5.0, 0.0, 0.0], [6.0, 0.0, 0.0], [5.0, 1.0, 0.0]].map(|p| m.add_vertex(p));
+        m.lines.extend([[ring[0], ring[1]], [ring[1], ring[2]], [ring[2], ring[0]]]);
+        let hub = m.add_vertex([8.0, 0.0, 0.0]);
+        let spokes = [[9.0, 0.0, 0.0], [8.0, 1.0, 0.0], [8.0, 0.0, 1.0]].map(|p| m.add_vertex(p));
+        m.lines.extend(spokes.map(|s| [hub, s]));
+        m.lines.push([hub, hub]);
+        // two edges of the cube drawn smooth
+        m.seams = vec![[0, 1], [5, 6]];
+        let w = written(&Scene::from_mesh(m.clone()));
+        assert_eq!(w.left_out, vec!["1 loose line with no length".to_string()]);
+        let t = &w.text;
+        assert_eq!((n(t, "GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION"), n(t, "GEOMETRIC_CURVE_SET"), n(t, "POLYLINE")), (1, 1, 5), "a chain, a ring, three spokes");
+        let layer = t.lines().find(|l| l.contains("=PRESENTATION_LAYER_ASSIGNMENT('Soft edges',")).expect("the soft edges' layer");
+        assert_eq!(layer.matches('#').count(), 3, "its own number and the two edges: {layer}");
+        assert_eq!(n(t, "INVISIBILITY"), 1);
+        let back = read_back(&w).scene.root.mesh;
+        m.lines.pop();
+        assert_eq!(pairs(&back, &back.lines), pairs(&m, &m.lines));
+        assert_eq!(pairs(&back, &back.seams), pairs(&m, &m.seams));
+        assert_eq!(back.positions.len(), 8 + 3 + 3 + 4, "a line meeting the cube shares its corner");
+        assert_same_faces(&m, &back);
+    }
+
+    #[test]
+    fn a_scaled_copy_keeps_its_soft_edges_and_lines() {
+        let mut m = cube(1.0);
+        m.seams = vec![[0, 1], [5, 6], [2, 6]];
+        let v = m.add_vertex([2.0, 0.0, 0.0]);
+        m.lines.push([1, v]);
+        let mut s = Scene::default();
+        s.defs.push(def("Box", true, m, Vec::new()));
+        s.root.instances.push(Instance { def: 0, xf: Xform::from_fn(|p| [2.0 * p[0], p[1], 3.0 * p[2]]) });
+        s.root.instances.push(Instance { def: 0, xf: Xform::from_fn(|p| [-p[0], p[1], p[2]]) });
+        let w = written(&s);
+        let back = read_back(&w).scene.flatten();
+        let flat = s.flatten();
+        assert_eq!(pairs(&back, &back.seams), pairs(&flat, &flat.seams));
+        assert_eq!(pairs(&back, &back.lines), pairs(&flat, &flat.lines));
+    }
+
+    #[test]
+    fn wireframe_and_hidden_edges_from_another_program_read() {
+        // a square face whose edge along x is in a layer made invisible, a line trimmed by parameters, a whole circle, a
+        // polyline, and a point
+        let text = format!(
+            "{HEAD}#1=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));
+#2=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#1))REPRESENTATION_CONTEXT('',''));
+#3=MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#4),#2);
+#4=SHELL_BASED_SURFACE_MODEL('',(#5));
+#5=OPEN_SHELL('',(#10));
+#10=ADVANCED_FACE('',(#11),#12,.T.);
+#11=FACE_OUTER_BOUND('',#13,.T.);
+#12=PLANE('',#14);
+#13=EDGE_LOOP('',(#20,#21,#22,#23));
+#14=AXIS2_PLACEMENT_3D('',#40,$,$);
+#20=ORIENTED_EDGE('',*,*,#30,.T.);
+#21=ORIENTED_EDGE('',*,*,#31,.T.);
+#22=ORIENTED_EDGE('',*,*,#32,.T.);
+#23=ORIENTED_EDGE('',*,*,#33,.T.);
+#30=EDGE_CURVE('',#50,#51,#60,.T.);
+#31=EDGE_CURVE('',#51,#52,#60,.T.);
+#32=EDGE_CURVE('',#52,#53,#60,.T.);
+#33=EDGE_CURVE('',#53,#50,#60,.T.);
+#40=CARTESIAN_POINT('',(0.,0.,0.));
+#41=CARTESIAN_POINT('',(10.,0.,0.));
+#42=CARTESIAN_POINT('',(10.,10.,0.));
+#43=CARTESIAN_POINT('',(0.,10.,0.));
+#50=VERTEX_POINT('',#40);
+#51=VERTEX_POINT('',#41);
+#52=VERTEX_POINT('',#42);
+#53=VERTEX_POINT('',#43);
+#60=LINE('',#40,#61);
+#61=VECTOR('',#62,1.);
+#62=DIRECTION('',(1.,0.,0.));
+#70=PRESENTATION_LAYER_ASSIGNMENT('construction','',(#30));
+#71=INVISIBILITY((#70));
+#80=GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION('',(#81),#2);
+#81=GEOMETRIC_SET('',(#82,#84,#86,#43));
+#82=TRIMMED_CURVE('',#60,(PARAMETER_VALUE(20.)),(PARAMETER_VALUE(25.)),.T.,.PARAMETER.);
+#84=CIRCLE('',#85,2.);
+#85=AXIS2_PLACEMENT_3D('',#42,$,$);
+#86=POLYLINE('',(#41,#87,#88));
+#87=CARTESIAN_POINT('',(20.,10.,0.));
+#88=CARTESIAN_POINT('',(20.,20.,0.));
+{TAIL}"
+        );
+        let r = read(text.as_bytes()).unwrap();
+        assert!(r.skipped.is_empty(), "{:?}", r.skipped);
+        let m = &r.scene.root.mesh;
+        assert_eq!(m.faces.len(), 1);
+        assert_eq!(pairs(m, &m.seams), vec![[key([0.0; 3]), key([0.01, 0.0, 0.0])]], "the hidden edge is soft");
+        // 1 line + 24 round the circle + 2 of the polyline
+        assert_eq!(m.lines.len(), 1 + 24 + 2);
+        let line = pairs(m, &m.lines[..1]);
+        assert_eq!(line, vec![[key([0.02, 0.0, 0.0]), key([0.025, 0.0, 0.0])]]);
+        assert!(m.lines[1..25].iter().flatten().all(|&v| (length(sub(m.positions[v as usize], [0.01, 0.01, 0.0])) - 0.002).abs() < 1e-12), "round the circle");
     }
 
     #[test]
@@ -2906,13 +3217,11 @@ mod tests {
         s.textures.push(Texture { name: "Brick".into(), path: "/brick.png".into(), size: [1.0, 1.0] });
         s.defs.push(def("Spare", true, cube(1.0), Vec::new()));
         let w = written(&s);
-        assert_eq!(
-            w.left_out,
-            vec!["1 guide", "1 loose line", "1 soft edge (they come back as ordinary edges)", "1 texture (the faces keep their colours)", "1 group or component placed nowhere"]
-        );
+        assert_eq!(w.left_out, vec!["1 guide", "1 texture (the faces keep their colours)", "1 group or component placed nowhere"]);
         assert_eq!(w.products, 1, "the spare component is not written");
         let back = read_back(&w).scene.root.mesh;
         assert_eq!(back.color_of(0).map(|c| c.rgb), Some([10, 20, 30]), "a textured face keeps its colour");
+        assert_eq!((back.lines.len(), back.seams.len()), (1, 1), "the loose line and the soft edge are kept");
     }
 
     #[test]
