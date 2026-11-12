@@ -108,12 +108,7 @@ impl Report {
 
     /// Indices of every face involved in an issue that breaks the solid.
     pub fn flagged_faces(&self) -> Vec<usize> {
-        let mut v: Vec<usize> = self
-            .issues
-            .iter()
-            .filter(|i| i.kind.breaks_solid())
-            .flat_map(|i| i.faces.iter().copied())
-            .collect();
+        let mut v: Vec<usize> = self.issues.iter().filter(|i| i.kind.breaks_solid()).flat_map(|i| i.faces.iter().copied()).collect();
         v.sort_unstable();
         v.dedup();
         v
@@ -361,8 +356,10 @@ pub fn repair(mesh: &Mesh, tol: f64) -> (Mesh, RepairSummary) {
         positions.push(mesh.positions[i]);
     }
     faces.iter_mut().chain(holes.iter_mut().flatten()).flatten().for_each(|v| *v = new_index[*v as usize]);
-    let lines: Vec<[u32; 2]> = mesh.lines.iter().map(|l| l.map(|v| new_index[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
-    let seams: Vec<[u32; 2]> = mesh.seams.iter().map(|l| l.map(|v| new_index[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
+    let lines: Vec<[u32; 2]> =
+        mesh.lines.iter().map(|l| l.map(|v| new_index[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
+    let seams: Vec<[u32; 2]> =
+        mesh.seams.iter().map(|l| l.map(|v| new_index[v as usize])).filter(|l| l[0] != u32::MAX && l[1] != u32::MAX).collect();
     s.removed_unused_vertices = mesh.positions.len() - s.welded_vertices - positions.len();
 
     // 5-7. Orientation, gaps in the surface, inverted solids. A face turned round turns its holes round with it.
@@ -442,11 +439,8 @@ fn fill_holes(positions: &[[f64; 3]], faces: &mut Vec<Vec<u32>>, tol: f64) -> us
     }
     // Boundary edges: used once and with no partner running the other way.
     let mut next: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut starts: Vec<(u32, u32)> = directed
-        .iter()
-        .filter(|&(&(a, b), &n)| n == 1 && !directed.contains_key(&(b, a)))
-        .map(|(&e, _)| e)
-        .collect();
+    let mut starts: Vec<(u32, u32)> =
+        directed.iter().filter(|&(&(a, b), &n)| n == 1 && !directed.contains_key(&(b, a))).map(|(&e, _)| e).collect();
     starts.sort_unstable();
     for &(a, b) in &starts {
         next.entry(a).or_default().push(b);
@@ -536,9 +530,7 @@ fn fix_inverted(positions: &[[f64; 3]], faces: &mut [Vec<u32>]) -> usize {
                 }
             }
         }
-        let closed = component
-            .iter()
-            .all(|&f| ring_edges(&faces[f]).all(|(a, b)| adj.get(&key(a, b)).map_or(0, Vec::len) == 2));
+        let closed = component.iter().all(|&f| ring_edges(&faces[f]).all(|(a, b)| adj.get(&key(a, b)).map_or(0, Vec::len) == 2));
         let volume: f64 = component.iter().map(|&f| face_volume(positions, &faces[f])).sum();
         if closed && volume < 0.0 {
             for f in component {

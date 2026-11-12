@@ -211,10 +211,17 @@ impl FileDialog {
                 });
                 // this browser has no list of formats: the name's ending chooses one
                 if let Purpose::SaveAs(f) = self.purpose {
-                    ui.label(egui::RichText::new(format!("{}. Another ending saves in that format; .ddls keeps everything.", f.label())).weak().small());
+                    ui.label(
+                        egui::RichText::new(format!("{}. Another ending saves in that format; .ddls keeps everything.", f.label()))
+                            .weak()
+                            .small(),
+                    );
                 }
                 if let Some(p) = &self.confirm_replace {
-                    ui.colored_label(egui::Color32::from_rgb(190, 110, 0), format!("{} already exists. Press Replace to overwrite it.", p.file_name().unwrap_or_default().to_string_lossy()));
+                    ui.colored_label(
+                        egui::Color32::from_rgb(190, 110, 0),
+                        format!("{} already exists. Press Replace to overwrite it.", p.file_name().unwrap_or_default().to_string_lossy()),
+                    );
                 }
                 ui.horizontal(|ui| {
                     let action = if self.confirm_replace.is_some() { "Replace" } else { self.purpose.title() };

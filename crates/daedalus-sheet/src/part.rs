@@ -6,8 +6,8 @@
 use crate::kernel::{self, MeshTolerance};
 use crate::sheet::{self, RuleValues, SheetBody};
 use crate::util::{DocError, Result};
-use daedalus_core::scene::Xform;
 use daedalus_core::Mesh;
+use daedalus_core::scene::Xform;
 use daedalus_io::dxf2d::{self, Entity, Shape, Units};
 use serde::{Deserialize, Serialize};
 use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
@@ -287,10 +287,24 @@ fn converted(src: &SolidSource, material: &str, rule: &RuleValues) -> Result<(Sh
 /// thickness; any other takes the rule's thickness inside its outer faces. Returns the part and its notes.
 pub fn part_from_solid(mesh: &Mesh, fixed: [f64; 3], bends: &[[f64; 3]], material: &str, rule: RuleValues) -> Result<SheetPart> {
     let mm = |p: [f64; 3]| p.map(|x| x * MM);
-    let src = SolidSource { faces: crate::export::polygons_mm(mesh, &Xform::IDENTITY), fixed: mm(fixed), bends: bends.iter().map(|&p| mm(p)).collect() };
+    let src = SolidSource {
+        faces: crate::export::polygons_mm(mesh, &Xform::IDENTITY),
+        fixed: mm(fixed),
+        bends: bends.iter().map(|&p| mm(p)).collect(),
+    };
     let rule = rule.checked()?;
     let (sheet, notes) = converted(&src, material, &rule)?;
-    let mut part = SheetPart { kind: KIND.into(), material: material.into(), rule, region: Region2::default(), flanges: Vec::new(), shown_flat: false, solid: Some(src), notes, sheet };
+    let mut part = SheetPart {
+        kind: KIND.into(),
+        material: material.into(),
+        rule,
+        region: Region2::default(),
+        flanges: Vec::new(),
+        shown_flat: false,
+        solid: Some(src),
+        notes,
+        sheet,
+    };
     part.rule.thickness = part.sheet.t;
     part.sheet.solid()?;
     Ok(part)
@@ -465,7 +479,10 @@ fn path_flange(sheet: &mut SheetBody, pick: Vec3, legs: &[[f64; 2]], radius: f64
         // picked nearer its top face
         let (at, flip) = match last {
             None => (pick, top == (turn < 0.0)),
-            Some(i) => (sheet.far_edge_pick(i).ok_or_else(|| DocError::Invalid(format!("leg {}: the leg before has no far edge", k + 1)))?, turn < 0.0),
+            Some(i) => (
+                sheet.far_edge_pick(i).ok_or_else(|| DocError::Invalid(format!("leg {}: the leg before has no far edge", k + 1)))?,
+                turn < 0.0,
+            ),
         };
         let each = [sheet::EdgeFlange { pick: at, height, angle: turn.abs().to_radians(), from: sheet::HeightFrom::Outer }];
         let (made, _) = sheet.add_flanges_each(&each, radius, "inside", flip, sheet::ReliefOverride::default()).map_err(line)?;
@@ -489,7 +506,17 @@ impl SheetPart {
     pub fn from_region(material: &str, rule: RuleValues, region: Region2) -> Result<SheetPart> {
         let rule = rule.checked()?;
         let sheet = sheet::base_flange("Part", material, &rule, Plane::XY, region.clone());
-        let part = SheetPart { kind: KIND.into(), material: material.into(), rule, region, flanges: Vec::new(), shown_flat: false, solid: None, notes: Vec::new(), sheet };
+        let part = SheetPart {
+            kind: KIND.into(),
+            material: material.into(),
+            rule,
+            region,
+            flanges: Vec::new(),
+            shown_flat: false,
+            solid: None,
+            notes: Vec::new(),
+            sheet,
+        };
         part.sheet.solid()?;
         Ok(part)
     }
@@ -621,7 +648,15 @@ impl SheetPart {
     /// face, the rule's hem gap inside. The part is unchanged if it fails.
     pub fn add_hem(&mut self, pick: [f64; 3], length: f64, down: bool) -> Result<()> {
         check_flange(length, 180.0)?;
-        self.add(FlangeAsked { pick, height: length, angle_deg: 180.0, position: FlangePosition::Inside.key().into(), down, hem: true, ..Default::default() })
+        self.add(FlangeAsked {
+            pick,
+            height: length,
+            angle_deg: 180.0,
+            position: FlangePosition::Inside.key().into(),
+            down,
+            hem: true,
+            ..Default::default()
+        })
     }
 
     /// Adds a fold along the line through `a` and `b` (part mm, on a face of the panel to fold): `angle_deg` (0…180), up or
@@ -648,7 +683,14 @@ impl SheetPart {
     /// rule's radius. The part is unchanged if it fails.
     pub fn add_path_flange(&mut self, pick: [f64; 3], legs: &[[f64; 2]]) -> Result<()> {
         check_path(legs)?;
-        self.add(FlangeAsked { pick, height: legs[0][0], angle_deg: legs[0][1], position: FlangePosition::Inside.key().into(), path: legs.to_vec(), ..Default::default() })
+        self.add(FlangeAsked {
+            pick,
+            height: legs[0][0],
+            angle_deg: legs[0][1],
+            position: FlangePosition::Inside.key().into(),
+            path: legs.to_vec(),
+            ..Default::default()
+        })
     }
 
     /// Path flange `i` with new legs (holes on its flanges keep their place; one on a leg taken away stops the change).
@@ -674,7 +716,8 @@ impl SheetPart {
         let p = Vec3::new(p[0], p[1], p[2]);
         let tol = (sheet.t * 0.25).max(1e-3);
         // later flanges first: a fold's panel lies on the material it was folded out of
-        let mut panels: Vec<(Option<usize>, Region2)> = sheet.flanges.iter().enumerate().filter(|(_, f)| f.leg > 1e-9).map(|(i, f)| (Some(i), sheet.panel(f))).collect();
+        let mut panels: Vec<(Option<usize>, Region2)> =
+            sheet.flanges.iter().enumerate().filter(|(_, f)| f.leg > 1e-9).map(|(i, f)| (Some(i), sheet.panel(f))).collect();
         panels.reverse();
         panels.push((None, sheet.base.clone()));
         for (pi, region) in panels {
@@ -763,7 +806,12 @@ impl SheetPart {
                 _ => Vec::new(),
             };
             for h in heights.into_iter().filter(|&h| h < 4.0 * t) {
-                out.push(format!("Flange {} is {} mm high, under 4 x thickness ({} mm): it may be too short to bend.", i + 1, fmt_mm(h), fmt_mm(4.0 * t)));
+                out.push(format!(
+                    "Flange {} is {} mm high, under 4 x thickness ({} mm): it may be too short to bend.",
+                    i + 1,
+                    fmt_mm(h),
+                    fmt_mm(4.0 * t)
+                ));
             }
         }
         let Ok(regions) = self.sheet.flat_regions() else { return out };
@@ -774,9 +822,17 @@ impl SheetPart {
                 let pts = sample_loop(hole);
                 for (k, b) in bends.iter().enumerate() {
                     // from the hole's edge to the bend zone's edge
-                    let d = pts.iter().map(|p| dist_to_segment(*p, [b.start.x, b.start.y], [b.end.x, b.end.y])).fold(f64::INFINITY, f64::min) - b.allowance / 2.0;
+                    let d =
+                        pts.iter().map(|p| dist_to_segment(*p, [b.start.x, b.start.y], [b.end.x, b.end.y])).fold(f64::INFINITY, f64::min)
+                            - b.allowance / 2.0;
                     if d < near {
-                        out.push(format!("Hole {} is {} mm from bend {}: under 2.5 x thickness + radius ({} mm), it may pull out of shape.", h + 1, fmt_mm(d.max(0.0)), k + 1, fmt_mm(near)));
+                        out.push(format!(
+                            "Hole {} is {} mm from bend {}: under 2.5 x thickness + radius ({} mm), it may pull out of shape.",
+                            h + 1,
+                            fmt_mm(d.max(0.0)),
+                            k + 1,
+                            fmt_mm(near)
+                        ));
                     }
                 }
             }
@@ -788,7 +844,10 @@ impl SheetPart {
     /// of a face, the base panel's for a converted solid.
     pub fn outline(&self) -> Vec<Vec<[f64; 2]>> {
         let base: Vec<&Loop2> = match &self.solid {
-            Some(_) => std::iter::once(&self.sheet.base.outer).chain(&self.sheet.base.holes).chain(self.sheet.holes.iter().map(|h| &h.outer)).collect(),
+            Some(_) => std::iter::once(&self.sheet.base.outer)
+                .chain(&self.sheet.base.holes)
+                .chain(self.sheet.holes.iter().map(|h| &h.outer))
+                .collect(),
             None => std::iter::once(&self.region.outer).chain(&self.region.holes).collect(),
         };
         base.into_iter().map(sample_loop).collect()
@@ -836,7 +895,10 @@ impl SheetPart {
                         _ => {
                             let pts = sample_seg(s);
                             for w in pts.windows(2) {
-                                out.push(Entity { layer: dxf2d::CUT_LAYER, shape: Shape::Line { a: [w[0][0] * k, w[0][1] * k], b: [w[1][0] * k, w[1][1] * k] } });
+                                out.push(Entity {
+                                    layer: dxf2d::CUT_LAYER,
+                                    shape: Shape::Line { a: [w[0][0] * k, w[0][1] * k], b: [w[1][0] * k, w[1][1] * k] },
+                                });
                             }
                         }
                     }
@@ -877,10 +939,17 @@ pub fn step(bodies: &[kernel::Body]) -> Result<String> {
 fn joined_arcs(segs: &[Seg2]) -> Vec<Seg2> {
     let mut out: Vec<Seg2> = Vec::new();
     for s in segs {
-        if let (Some(Seg2::Arc { center: c0, radius: r0, start: s0, sweep: w0 }), Seg2::Arc { center, radius, start, sweep }) = (out.last().copied(), *s) {
+        if let (Some(Seg2::Arc { center: c0, radius: r0, start: s0, sweep: w0 }), Seg2::Arc { center, radius, start, sweep }) =
+            (out.last().copied(), *s)
+        {
             let tol = 1e-7 * r0.max(1.0);
             let follows = ((s0 + w0 - start + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI).abs() < 1e-9;
-            if c0.dist(center) < tol && (r0 - radius).abs() < tol && w0.signum() == sweep.signum() && follows && (w0 + sweep).abs() <= std::f64::consts::TAU + 1e-9 {
+            if c0.dist(center) < tol
+                && (r0 - radius).abs() < tol
+                && w0.signum() == sweep.signum()
+                && follows
+                && (w0 + sweep).abs() <= std::f64::consts::TAU + 1e-9
+            {
                 *out.last_mut().unwrap() = Seg2::Arc { center: c0, radius: r0, start: s0, sweep: w0 + sweep };
                 continue;
             }
@@ -987,9 +1056,8 @@ fn loop_segments(mesh: &Mesh, lp: &[u32], to2: &dyn Fn([f64; 3]) -> Vec2) -> Vec
     let n = lp.len();
     let pt = |i: usize| to2(mesh.positions[lp[i % n] as usize]);
     // which curve each edge (i, i+1) lies on, by its centre and radius
-    let on: Vec<Option<(Vec2, f64)>> = (0..n)
-        .map(|i| daedalus_core::curve::curve_through(mesh, lp[i], lp[(i + 1) % n]).map(|c| (to2(c.center), c.radius * MM)))
-        .collect();
+    let on: Vec<Option<(Vec2, f64)>> =
+        (0..n).map(|i| daedalus_core::curve::curve_through(mesh, lp[i], lp[(i + 1) % n]).map(|c| (to2(c.center), c.radius * MM))).collect();
     let same = |a: Option<(Vec2, f64)>, b: Option<(Vec2, f64)>| match (a, b) {
         (Some((c1, r1)), Some((c2, r2))) => c1.dist(c2) < 1e-6 * r1.max(1.0) && (r1 - r2).abs() < 1e-6 * r1.max(1.0),
         _ => false,
@@ -1301,7 +1369,9 @@ mod tests {
         let segs = &part.sheet.holes[0].outer.segs;
         assert_eq!(segs.len(), 1, "the 24 segments are one circle: {segs:?}");
         let Seg2::Arc { center, radius, sweep, .. } = segs[0] else { panic!("{segs:?}") };
-        assert!((radius - 10.0).abs() < 1e-6 && center.dist(Vec2::new(30.0, 25.0)) < 1e-6 && (sweep.abs() - std::f64::consts::TAU).abs() < 1e-9);
+        assert!(
+            (radius - 10.0).abs() < 1e-6 && center.dist(Vec2::new(30.0, 25.0)) < 1e-6 && (sweep.abs() - std::f64::consts::TAU).abs() < 1e-9
+        );
         // its faces: 100 x 50 x 2 mm, in metres; the top and bottom whole, each with the hole
         let faces = part.faces(false).unwrap();
         let s = size(&faces);
@@ -1338,7 +1408,10 @@ mod tests {
         let [a, b] = flat_faces.lines[0];
         let (pa, pb) = (flat_faces.positions[a as usize], flat_faces.positions[b as usize]);
         // inside position: the panel edge 4 mm in (T + R), the bend's centre half the allowance past it
-        assert!(((pb[0] - pa[0]).abs() - 0.1).abs() < 1e-9 && pa[1] == pb[1] && (pa[1] * 1000.0 - (4.0 - ba / 2.0)).abs() < 1e-9, "{pa:?} {pb:?}");
+        assert!(
+            ((pb[0] - pa[0]).abs() - 0.1).abs() < 1e-9 && pa[1] == pb[1] && (pa[1] * 1000.0 - (4.0 - ba / 2.0)).abs() < 1e-9,
+            "{pa:?} {pb:?}"
+        );
         assert_eq!(part.bend_table().len(), 1);
         let dxf = part.flat_dxf(Units::Millimeters).unwrap();
         let count = |n: &str| dxf.lines().filter(|l| *l == n).count();
@@ -1379,7 +1452,8 @@ mod tests {
         m.add_face(ring);
         let (part, _) = part_from_face(&m, 0, "Steel 2 mm", steel2()).unwrap();
         let segs = &part.sheet.base.outer.segs;
-        let arcs: Vec<_> = segs.iter().filter_map(|s| if let Seg2::Arc { radius, sweep, .. } = s { Some((*radius, *sweep)) } else { None }).collect();
+        let arcs: Vec<_> =
+            segs.iter().filter_map(|s| if let Seg2::Arc { radius, sweep, .. } = s { Some((*radius, *sweep)) } else { None }).collect();
         assert_eq!(arcs.len(), 1, "{segs:?}");
         assert!((arcs[0].0 - 10.0).abs() < 1e-6 && (arcs[0].1 - std::f64::consts::FRAC_PI_2).abs() < 1e-9, "{arcs:?}");
         assert_eq!(segs.len(), 5, "four lines and the arc");
@@ -1520,7 +1594,10 @@ mod tests {
                 hi[k] = hi[k].max(p[k]);
             }
         }
-        assert!((hi[0] - lo[0] - 0.04).abs() < 1e-6 && (hi[1] - lo[1] - 0.05).abs() < 1e-6 && (hi[2] - lo[2] - 0.03).abs() < 1e-6, "{lo:?} {hi:?}");
+        assert!(
+            (hi[0] - lo[0] - 0.04).abs() < 1e-6 && (hi[1] - lo[1] - 0.05).abs() < 1e-6 && (hi[2] - lo[2] - 0.03).abs() < 1e-6,
+            "{lo:?} {hi:?}"
+        );
         // a new radius rebuilds it from the solid; the text round trip too
         let mut softer = part.clone();
         softer.set_rule("Steel R3", RuleValues { bend_radius: 3.0, ..softer.rule }).unwrap();

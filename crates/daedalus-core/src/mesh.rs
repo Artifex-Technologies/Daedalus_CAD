@@ -332,7 +332,8 @@ impl Mesh {
         let mut gone: Vec<usize> = Vec::new();
         for members in groups.values().filter(|g| g.len() > 1) {
             // the group's border: directed edges whose reverse is not in it (the seams inside cancel out)
-            let directed: HashSet<(u32, u32)> = members.iter().flat_map(|&f| self.loops(f).flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))).collect();
+            let directed: HashSet<(u32, u32)> =
+                members.iter().flat_map(|&f| self.loops(f).flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))).collect();
             let mut next: HashMap<u32, u32> = HashMap::new();
             let mut pinched = false;
             for &(a, b) in &directed {
@@ -400,7 +401,8 @@ impl Mesh {
     /// Both come back without unused vertices.
     pub fn extract(&self, faces: &[usize]) -> (Mesh, Mesh) {
         let take: std::collections::HashSet<usize> = faces.iter().copied().collect();
-        let mut rest = Mesh { positions: self.positions.clone(), lines: self.lines.clone(), seams: self.seams.clone(), ..Default::default() };
+        let mut rest =
+            Mesh { positions: self.positions.clone(), lines: self.lines.clone(), seams: self.seams.clone(), ..Default::default() };
         let mut part = Mesh { positions: self.positions.clone(), seams: self.seams.clone(), ..Default::default() };
         for (i, f) in self.faces.iter().enumerate() {
             let side = if take.contains(&i) { &mut part } else { &mut rest };
@@ -420,7 +422,14 @@ impl Mesh {
     /// Drops vertices no face, line or seam uses, renumbering the rest in order.
     pub fn compact(&mut self) {
         let mut used = vec![false; self.positions.len()];
-        for v in self.faces.iter().flatten().chain(self.holes.iter().flatten().flatten()).chain(self.lines.iter().flatten()).chain(self.seams.iter().flatten()) {
+        for v in self
+            .faces
+            .iter()
+            .flatten()
+            .chain(self.holes.iter().flatten().flatten())
+            .chain(self.lines.iter().flatten())
+            .chain(self.seams.iter().flatten())
+        {
             used[*v as usize] = true;
         }
         let mut map = vec![u32::MAX; self.positions.len()];
@@ -488,7 +497,8 @@ mod tests {
         m.seams.push([79, 78]);
         m.lines.extend([[0, 79], [5, 3], [0, 2], [70, 9]]);
         // a hole in the last quad
-        let hole: Vec<u32> = [[38.2, 0.2], [38.8, 0.2], [38.8, 0.8], [38.2, 0.8]].iter().rev().map(|p| m.add_vertex([p[0], p[1], 0.0])).collect();
+        let hole: Vec<u32> =
+            [[38.2, 0.2], [38.8, 0.2], [38.8, 0.8], [38.2, 0.8]].iter().rev().map(|p| m.add_vertex([p[0], p[1], 0.0])).collect();
         m.set_holes(38, vec![hole]);
         // the ways they were worked out before, word for word
         let old_edges = |m: &Mesh| {
@@ -522,7 +532,16 @@ mod tests {
     #[test]
     fn an_old_ring_of_two_seamed_faces_becomes_one_face_with_a_hole() {
         let mut m = Mesh::new();
-        for p in [[0.0, 0.0, 0.0], [9.0, 0.0, 0.0], [9.0, 9.0, 0.0], [0.0, 9.0, 0.0], [2.0, 2.0, 0.0], [7.0, 2.0, 0.0], [7.0, 7.0, 0.0], [2.0, 7.0, 0.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [9.0, 0.0, 0.0],
+            [9.0, 9.0, 0.0],
+            [0.0, 9.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [7.0, 2.0, 0.0],
+            [7.0, 7.0, 0.0],
+            [2.0, 7.0, 0.0],
+        ] {
             m.add_vertex(p);
         }
         m.add_face(vec![0, 1, 2, 3]);
@@ -536,10 +555,13 @@ mod tests {
         assert_eq!(m.faces[ring].len(), 4);
         assert_eq!(m.holes_of(ring)[0].len(), 4);
         let tris = m.triangulate_face(ring);
-        let area: f64 = tris.iter().map(|t| {
-            let [a, b, c] = t.map(|v| m.positions[v as usize]);
-            ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.0
-        }).sum();
+        let area: f64 = tris
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|v| m.positions[v as usize]);
+                ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.0
+            })
+            .sum();
         assert!((area - 56.0).abs() < 1e-9, "{area}");
     }
 }

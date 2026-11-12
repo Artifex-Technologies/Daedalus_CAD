@@ -2,9 +2,9 @@
 //! code lives here: the viewer resolves the mouse into a [`Cursor`] (ray plus
 //! snapped hit) and the tools turn clicks and typed values into model edits.
 
-use daedalus_core::units::{self, Units};
-use daedalus_core::sketch::{self, Plane, DEFAULT_ARC_SEGMENTS, DEFAULT_CIRCLE_SEGMENTS};
 use daedalus_core::scene::{Axes, Dimension, Label, Section, Xform};
+use daedalus_core::sketch::{self, Plane, DEFAULT_ARC_SEGMENTS, DEFAULT_CIRCLE_SEGMENTS};
+use daedalus_core::units::{self, Units};
 use daedalus_core::{HalfEdgeMesh, Model};
 
 pub use daedalus_core::scene::Guide;
@@ -249,7 +249,17 @@ impl Tool {
     /// Tools that create or change geometry (disabled on read-only imports).
     pub fn edits(self) -> bool {
         !self.navigates()
-            && !matches!(self, Tool::Select | Tool::TapeMeasure | Tool::Protractor | Tool::PositionCamera | Tool::SectionPlane | Tool::Dimensions | Tool::Text | Tool::Axes)
+            && !matches!(
+                self,
+                Tool::Select
+                    | Tool::TapeMeasure
+                    | Tool::Protractor
+                    | Tool::PositionCamera
+                    | Tool::SectionPlane
+                    | Tool::Dimensions
+                    | Tool::Text
+                    | Tool::Axes
+            )
     }
 
     /// Tools where a left-drag moves the camera instead of picking.
@@ -311,8 +321,7 @@ impl Snap {
     }
 }
 
-pub const AXIS_COLORS: [[f32; 4]; 4] =
-    [[0.85, 0.1, 0.1, 1.0], [0.1, 0.65, 0.1, 1.0], [0.1, 0.2, 0.9, 1.0], [0.7, 0.1, 0.7, 1.0]];
+pub const AXIS_COLORS: [[f32; 4]; 4] = [[0.85, 0.1, 0.1, 1.0], [0.1, 0.65, 0.1, 1.0], [0.1, 0.2, 0.9, 1.0], [0.7, 0.1, 0.7, 1.0]];
 const RUBBER_BAND: [f32; 4] = [0.05, 0.05, 0.05, 1.0];
 const PUSH_GUIDE: [f32; 4] = [0.2, 0.4, 0.9, 1.0];
 const PROTRACTOR: [f32; 4] = [0.3, 0.3, 0.75, 1.0];
@@ -373,47 +382,146 @@ pub fn parse_entry(text: &str, units: Units) -> Option<Entry> {
 enum Op {
     Idle,
     /// Line: each click adds a loose line from `last` to the new point (in the model at once, so Esc keeps what is drawn).
-    Line { plane: Plane, last: [f64; 3], cursor: Option<[f64; 3]>, axis: Option<u8> },
-    Rect { plane: Plane, start: [f64; 3], cursor: Option<[f64; 3]> },
-    Round { plane: Plane, center: [f64; 3], cursor: Option<[f64; 3]> },
-    Push { face: usize, base: [f64; 3], normal: [f64; 3], distance: f64 },
+    Line {
+        plane: Plane,
+        last: [f64; 3],
+        cursor: Option<[f64; 3]>,
+        axis: Option<u8>,
+    },
+    Rect {
+        plane: Plane,
+        start: [f64; 3],
+        cursor: Option<[f64; 3]>,
+    },
+    Round {
+        plane: Plane,
+        center: [f64; 3],
+        cursor: Option<[f64; 3]>,
+    },
+    Push {
+        face: usize,
+        base: [f64; 3],
+        normal: [f64; 3],
+        distance: f64,
+    },
     /// 2 Point Arc: the ends `a` and `b` (once set), then the bulge toward the cursor.
-    Arc2 { plane: Plane, a: [f64; 3], b: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
+    Arc2 {
+        plane: Plane,
+        a: [f64; 3],
+        b: Option<[f64; 3]>,
+        cursor: Option<[f64; 3]>,
+    },
     /// 3 Point Arc: the start, a point the arc passes through (once set), then the end at the cursor.
-    Arc3 { plane: Plane, a: [f64; 3], m: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
+    Arc3 {
+        plane: Plane,
+        a: [f64; 3],
+        m: Option<[f64; 3]>,
+        cursor: Option<[f64; 3]>,
+    },
     /// Offset: the face's outline (counter-clockwise about `normal`) and how far in to copy it.
-    Offset { face: usize, ring: Vec<[f64; 3]>, normal: [f64; 3], d: f64 },
+    Offset {
+        face: usize,
+        ring: Vec<[f64; 3]>,
+        normal: [f64; 3],
+        d: f64,
+    },
     /// Dimensions: the two points measured (the second once set), then where the dimension line sits.
-    Dim { a: [f64; 3], b: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
+    Dim {
+        a: [f64; 3],
+        b: Option<[f64; 3]>,
+        cursor: Option<[f64; 3]>,
+    },
     /// Follow Me: the profile face chosen; next, a line of the path.
-    Follow { face: usize },
+    Follow {
+        face: usize,
+    },
     /// Freehand: the points of the stroke while the button is held.
-    Free { plane: Plane, points: Vec<[f64; 3]> },
+    Free {
+        plane: Plane,
+        points: Vec<[f64; 3]>,
+    },
     /// Sandbox From Scratch: one corner, then the opposite one at the cursor.
-    Scratch { start: [f64; 3], cursor: Option<[f64; 3]> },
+    Scratch {
+        start: [f64; 3],
+        cursor: Option<[f64; 3]>,
+    },
     /// Smoove: the middle of the circle, and how far up (negative: down) it goes.
-    Smoove { center: [f64; 3], height: f64 },
+    Smoove {
+        center: [f64; 3],
+        height: f64,
+    },
     /// Rotated Rectangle: the first side from `a` to `b` (once set), then the height toward the cursor.
-    RotRect { plane: Plane, a: [f64; 3], b: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
+    RotRect {
+        plane: Plane,
+        a: [f64; 3],
+        b: Option<[f64; 3]>,
+        cursor: Option<[f64; 3]>,
+    },
     /// Pie: the centre, the start of the arc (once set, it gives the radius), then the angle.
-    Pie { plane: Plane, center: [f64; 3], start: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
+    Pie {
+        plane: Plane,
+        center: [f64; 3],
+        start: Option<[f64; 3]>,
+        cursor: Option<[f64; 3]>,
+    },
     /// Move: these vertices go from `base` to the cursor.
-    Move { t: Target, base: [f64; 3], cursor: Option<[f64; 3]>, axis: Option<u8>, glue: Option<[f64; 3]> },
+    Move {
+        t: Target,
+        base: [f64; 3],
+        cursor: Option<[f64; 3]>,
+        axis: Option<u8>,
+        glue: Option<[f64; 3]>,
+    },
     /// Rotate: about the plane's normal through `center`, from the `start` direction (once set) by `angle` radians.
-    Rotate { t: Target, plane: Plane, center: [f64; 3], start: Option<[f64; 3]>, angle: f64 },
+    Rotate {
+        t: Target,
+        plane: Plane,
+        center: [f64; 3],
+        start: Option<[f64; 3]>,
+        angle: f64,
+    },
     /// Scale: uniformly about `anchor` (the corner of the bounding box opposite the grip), `start` being the grip.
-    Scale { t: Target, anchor: [f64; 3], start: [f64; 3], factor: f64, axes: [bool; 3] },
+    Scale {
+        t: Target,
+        anchor: [f64; 3],
+        start: [f64; 3],
+        factor: f64,
+        axes: [bool; 3],
+    },
     /// Tape Measure: from `start` to the cursor.
-    Tape { start: [f64; 3], cursor: Option<[f64; 3]> },
+    Tape {
+        start: [f64; 3],
+        cursor: Option<[f64; 3]>,
+    },
     /// Protractor: a guide through `center` turned `angle` radians from the `start` direction (once set).
-    Protract { plane: Plane, center: [f64; 3], start: Option<[f64; 3]>, angle: f64 },
+    Protract {
+        plane: Plane,
+        center: [f64; 3],
+        start: Option<[f64; 3]>,
+        angle: f64,
+    },
     /// Text: the point it is about and the words it starts with; next, where it is shown.
-    Text { point: [f64; 3], text: String, cursor: Option<[f64; 3]> },
+    Text {
+        point: [f64; 3],
+        text: String,
+        cursor: Option<[f64; 3]>,
+    },
     /// Axes: the new origin, then the red direction (once set), then the green.
-    Axes { origin: [f64; 3], red: Option<[f64; 3]>, cursor: Option<[f64; 3]> },
+    Axes {
+        origin: [f64; 3],
+        red: Option<[f64; 3]>,
+        cursor: Option<[f64; 3]>,
+    },
     /// 3D Text being placed: the words, how tall, how deep (None: flat), their outlines (for the preview), and where they
     /// would go now (on the plane under the mouse).
-    Place3D { text: String, height: f64, depth: Option<f64>, font: Option<std::path::PathBuf>, letters: Vec<Vec<Vec<[f64; 2]>>>, at: Option<Plane> },
+    Place3D {
+        text: String,
+        height: f64,
+        depth: Option<f64>,
+        font: Option<std::path::PathBuf>,
+        letters: Vec<Vec<Vec<[f64; 2]>>>,
+        at: Option<Plane>,
+    },
 }
 
 pub struct Tools {
@@ -863,7 +971,11 @@ impl Tools {
             Op::Push { .. } | Op::Scale { .. } | Op::Offset { .. } => None,
             Op::Follow { .. } | Op::Dim { .. } | Op::Place3D { .. } => c.hit.map(|h| (h.point, h.snap)),
             // From Scratch: on the level of the first corner
-            Op::Scratch { start, .. } => c.hit.filter(|h| matches!(h.snap, Snap::Endpoint | Snap::Midpoint)).map(|h| (h.point, h.snap)).or_else(|| on_plane(&Plane { origin: *start, ..Plane::ground() }, c)),
+            Op::Scratch { start, .. } => c
+                .hit
+                .filter(|h| matches!(h.snap, Snap::Endpoint | Snap::Midpoint))
+                .map(|h| (h.point, h.snap))
+                .or_else(|| on_plane(&Plane { origin: *start, ..Plane::ground() }, c)),
             Op::Smoove { .. } => None,
             Op::Idle => c.hit.map(|h| (h.point, h.snap)),
         }
@@ -885,7 +997,9 @@ impl Tools {
             Op::Rect { cursor, .. } | Op::Round { cursor, .. } | Op::RotRect { cursor, .. } | Op::Pie { cursor, .. } => {
                 *cursor = marker.map(|m| m.0)
             }
-            Op::Tape { cursor, .. } | Op::Arc2 { cursor, .. } | Op::Arc3 { cursor, .. } | Op::Dim { cursor, .. } => *cursor = marker.map(|m| m.0),
+            Op::Tape { cursor, .. } | Op::Arc2 { cursor, .. } | Op::Arc3 { cursor, .. } | Op::Dim { cursor, .. } => {
+                *cursor = marker.map(|m| m.0)
+            }
             Op::Text { cursor, .. } | Op::Axes { cursor, .. } => *cursor = marker.map(|m| m.0),
             Op::Place3D { at, .. } => *at = c.hit.map(|h| Plane { origin: marker.map_or(h.point, |m| m.0), ..h.plane }),
             Op::Free { points, .. } => {
@@ -1096,7 +1210,8 @@ impl Tools {
                 let t = self.target(model, c).ok_or("select something to move, or point at a face or group")?;
                 if let Some(h) = c.hit {
                     // one glued component on its own: it stays on its face
-                    let glue = if t.faces.is_empty() && t.verts.is_empty() && t.inst.len() == 1 { model.glue_normal(t.inst[0]) } else { None };
+                    let glue =
+                        if t.faces.is_empty() && t.verts.is_empty() && t.inst.len() == 1 { model.glue_normal(t.inst[0]) } else { None };
                     self.op = Op::Move { t, base: h.point, cursor: None, axis: None, glue };
                 }
             }
@@ -1138,7 +1253,9 @@ impl Tools {
                     self.op = Op::Scale { t, anchor, start, factor: 1.0, axes };
                 }
             }
-            (Tool::Scale, Op::Scale { t, anchor, factor, axes, .. }) => self.transform(model, &t, |q| scale_axes(q, anchor, factor, axes))?,
+            (Tool::Scale, Op::Scale { t, anchor, factor, axes, .. }) => {
+                self.transform(model, &t, |q| scale_axes(q, anchor, factor, axes))?
+            }
             (Tool::TapeMeasure, Op::Idle) => {
                 if let Some(h) = c.hit {
                     self.op = Op::Tape { start: h.point, cursor: None };
@@ -1400,7 +1517,9 @@ impl Tools {
         let n: f64 = t.parse().ok().filter(|n: &f64| n.is_finite())?;
         let rad = n.to_radians();
         Some(match std::mem::replace(&mut self.op, Op::Idle) {
-            Op::Rotate { t, plane, center, start: Some(_), .. } => self.transform(model, &t, |q| rotate_about(q, center, plane.normal, rad)),
+            Op::Rotate { t, plane, center, start: Some(_), .. } => {
+                self.transform(model, &t, |q| rotate_about(q, center, plane.normal, rad))
+            }
             Op::Protract { plane, center, start: Some(st), .. } => {
                 self.add_protractor_guide(model, &plane, center, st, rad);
                 Ok(())
@@ -1504,7 +1623,9 @@ impl Tools {
             Op::Rotate { t, plane, center, start: Some(_), angle } if *angle != 0.0 && !t.verts.is_empty() => {
                 moved(&t.verts, &|q| rotate_about(q, *center, plane.normal, *angle))
             }
-            Op::Scale { t, anchor, factor, axes, .. } if *factor != 1.0 && !t.verts.is_empty() => moved(&t.verts, &|q| scale_axes(q, *anchor, *factor, *axes)),
+            Op::Scale { t, anchor, factor, axes, .. } if *factor != 1.0 && !t.verts.is_empty() => {
+                moved(&t.verts, &|q| scale_axes(q, *anchor, *factor, *axes))
+            }
             _ => None,
         }
     }
@@ -1599,10 +1720,12 @@ impl Tools {
                 ring_lines(&r, &mut out);
             }
             Op::Smoove { center, height } => {
-                let r: Vec<[f64; 3]> = (0..48).map(|k| {
-                    let t = std::f64::consts::TAU * k as f64 / 48.0;
-                    [center[0] + self.smoove_radius * t.cos(), center[1] + self.smoove_radius * t.sin(), center[2]]
-                }).collect();
+                let r: Vec<[f64; 3]> = (0..48)
+                    .map(|k| {
+                        let t = std::f64::consts::TAU * k as f64 / 48.0;
+                        [center[0] + self.smoove_radius * t.cos(), center[1] + self.smoove_radius * t.sin(), center[2]]
+                    })
+                    .collect();
                 ring_lines(&r, &mut out);
                 out.push((*center, add(*center, [0.0, 0.0, *height]), PUSH_GUIDE));
             }
@@ -1769,13 +1892,19 @@ impl Tools {
                     .unwrap_or_default(),
             ),
             Op::Arc2 { a, b: None, cursor, .. } => ("Length", cursor.map(|c| fmt(dist(*a, c), self.units)).unwrap_or_default()),
-            Op::Arc2 { plane, a, b: Some(b), cursor } => ("Bulge", cursor.map(|c| fmt(bulge_toward(plane, *a, *b, c).abs(), self.units)).unwrap_or_default()),
-            Op::Arc3 { .. } | Op::Free { .. } | Op::Follow { .. } | Op::Text { .. } | Op::Axes { .. } | Op::Place3D { .. } => ("Measurements", String::new()),
+            Op::Arc2 { plane, a, b: Some(b), cursor } => {
+                ("Bulge", cursor.map(|c| fmt(bulge_toward(plane, *a, *b, c).abs(), self.units)).unwrap_or_default())
+            }
+            Op::Arc3 { .. } | Op::Free { .. } | Op::Follow { .. } | Op::Text { .. } | Op::Axes { .. } | Op::Place3D { .. } => {
+                ("Measurements", String::new())
+            }
             Op::Scratch { .. } => ("Grid spacing", fmt(self.grid_spacing, self.units)),
             Op::Smoove { height, .. } => ("Height", fmt(*height, self.units)),
             Op::Dim { a, b, cursor } => ("Length", b.or(*cursor).map(|b| fmt(dist(*a, b), self.units)).unwrap_or_default()),
             Op::Offset { d, .. } => ("Distance", fmt(d.abs(), self.units)),
-            Op::Pie { center, start: None, cursor, .. } => ("Radius", cursor.map(|c| fmt(dist(*center, c), self.units)).unwrap_or_default()),
+            Op::Pie { center, start: None, cursor, .. } => {
+                ("Radius", cursor.map(|c| fmt(dist(*center, c), self.units)).unwrap_or_default())
+            }
             Op::Pie { plane, center, start: Some(st), cursor } => (
                 "Angle",
                 cursor
@@ -2266,7 +2395,14 @@ mod tests {
         let c = Cursor {
             origin: [1.0, 1.0, 10.0],
             dir: [0.0, 0.0, -1.0],
-            hit: Some(Hit { point: [1.0, 1.0, 2.0], plane: Plane::from_point_normal([1.0, 1.0, 2.0], [0.0, 0.0, 1.0]).unwrap(), face: Some(top), line: None, instance: None, snap: Snap::OnFace }),
+            hit: Some(Hit {
+                point: [1.0, 1.0, 2.0],
+                plane: Plane::from_point_normal([1.0, 1.0, 2.0], [0.0, 0.0, 1.0]).unwrap(),
+                face: Some(top),
+                line: None,
+                instance: None,
+                snap: Snap::OnFace,
+            }),
         };
         (m, c)
     }
@@ -2386,7 +2522,11 @@ mod tests {
         t.select_all(&m);
         t.set_tool(Tool::Scale);
         // grip the top corner at (2,2,2): the anchor is the corner at the origin
-        let grip = Cursor { origin: [2.0, 2.0, 10.0], dir: [0.0, 0.0, -1.0], hit: Some(Hit { point: [2.0, 2.0, 2.0], plane: Plane::ground(), face: None, line: None, instance: None, snap: Snap::Endpoint }) };
+        let grip = Cursor {
+            origin: [2.0, 2.0, 10.0],
+            dir: [0.0, 0.0, -1.0],
+            hit: Some(Hit { point: [2.0, 2.0, 2.0], plane: Plane::ground(), face: None, line: None, instance: None, snap: Snap::Endpoint }),
+        };
         t.click(&mut m, &grip).unwrap();
         t.type_entry(&mut m, "1.5").unwrap();
         assert_eq!(bounds(&m), ([0.0; 3], [3.0, 3.0, 3.0]));
@@ -2486,9 +2626,18 @@ mod tests {
 
         // Pull it into an L-shaped solid of area 3 x height 2.
         let (mut p, _) = with(Tool::PushPull);
-        let down = Cursor { origin: [0.5, 0.5, 10.0], dir: [0.0, 0.0, -1.0], hit: Some(Hit {
-            point: [0.5, 0.5, 0.0], plane: Plane::ground(), face: Some(0), line: None, instance: None, snap: Snap::OnFace,
-        }) };
+        let down = Cursor {
+            origin: [0.5, 0.5, 10.0],
+            dir: [0.0, 0.0, -1.0],
+            hit: Some(Hit {
+                point: [0.5, 0.5, 0.0],
+                plane: Plane::ground(),
+                face: Some(0),
+                line: None,
+                instance: None,
+                snap: Snap::OnFace,
+            }),
+        };
         p.click(&mut m, &down).unwrap();
         p.type_entry(&mut m, "2").unwrap();
         assert!(m.mesh().is_closed());
@@ -2563,9 +2712,18 @@ mod tests {
         let mut m = Model::new();
         m.add_rectangle([0.0; 3], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]).unwrap();
         let (mut t, _) = with(Tool::PushPull);
-        let face_hit = Cursor { origin: [1.0, -10.0, 0.0], dir: [0.0, 1.0, 0.0], hit: Some(Hit {
-            point: [1.0, 1.0, 0.0], plane: Plane::ground(), face: Some(0), line: None, instance: None, snap: Snap::OnFace,
-        }) };
+        let face_hit = Cursor {
+            origin: [1.0, -10.0, 0.0],
+            dir: [0.0, 1.0, 0.0],
+            hit: Some(Hit {
+                point: [1.0, 1.0, 0.0],
+                plane: Plane::ground(),
+                face: Some(0),
+                line: None,
+                instance: None,
+                snap: Snap::OnFace,
+            }),
+        };
         t.click(&mut m, &face_hit).unwrap();
         // A horizontal ray at height 3 seen from the side sets distance 3.
         let side = Cursor { origin: [1.0, -10.0, 3.0], dir: [0.0, 1.0, 0.0], hit: None };
@@ -2654,10 +2812,14 @@ mod tests {
         let mesh = m.mesh().to_mesh();
         assert_eq!(mesh.faces.len(), 2);
         let ring = (0..2).find(|&f| !mesh.holes_of(f).is_empty()).expect("a ring with the square as its hole");
-        let area: f64 = mesh.triangulate_face(ring).iter().map(|tri| {
-            let [a, b, c] = tri.map(|v| mesh.positions[v as usize]);
-            ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.0
-        }).sum();
+        let area: f64 = mesh
+            .triangulate_face(ring)
+            .iter()
+            .map(|tri| {
+                let [a, b, c] = tri.map(|v| mesh.positions[v as usize]);
+                ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.0
+            })
+            .sum();
         assert!((area - 20.0).abs() < 1e-9, "{area}");
     }
 
@@ -2676,9 +2838,11 @@ mod tests {
         t.click(&mut m, &at(1.0, 2.0)).unwrap();
         assert_eq!(m.mesh().face_count(), 2, "the middle, and the ring around it (one face with a hole)");
         assert!(m.mesh().has_holes(0) || m.mesh().has_holes(1));
-        let middle = (0..2).find(|&f| m.mesh().face_vertices(f).len() == 4 && {
-            let p = m.mesh().positions[m.mesh().face_vertices(f)[0] as usize];
-            (1.0..=3.0).contains(&p[0]) && (1.0..=3.0).contains(&p[1])
+        let middle = (0..2).find(|&f| {
+            m.mesh().face_vertices(f).len() == 4 && {
+                let p = m.mesh().positions[m.mesh().face_vertices(f)[0] as usize];
+                (1.0..=3.0).contains(&p[0]) && (1.0..=3.0).contains(&p[1])
+            }
         });
         let middle = middle.expect("the 2 x 2 middle face");
         m.push_pull(middle, 1.0).unwrap();
@@ -2722,7 +2886,10 @@ mod tests {
         let mut t = Tools::default();
         t.set_tool(Tool::SectionPlane);
         t.click(&mut m, &top).unwrap();
-        let (o, n) = { let s = m.notes().section().unwrap(); (s.point, s.normal) };
+        let (o, n) = {
+            let s = m.notes().section().unwrap();
+            (s.point, s.normal)
+        };
         assert_eq!(n, [0.0, 0.0, 1.0], "it cuts away what is above the top");
         assert!((o[2] - 2.0).abs() < 1e-6);
         t.type_entry(&mut m, "0.5").unwrap();
@@ -2823,7 +2990,17 @@ mod tests {
     fn a_group_is_picked_whole_and_erased() {
         let (mut t, mut m) = grouped_box();
         t.model_changed();
-        let on_group = Cursor { hit: Some(Hit { point: [1.0, 1.0, 2.0], plane: Plane::ground(), face: None, line: None, instance: Some(0), snap: Snap::OnFace }), ..ground_hit([1.0, 1.0, 2.0], Snap::OnFace) };
+        let on_group = Cursor {
+            hit: Some(Hit {
+                point: [1.0, 1.0, 2.0],
+                plane: Plane::ground(),
+                face: None,
+                line: None,
+                instance: Some(0),
+                snap: Snap::OnFace,
+            }),
+            ..ground_hit([1.0, 1.0, 2.0], Snap::OnFace)
+        };
         t.click(&mut m, &on_group).unwrap();
         assert_eq!((t.selected.len(), t.instances.clone()), (0, vec![0]));
         t.set_tool(Tool::Eraser);

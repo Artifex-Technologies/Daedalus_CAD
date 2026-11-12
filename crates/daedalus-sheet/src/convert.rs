@@ -308,7 +308,8 @@ fn outline(b: &Body, mesh: &Mesh, f: usize, tol: f64) -> Result<Face> {
     let mut shaped: Vec<(Vec<(Seg2, Option<u32>)>, Vec<usize>)> = loops
         .iter()
         .map(|lp| {
-            let pts: Vec<(Vec2, Option<u32>)> = lp.iter().map(|(p, g)| (plane.to_local(*p), g.and_then(|g| u32::try_from(g).ok()))).collect();
+            let pts: Vec<(Vec2, Option<u32>)> =
+                lp.iter().map(|(p, g)| (plane.to_local(*p), g.and_then(|g| u32::try_from(g).ok()))).collect();
             let mut walls: Vec<usize> = lp.iter().filter_map(|(_, g)| *g).collect();
             walls.sort_unstable();
             walls.dedup();
@@ -624,7 +625,9 @@ fn inset(pts: &[Vec2], by: &[f64], tol: f64) -> Result<(Vec<Vec2>, Vec<Option<us
     };
     let (mut out, mut from) = (Vec::new(), Vec::new());
     for i in 0..n {
-        let (Some((p0, d0)), Some((p1, d1))) = (moved(i + n - 1), moved(i)) else { return err("a face of the sheet has an edge without length") };
+        let (Some((p0, d0)), Some((p1, d1))) = (moved(i + n - 1), moved(i)) else {
+            return err("a face of the sheet has an edge without length");
+        };
         let cross = d0.cross(d1);
         if cross.abs() > 1e-9 {
             out.push(p0 + d0 * ((p1 - p0).cross(d1) / cross));
@@ -767,8 +770,11 @@ fn set_panel(sh: &mut SheetBody, i: usize, outline: &[Vec2]) {
     let ba = sh.flanges.get(i).map_or(0.0, |f| sh.allowance(f));
     let Some(f) = sh.flanges.get_mut(i) else { return };
     // Its corners along the bend (u) and past the bend zone (v); those at the zone exactly on it.
-    let uv: Vec<(f64, f64)> =
-        outline.iter().map(|q| ((*q - f.p).dot(f.d), (*q - f.p).dot(f.n) - ba)).map(|(u, v)| (u, if v.abs() < 1e-6 { 0.0 } else { v })).collect();
+    let uv: Vec<(f64, f64)> = outline
+        .iter()
+        .map(|q| ((*q - f.p).dot(f.d), (*q - f.p).dot(f.n) - ba))
+        .map(|(u, v)| (u, if v.abs() < 1e-6 { 0.0 } else { v }))
+        .collect();
     f.leg = uv.iter().fold(0.0, |m, (_, v)| m.max(*v));
     let level = |h: f64| -> Vec<f64> { uv.iter().filter(|(_, v)| (v - h).abs() < 1e-6).map(|(u, _)| *u).collect() };
     match (level(0.0).as_slice(), level(f.leg).as_slice()) {
@@ -938,7 +944,8 @@ pub fn convert_body(
     // bend. It keeps its thickness, and a bend picked on one skin is that bend on the other too.
     let thin = behind(b, &mesh, f0).map(|(_, d)| d).filter(|d| *d > 0.0 && d * d * 16.0 <= area_about(&fixed.pts, fixed.n));
     let wall = |f: usize, d: f64| behind(b, &mesh, f).filter(|(_, e)| (e - d).abs() <= 1e-6 * d.max(1.0)).map(|(g, _)| g);
-    let backs: Vec<Option<(usize, usize)>> = picks.iter().map(|(_, (x, y))| thin.and_then(|d| Some((wall(*x, d)?, wall(*y, d)?)))).collect();
+    let backs: Vec<Option<(usize, usize)>> =
+        picks.iter().map(|(_, (x, y))| thin.and_then(|d| Some((wall(*x, d)?, wall(*y, d)?)))).collect();
     let shell = thin.filter(|_| backs.iter().all(Option::is_some));
     // On a shell, the face behind each face at a bend (its other skin, read for its pockets).
     let skin_behind: BTreeMap<usize, usize> = picks
@@ -987,8 +994,8 @@ pub fn convert_body(
                 }
                 return err(format!("the bend at {} closes a loop of bends (leave one of its edges unpicked: it is cut open)", at(p)));
             }
-            let child =
-                face_of(to).map_err(|e| DocError::Invalid(format!("the face across the bend at {} can't be a face of the sheet: {e}", at(p))))?;
+            let child = face_of(to)
+                .map_err(|e| DocError::Invalid(format!("the face across the bend at {} can't be a face of the sheet: {e}", at(p))))?;
             let Some(parent) = panels.get(&from) else { continue };
             let theta = parent.face.n.dot(child.n).clamp(-1.0, 1.0).acos();
             if !(theta > 1e-6 && theta < std::f64::consts::PI - 1e-6) {
@@ -1095,8 +1102,12 @@ pub fn convert_body(
         // Where cut-outs across a bend notch the panel, its edges along the bend are one bend
         // edge and the notches holes of the sheet, as is the bend zone between them (below).
         let mut gaps: BTreeMap<usize, Vec<(Vec2, Vec2)>> = BTreeMap::new();
-        let mut bent: Vec<usize> =
-            across.iter().flatten().copied().filter(|g| panel.parent == Some(*g) || panels.get(g).is_some_and(|c| c.parent == Some(pf))).collect();
+        let mut bent: Vec<usize> = across
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|g| panel.parent == Some(*g) || panels.get(g).is_some_and(|c| c.parent == Some(pf)))
+            .collect();
         bent.sort_unstable();
         bent.dedup();
         for g in bent {
@@ -1145,8 +1156,9 @@ pub fn convert_body(
                     sh.holes.push(cut);
                     continue;
                 }
-                let pocket =
-                    |why: &str| err(format!("not supported yet: the pocket at {} in a face of the sheet {why} (cut it after converting)", at(p)));
+                let pocket = |why: &str| {
+                    err(format!("not supported yet: the pocket at {} in a face of the sheet {why} (cut it after converting)", at(p)))
+                };
                 let eps = t * 1e-3;
                 if reach > t / 2.0 + eps {
                     return pocket(&format!("ends {reach:.3} deep, more than half the sheet's {t:.3}"));
@@ -1184,7 +1196,8 @@ pub fn convert_body(
                         if start > eps || (lo - reach).abs() > eps || (hi - reach).abs() > eps {
                             return pocket("has a hole or a step in its floor");
                         }
-                        islands.push(sh.region_to_flat(fl, &floor.plane, &Region2 { outer: k.clone(), holes: Vec::new() })?.outer.reversed());
+                        islands
+                            .push(sh.region_to_flat(fl, &floor.plane, &Region2 { outer: k.clone(), holes: Vec::new() })?.outer.reversed());
                     }
                 }
                 let (z0, z1) = if front { (0.0, reach) } else { (t - reach, t) };

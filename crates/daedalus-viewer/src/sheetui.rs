@@ -25,12 +25,19 @@ pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
 fn convert_form(ui: &mut egui::Ui, v: &UiView, (name, fixed, bends): &(String, bool, usize), actions: &mut Vec<UiAction>) {
     ui.label(format!("Convert {name} to sheet metal"));
     ui.label(RichText::new(if *fixed { "✔ the face that stays put" } else { "Click the face that stays put" }).weak());
-    ui.label(RichText::new(match bends {
-        0 => "Click each edge that becomes a bend".to_string(),
-        1 => "✔ 1 bend edge (click more, or Convert)".to_string(),
-        n => format!("✔ {n} bend edges (click more, or Convert)"),
-    }).weak());
-    ui.label(RichText::new("A solid with thin walls keeps their thickness; any other gets the thickness below inside its outer faces.").weak().small());
+    ui.label(
+        RichText::new(match bends {
+            0 => "Click each edge that becomes a bend".to_string(),
+            1 => "✔ 1 bend edge (click more, or Convert)".to_string(),
+            n => format!("✔ {n} bend edges (click more, or Convert)"),
+        })
+        .weak(),
+    );
+    ui.label(
+        RichText::new("A solid with thin walls keeps their thickness; any other gets the thickness below inside its outer faces.")
+            .weak()
+            .small(),
+    );
     ui.add_space(4.0);
     let first = &v.materials[0];
     let (values, preset, _) = material_fields(ui, v, egui::Id::new("sheet-convert"), (0, first.1, first.2, first.3));
@@ -78,7 +85,9 @@ fn field(ui: &mut egui::Ui, label: &str, text: &mut String, hint: &str) -> bool 
 /// The material picker and the three values it fills in (kept per `id` while being typed). Returns the values when they
 /// read, and the preset (`usize::MAX`: typed in).
 fn material_fields(ui: &mut egui::Ui, v: &UiView, id: egui::Id, start: (usize, f64, f64, f64)) -> (Option<(f64, f64, f64)>, usize, bool) {
-    let (mut preset, mut t, mut k, mut r) = ui.data_mut(|d| d.get_temp::<(usize, String, String, String)>(id)).unwrap_or_else(|| (start.0, fmt(start.1), fmt(start.2), fmt(start.3)));
+    let (mut preset, mut t, mut k, mut r) = ui
+        .data_mut(|d| d.get_temp::<(usize, String, String, String)>(id))
+        .unwrap_or_else(|| (start.0, fmt(start.1), fmt(start.2), fmt(start.3)));
     let shown = v.materials.get(preset).map(|m| m.0.as_str()).unwrap_or("Typed in");
     let first_table = v.materials.len() - v.table_rows;
     egui::ComboBox::from_id_salt((id, "material")).selected_text(shown).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
@@ -118,9 +127,17 @@ fn material_fields(ui: &mut egui::Ui, v: &UiView, id: egui::Id, start: (usize, f
 fn make_form(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
     if !v.face_for_part {
         ui.label(RichText::new("Select a sheet-metal part to edit it, or one face to make a part of it.").weak());
-        ui.label(RichText::new("The face's outline and holes become the flat part; it grows out of the face's front by the thickness.").weak().small());
+        ui.label(
+            RichText::new("The face's outline and holes become the flat part; it grows out of the face's front by the thickness.")
+                .weak()
+                .small(),
+        );
         ui.add_space(4.0);
-        if ui.add_enabled(v.editable, egui::Button::new("Convert a solid…").selected(v.tool == Tool::SheetConvert)).on_hover_text("A solid group or component you modelled (say, with 2 mm walls) into a part with bends").clicked() {
+        if ui
+            .add_enabled(v.editable, egui::Button::new("Convert a solid…").selected(v.tool == Tool::SheetConvert))
+            .on_hover_text("A solid group or component you modelled (say, with 2 mm walls) into a part with bends")
+            .clicked()
+        {
             actions.push(UiAction::Tool(Tool::SheetConvert));
         }
         return;
@@ -166,8 +183,12 @@ fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<U
     ui.add_space(6.0);
     ui.strong("Material");
     let preset = v.materials.iter().position(|m| m.0 == s.material).unwrap_or(usize::MAX);
-    let (values, preset, enter) = material_fields(ui, v, egui::Id::new(("sheet-rule", s.key)), (preset, s.thickness, s.k_factor, s.bend_radius));
-    let clicked = ui.add_enabled(v.editable && values.is_some(), egui::Button::new("Apply")).on_hover_text("The part is made again with these values; its flanges stay").clicked();
+    let (values, preset, enter) =
+        material_fields(ui, v, egui::Id::new(("sheet-rule", s.key)), (preset, s.thickness, s.k_factor, s.bend_radius));
+    let clicked = ui
+        .add_enabled(v.editable && values.is_some(), egui::Button::new("Apply"))
+        .on_hover_text("The part is made again with these values; its flanges stay")
+        .clicked();
     if let Some((t, k, r)) = values.filter(|_| clicked || enter) {
         actions.push(UiAction::SheetRule(t, k, r, preset));
     }
@@ -195,14 +216,21 @@ fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<U
                 continue;
             }
             let id = egui::Id::new(("sheet-flange", s.key, i));
-            let (mut th, mut ta, mut tp, mut td) = ui.data_mut(|d| d.get_temp::<(String, String, usize, bool)>(id)).unwrap_or_else(|| (fmt(h), fmt(a), pos, down));
+            let (mut th, mut ta, mut tp, mut td) =
+                ui.data_mut(|d| d.get_temp::<(String, String, usize, bool)>(id)).unwrap_or_else(|| (fmt(h), fmt(a), pos, down));
             ui.label(format!("{}", i + 1));
             let mut changed = false;
             let r1 = if fold {
                 ui.label(RichText::new("fold").weak());
                 None
             } else {
-                let hint = if hem { "Hem length to its outer face, mm" } else if jog { "The jog's step, face to face, mm" } else { "Height from the outside of the bend, mm" };
+                let hint = if hem {
+                    "Hem length to its outer face, mm"
+                } else if jog {
+                    "The jog's step, face to face, mm"
+                } else {
+                    "Height from the outside of the bend, mm"
+                };
                 Some(ui.add(egui::TextEdit::singleline(&mut th).desired_width(56.0)).on_hover_text(hint))
             };
             let mut r2 = None;
@@ -210,18 +238,22 @@ fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<U
                 ui.label(RichText::new("hem").weak());
                 ui.label("");
             } else {
-                r2 = Some(ui.add(egui::TextEdit::singleline(&mut ta).desired_width(40.0)).on_hover_text("Bend angle, degrees (90: square)"));
+                r2 =
+                    Some(ui.add(egui::TextEdit::singleline(&mut ta).desired_width(40.0)).on_hover_text("Bend angle, degrees (90: square)"));
                 if jog {
                     ui.label(RichText::new("jog").weak());
                 } else if fold {
-                    egui::ComboBox::from_id_salt((id, "pos")).selected_text(if tp == 1 { "Mould" } else { "Centre" }).width(64.0).show_ui(ui, |ui| {
-                        for (k, p) in FoldPosition::ALL.iter().enumerate() {
-                            if ui.selectable_label(tp == k, p.label()).clicked() {
-                                tp = k;
-                                changed = true;
+                    egui::ComboBox::from_id_salt((id, "pos")).selected_text(if tp == 1 { "Mould" } else { "Centre" }).width(64.0).show_ui(
+                        ui,
+                        |ui| {
+                            for (k, p) in FoldPosition::ALL.iter().enumerate() {
+                                if ui.selectable_label(tp == k, p.label()).clicked() {
+                                    tp = k;
+                                    changed = true;
+                                }
                             }
-                        }
-                    });
+                        },
+                    );
                 } else {
                     egui::ComboBox::from_id_salt((id, "pos")).selected_text(position_short(tp)).width(64.0).show_ui(ui, |ui| {
                         for (k, p) in FlangePosition::ALL.iter().enumerate() {
@@ -240,7 +272,8 @@ fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<U
             if ui.small_button("×").on_hover_text("Take it away").clicked() {
                 actions.push(UiAction::SheetRemoveFlange(i));
             }
-            let enter = (r1.as_ref().is_some_and(|r| r.lost_focus()) || r2.as_ref().is_some_and(|r| r.lost_focus())) && ui.input(|k| k.key_pressed(egui::Key::Enter));
+            let enter = (r1.as_ref().is_some_and(|r| r.lost_focus()) || r2.as_ref().is_some_and(|r| r.lost_focus()))
+                && ui.input(|k| k.key_pressed(egui::Key::Enter));
             if enter || changed {
                 // a hem keeps its 180 degrees
                 let a = if hem { Some(180.0) } else { num(&ta) };
@@ -270,7 +303,8 @@ fn reliefs(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiAct
     ui.strong("Reliefs");
     let id = egui::Id::new(("sheet-relief", s.key));
     let (shape0, c0, w0, d0) = s.relief;
-    let (mut shape, mut tc, mut tw, mut td) = ui.data_mut(|d| d.get_temp::<(usize, String, String, String)>(id)).unwrap_or_else(|| (shape0, fmt(c0), fmt(w0), fmt(d0)));
+    let (mut shape, mut tc, mut tw, mut td) =
+        ui.data_mut(|d| d.get_temp::<(usize, String, String, String)>(id)).unwrap_or_else(|| (shape0, fmt(c0), fmt(w0), fmt(d0)));
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Corners").weak());
@@ -321,11 +355,13 @@ fn model_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiA
     ui.label(RichText::new("New flanges:").weak());
     let id = egui::Id::new("flange-defaults");
     let (h0, a0, p0, d0, hem0) = v.flange_defaults;
-    let (mut th, mut ta, mut tp, mut td, mut thm) = ui.data_mut(|d| d.get_temp::<(String, String, usize, bool, bool)>(id)).unwrap_or_else(|| (fmt(h0), fmt(a0), p0, d0, hem0));
+    let (mut th, mut ta, mut tp, mut td, mut thm) =
+        ui.data_mut(|d| d.get_temp::<(String, String, usize, bool, bool)>(id)).unwrap_or_else(|| (fmt(h0), fmt(a0), p0, d0, hem0));
     let mut changed = false;
     let path_id = egui::Id::new("path-defaults");
     let (on0, legs0) = v.path_defaults.clone();
-    let (mut on, mut tl) = ui.data_mut(|d| d.get_temp::<(bool, String)>(path_id)).unwrap_or_else(|| (on0, daedalus_sheet::part::legs_text(&legs0)));
+    let (mut on, mut tl) =
+        ui.data_mut(|d| d.get_temp::<(bool, String)>(path_id)).unwrap_or_else(|| (on0, daedalus_sheet::part::legs_text(&legs0)));
     let mut path_changed = false;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Kind").weak());
@@ -401,7 +437,11 @@ fn model_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiA
 }
 
 fn step_button(ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
-    if ui.button("Export part as STEP…").on_hover_text("The bent part as an exact solid, for the fabricator or another CAD program").clicked() {
+    if ui
+        .button("Export part as STEP…")
+        .on_hover_text("The bent part as an exact solid, for the fabricator or another CAD program")
+        .clicked()
+    {
         actions.push(UiAction::ExportPartStep);
     }
 }
@@ -416,11 +456,14 @@ fn hole_section(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
     });
     let id = egui::Id::new("hole-defaults");
     let (r0, s0) = v.hole_defaults;
-    let (mut round, mut tw, mut th) = ui.data_mut(|d| d.get_temp::<(bool, String, String)>(id)).unwrap_or_else(|| (r0, fmt(s0[0]), fmt(s0[1])));
+    let (mut round, mut tw, mut th) =
+        ui.data_mut(|d| d.get_temp::<(bool, String, String)>(id)).unwrap_or_else(|| (r0, fmt(s0[0]), fmt(s0[1])));
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Shape").weak());
-        for (r, name, hint) in [(true, "Round", "A round hole"), (false, "Rectangle", "A rectangular cut-out, its sides along and across the panel's bend")] {
+        for (r, name, hint) in
+            [(true, "Round", "A round hole"), (false, "Rectangle", "A rectangular cut-out, its sides along and across the panel's bend")]
+        {
             if ui.selectable_label(round == r, name).on_hover_text(hint).clicked() {
                 round = r;
                 changed = true;
@@ -466,15 +509,29 @@ fn bend_table(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
 
 /// A hole's or a path flange's row in the Drawing tab's list: its size (or legs) and, for a hole, where it sits on which
 /// panel; Enter applies, × takes it away.
-fn text_row(ui: &mut egui::Ui, v: &UiView, key: u64, i: usize, hole: bool, (first, second, on): &(String, String, String), actions: &mut Vec<UiAction>) {
+fn text_row(
+    ui: &mut egui::Ui,
+    v: &UiView,
+    key: u64,
+    i: usize,
+    hole: bool,
+    (first, second, on): &(String, String, String),
+    actions: &mut Vec<UiAction>,
+) {
     let id = egui::Id::new(("sheet-step-text", key, i));
     let (mut ta, mut tb) = ui.data_mut(|d| d.get_temp::<(String, String)>(id)).unwrap_or_else(|| (first.clone(), second.clone()));
     ui.label(format!("{}", i + 1));
-    let hint = if hole { "Size, mm: a diameter (6) or along the bend x across (10 x 5)" } else { "Legs: length (mm) and turn (degrees) each, apart by commas" };
+    let hint = if hole {
+        "Size, mm: a diameter (6) or along the bend x across (10 x 5)"
+    } else {
+        "Legs: length (mm) and turn (degrees) each, apart by commas"
+    };
     let r1 = ui.add(egui::TextEdit::singleline(&mut ta).desired_width(if hole { 56.0 } else { 140.0 })).on_hover_text(hint);
     let mut r2 = None;
     if hole {
-        r2 = Some(ui.add(egui::TextEdit::singleline(&mut tb).desired_width(64.0)).on_hover_text(format!("Its centre on {on}, mm: along the bend, then across the panel from where the bend ends (on the base: the flat's own x, y)")));
+        r2 = Some(ui.add(egui::TextEdit::singleline(&mut tb).desired_width(64.0)).on_hover_text(format!(
+            "Its centre on {on}, mm: along the bend, then across the panel from where the bend ends (on the base: the flat's own x, y)"
+        )));
         ui.label(RichText::new(format!("hole, {on}")).weak().small());
     } else {
         ui.label(RichText::new("path").weak());
@@ -522,15 +579,26 @@ fn fold_section(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
         if ui.add_enabled(v.editable, egui::Button::new("Fold tool").selected(v.tool == Tool::Fold)).clicked() {
             actions.push(UiAction::Tool(Tool::Fold));
         }
-        ui.label(RichText::new(if v.tool == Tool::Fold && v.fold_first { "now the line's second point" } else { "then two points on a face: the line" }).weak());
+        ui.label(
+            RichText::new(if v.tool == Tool::Fold && v.fold_first {
+                "now the line's second point"
+            } else {
+                "then two points on a face: the line"
+            })
+            .weak(),
+        );
     });
     let id = egui::Id::new("fold-defaults");
     let (j0, a0, s0, p0, d0) = v.fold_defaults;
-    let (mut tj, mut ta, mut ts, mut tp, mut td) = ui.data_mut(|d| d.get_temp::<(bool, String, String, usize, bool)>(id)).unwrap_or_else(|| (j0, fmt(a0), fmt(s0), p0, d0));
+    let (mut tj, mut ta, mut ts, mut tp, mut td) =
+        ui.data_mut(|d| d.get_temp::<(bool, String, String, usize, bool)>(id)).unwrap_or_else(|| (j0, fmt(a0), fmt(s0), p0, d0));
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Kind").weak());
-        for (jog, name, hint) in [(false, "Fold", "One bend along the line"), (true, "Jog", "Two bends the opposite way: the far side steps aside and stays parallel")] {
+        for (jog, name, hint) in [
+            (false, "Fold", "One bend along the line"),
+            (true, "Jog", "Two bends the opposite way: the far side steps aside and stays parallel"),
+        ] {
             if ui.selectable_label(tj == jog, name).on_hover_text(hint).clicked() {
                 tj = jog;
                 changed = true;
@@ -634,7 +702,10 @@ fn drawing(ui: &mut egui::Ui, loops: &[Vec<[f64; 2]>], bends: &[([f64; 2], [f64;
     let inner = rect.shrink2(vec2(18.0, 18.0));
     let scale = ((inner.width() as f64 - RIGHT) / (hi[0] - lo[0])).min((inner.height() as f64 - 16.0) / (hi[1] - lo[1]));
     let (w, h) = ((hi[0] - lo[0]) * scale, (hi[1] - lo[1]) * scale);
-    let origin = pos2(inner.left() + ((inner.width() as f64 - RIGHT - w) / 2.0) as f32, inner.top() + ((inner.height() as f64 - 16.0 - h) / 2.0) as f32);
+    let origin = pos2(
+        inner.left() + ((inner.width() as f64 - RIGHT - w) / 2.0) as f32,
+        inner.top() + ((inner.height() as f64 - 16.0 - h) / 2.0) as f32,
+    );
     let at = |p: &[f64; 2]| pos2(origin.x + ((p[0] - lo[0]) * scale) as f32, origin.y + ((hi[1] - p[1]) * scale) as f32);
     let ink = visuals.text_color();
     for lp in loops {

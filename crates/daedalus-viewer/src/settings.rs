@@ -10,7 +10,10 @@ fn path() -> Option<PathBuf> {
 
 /// A file in Daedalus's own settings folder (`~/.config/daedalus`).
 pub fn config_file(name: &str) -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("daedalus").join(name))
 }
 
@@ -57,7 +60,11 @@ pub fn save(key: &str, value: &str) {
 }
 
 pub fn load_units() -> Units {
-    path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| get(&t, "units")).and_then(|v| Units::from_key(&v)).unwrap_or(Units::Metres)
+    path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| get(&t, "units"))
+        .and_then(|v| Units::from_key(&v))
+        .unwrap_or(Units::Metres)
 }
 
 pub fn save_units(u: Units) {

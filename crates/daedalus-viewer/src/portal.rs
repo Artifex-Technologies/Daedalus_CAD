@@ -47,18 +47,15 @@ fn filters(purpose: Purpose) -> Vec<(&'static str, Vec<&'static str>)> {
             ("All files", vec!["*"]),
         ],
         // the format it starts in first (selected), then the others Save writes
-        Purpose::SaveAs(first) => std::iter::once(first).chain(Format::SAVE.into_iter().filter(|&f| f != first)).map(|f| (f.label(), globs(f))).collect(),
+        Purpose::SaveAs(first) => {
+            std::iter::once(first).chain(Format::SAVE.into_iter().filter(|&f| f != first)).map(|f| (f.label(), globs(f))).collect()
+        }
         Purpose::Copy => vec![(Format::Native.label(), globs(Format::Native))],
         Purpose::Texture => vec![("Images", vec!["*.jpg", "*.jpeg", "*.png", "*.bmp"]), ("All files", vec!["*"])],
         Purpose::Step | Purpose::PartStep => vec![("STEP (.step)", vec!["*.step", "*.stp"])],
         Purpose::FlatDxf => vec![("DXF flat pattern (.dxf)", vec!["*.dxf"])],
         Purpose::BendTable => vec![("Bend tables (.csv)", vec!["*.csv", "*.txt"]), ("All files", vec!["*"])],
-        Purpose::Export => vec![
-            ("STL", vec!["*.stl"]),
-            ("OBJ", vec!["*.obj"]),
-            ("DXF", vec!["*.dxf"]),
-            ("COLLADA (.dae)", vec!["*.dae"]),
-        ],
+        Purpose::Export => vec![("STL", vec!["*.stl"]), ("OBJ", vec!["*.obj"]), ("DXF", vec!["*.dxf"]), ("COLLADA (.dae)", vec!["*.dae"])],
     }
 }
 
@@ -111,19 +108,25 @@ pub fn ask(purpose: Purpose, start: Option<&Path>, name: &str, done: impl FnOnce
 
 fn request(purpose: Purpose, folder: Option<PathBuf>, name: &str) -> Option<Answer> {
     let conn = zbus::blocking::Connection::session().ok()?;
-    let token = format!("daedalus_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+    let token = format!(
+        "daedalus_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    );
     let sender = conn.unique_name()?.trim_start_matches(':').replace('.', "_");
     let path = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
     // listen for the answer before asking, so a quick one is not missed
     let req = zbus::blocking::Proxy::new(&conn, "org.freedesktop.portal.Desktop", path, "org.freedesktop.portal.Request").ok()?;
     let mut answers = req.receive_signal("Response").ok()?;
-    let filters: Vec<(&str, Vec<(u32, &str)>)> = filters(purpose).into_iter().map(|(l, pats)| (l, pats.into_iter().map(|p| (0u32, p)).collect())).collect();
+    let filters: Vec<(&str, Vec<(u32, &str)>)> =
+        filters(purpose).into_iter().map(|(l, pats)| (l, pats.into_iter().map(|p| (0u32, p)).collect())).collect();
     let mut opts: HashMap<&str, Value> = HashMap::new();
     opts.insert("handle_token", Value::from(token.as_str()));
     opts.insert("modal", Value::from(true));
     opts.insert("current_filter", Value::from(filters[0].clone()));
     opts.insert("filters", Value::from(filters));
-    let saving = matches!(purpose, Purpose::SaveAs(_) | Purpose::Copy | Purpose::Export | Purpose::Step | Purpose::PartStep | Purpose::FlatDxf);
+    let saving =
+        matches!(purpose, Purpose::SaveAs(_) | Purpose::Copy | Purpose::Export | Purpose::Step | Purpose::PartStep | Purpose::FlatDxf);
     if saving && !name.is_empty() {
         opts.insert("current_name", Value::from(name));
     }
@@ -134,8 +137,14 @@ fn request(purpose: Purpose, folder: Option<PathBuf>, name: &str) -> Option<Answ
         opts.insert("current_folder", Value::from(bytes));
     }
     let method = if saving { "SaveFile" } else { "OpenFile" };
-    conn.call_method(Some("org.freedesktop.portal.Desktop"), "/org/freedesktop/portal/desktop", Some("org.freedesktop.portal.FileChooser"), method, &("", title(purpose), opts))
-        .ok()?;
+    conn.call_method(
+        Some("org.freedesktop.portal.Desktop"),
+        "/org/freedesktop/portal/desktop",
+        Some("org.freedesktop.portal.FileChooser"),
+        method,
+        &("", title(purpose), opts),
+    )
+    .ok()?;
     let msg = answers.next()?;
     let (code, results): (u32, HashMap<String, OwnedValue>) = msg.body().deserialize().ok()?;
     if code != 0 {
@@ -143,7 +152,10 @@ fn request(purpose: Purpose, folder: Option<PathBuf>, name: &str) -> Option<Answ
     }
     let uris: Vec<String> = results.get("uris").and_then(|v| Vec::<String>::try_from(v.clone()).ok()).unwrap_or_default();
     // a name typed without an ending takes the one of the filter chosen (the format picked in the dialog)
-    let picked = results.get("current_filter").and_then(|v| <(String, Vec<(u32, String)>)>::try_from(v.clone()).ok()).and_then(|(_, pats)| filter_ending(&pats));
+    let picked = results
+        .get("current_filter")
+        .and_then(|v| <(String, Vec<(u32, String)>)>::try_from(v.clone()).ok())
+        .and_then(|(_, pats)| filter_ending(&pats));
     Some(match uris.first().and_then(|u| path_from_uri(u)) {
         Some(mut p) => {
             if p.extension().is_none() {
@@ -159,7 +171,11 @@ fn request(purpose: Purpose, folder: Option<PathBuf>, name: &str) -> Option<Answ
 
 /// The ending a filter's first pattern names (`*.step` -> `step`; none for `*`).
 fn filter_ending(patterns: &[(u32, String)]) -> Option<String> {
-    patterns.iter().find_map(|(kind, p)| (*kind == 0).then(|| p.strip_prefix("*.")).flatten()).filter(|e| !e.is_empty() && !e.contains('*')).map(str::to_string)
+    patterns
+        .iter()
+        .find_map(|(kind, p)| (*kind == 0).then(|| p.strip_prefix("*.")).flatten())
+        .filter(|e| !e.is_empty() && !e.contains('*'))
+        .map(str::to_string)
 }
 
 #[cfg(test)]

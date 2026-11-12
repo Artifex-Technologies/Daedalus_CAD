@@ -18,7 +18,8 @@ use egui::{Color32, RichText};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-pub const DIRECTIONS: [&str; 8] = ["Down (−Z)", "Up (+Z)", "Along +X (red)", "Along −X", "Along +Y (green)", "Along −Y", "Into the faces", "Out of the faces"];
+pub const DIRECTIONS: [&str; 8] =
+    ["Down (−Z)", "Up (+Z)", "Along +X (red)", "Along −X", "Along +Y (green)", "Along −Y", "Into the faces", "Out of the faces"];
 
 /// Supports are drawn this blue, loads this orange.
 const SUPPORT: [u8; 3] = [40, 110, 230];
@@ -115,7 +116,10 @@ fn read_part(model: &Model, i: usize) -> Result<(String, Mesh, Part, Option<f64>
     let mesh = inside.into_iter().find(|(j, _)| *j == i).map(|(_, m)| m).ok_or("that group is not here")?;
     let closed = HalfEdgeMesh::from_mesh(&mesh).map(|h| h.is_closed()).unwrap_or(false);
     if !closed || mesh.faces.is_empty() {
-        return Err(format!("{} is not a solid (it must be closed all round, every edge between two faces); Tools > Solid Inspector finds the gaps", def.name));
+        return Err(format!(
+            "{} is not a solid (it must be closed all round, every edge between two faces); Tools > Solid Inspector finds the gaps",
+            def.name
+        ));
     }
     let mut part = Part::default();
     for (f, tris) in mesh.face_triangles().iter().enumerate() {
@@ -214,7 +218,11 @@ impl Stress {
     }
 
     pub fn clear(&mut self, supports: bool) {
-        if supports { self.supports.clear() } else { self.loads.clear() }
+        if supports {
+            self.supports.clear()
+        } else {
+            self.loads.clear()
+        }
         self.show = false;
     }
 
@@ -406,7 +414,11 @@ pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
     panel_head(ui, "Stress Test", UiAction::StressPanel, actions);
     let Some(s) = &v.stress else {
         ui.label("Click a solid group or component to test.");
-        ui.label(RichText::new("Then click the faces that hold it and the faces that are pushed, give the force and the material, and Run.").weak().small());
+        ui.label(
+            RichText::new("Then click the faces that hold it and the faces that are pushed, give the force and the material, and Run.")
+                .weak()
+                .small(),
+        );
         if v.tool != crate::tools::Tool::Stress && ui.button("Pick a part").clicked() {
             actions.push(UiAction::Tool(crate::tools::Tool::Stress));
         }
@@ -451,7 +463,8 @@ pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
     let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| format!("{} N", s.settings.force));
     ui.horizontal(|ui| {
         ui.label("Force");
-        let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0)).on_hover_text("The total, in N, kN, kg (its weight) or lb");
+        let r =
+            ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0)).on_hover_text("The total, in N, kN, kg (its weight) or lb");
         if r.changed() {
             if let Some(f) = parse_force(&text) {
                 set.force = f;
@@ -469,18 +482,25 @@ pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
     });
     ui.checkbox(&mut set.gravity, "Add the part's own weight");
     let presets = Material::presets();
-    egui::ComboBox::from_label("material").selected_text(presets.get(set.material).map_or("", |m| m.name.as_str()).to_string()).show_ui(ui, |ui| {
-        for (i, m) in presets.iter().enumerate() {
-            ui.selectable_value(&mut set.material, i, m.name.as_str()).on_hover_text(format!(
-                "E {:.0} GPa, yield {:.0} MPa, {:.0} kg/m³ (typical values)",
-                m.youngs_modulus / 1e9,
-                m.yield_strength / 1e6,
-                m.density
-            ));
-        }
-    });
+    egui::ComboBox::from_label("material").selected_text(presets.get(set.material).map_or("", |m| m.name.as_str()).to_string()).show_ui(
+        ui,
+        |ui| {
+            for (i, m) in presets.iter().enumerate() {
+                ui.selectable_value(&mut set.material, i, m.name.as_str()).on_hover_text(format!(
+                    "E {:.0} GPa, yield {:.0} MPa, {:.0} kg/m³ (typical values)",
+                    m.youngs_modulus / 1e9,
+                    m.yield_strength / 1e6,
+                    m.density
+                ));
+            }
+        },
+    );
     let mut auto = set.divisions == 0;
-    if ui.checkbox(&mut auto, "Choose the cube size for me").on_hover_text("The coarsest cubes that fill the part to within 3% of its volume, so thin walls keep their thickness").changed() {
+    if ui
+        .checkbox(&mut auto, "Choose the cube size for me")
+        .on_hover_text("The coarsest cubes that fill the part to within 3% of its volume, so thin walls keep their thickness")
+        .changed()
+    {
         set.divisions = if auto { 0 } else { 60 };
     }
     if !auto {
@@ -489,11 +509,17 @@ pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
             ui.add(egui::DragValue::new(&mut set.divisions).range(10..=400));
         });
         let cube = s.longest_mm / set.divisions.max(1) as f64;
-        ui.label(RichText::new(match s.thickness_mm {
-            Some(t) if cube > t / 2.0 + 1e-9 => format!("Cubes of {cube:.2} mm: fewer than two across the {t} mm sheet; raise the number for a true result"),
-            Some(t) => format!("Cubes of {cube:.2} mm ({:.1} across the {t} mm sheet)", t / cube),
-            None => format!("Cubes of {cube:.2} mm; walls want two or more across"),
-        }).weak().small());
+        ui.label(
+            RichText::new(match s.thickness_mm {
+                Some(t) if cube > t / 2.0 + 1e-9 => {
+                    format!("Cubes of {cube:.2} mm: fewer than two across the {t} mm sheet; raise the number for a true result")
+                }
+                Some(t) => format!("Cubes of {cube:.2} mm ({:.1} across the {t} mm sheet)", t / cube),
+                None => format!("Cubes of {cube:.2} mm; walls want two or more across"),
+            })
+            .weak()
+            .small(),
+        );
     }
     if set != s.settings {
         actions.push(UiAction::StressSet(set));
@@ -547,7 +573,11 @@ pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
             let c = ramp(k as f64 / (steps - 1) as f64);
             let x0 = rect.left() + rect.width() * k as f32 / steps as f32;
             let x1 = rect.left() + rect.width() * (k + 1) as f32 / steps as f32;
-            ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.bottom())), 0.0, Color32::from_rgb(c[0], c[1], c[2]));
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.bottom())),
+                0.0,
+                Color32::from_rgb(c[0], c[1], c[2]),
+            );
         }
         ui.horizontal(|ui| {
             ui.label(RichText::new("0").small());
@@ -562,7 +592,11 @@ pub fn panel(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
             actions.push(UiAction::StressShow(show, exaggerate));
         }
         if !r.converged {
-            ui.label(RichText::new("The solver stopped before it settled: the numbers are rough.").color(Color32::from_rgb(220, 140, 20)).small());
+            ui.label(
+                RichText::new("The solver stopped before it settled: the numbers are rough.")
+                    .color(Color32::from_rgb(220, 140, 20))
+                    .small(),
+            );
         }
         for n in &r.notes {
             ui.label(RichText::new(format!("Note: {n}.")).weak().small());

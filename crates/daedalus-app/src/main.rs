@@ -111,9 +111,7 @@ fn flatten_command(args: &[String]) {
         if i % 2 == 0 {
             flanges.push(number(tok, "flange length"));
         } else {
-            let Some((angle, radius)) = tok.split_once(':') else {
-                fail(&format!("bend '{tok}' must look like ANGLE:RADIUS, e.g. 90:2"))
-            };
+            let Some((angle, radius)) = tok.split_once(':') else { fail(&format!("bend '{tok}' must look like ANGLE:RADIUS, e.g. 90:2")) };
             bends.push(Bend { angle_deg: number(angle, "bend angle"), inside_radius: number(radius, "bend radius") });
         }
     }

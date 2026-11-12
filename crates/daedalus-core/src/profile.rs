@@ -134,14 +134,17 @@ fn uncover(m: &mut Mesh, plane: &Plane, inner: &[Option<[f64; 2]>]) -> Vec<usize
     let holes: Vec<Vec<Vec<[f64; 2]>>> = (0..n).map(|f| m.holes_of(f).iter().map(|h| ring(h)).collect()).collect();
     let boxes: Vec<[f64; 4]> = outlines
         .iter()
-        .map(|r| r.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]))
+        .map(|r| {
+            r.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
+        })
         .collect();
     // in face g's own area
     let on = |g: usize, q: [f64; 2]| {
         let b = boxes[g];
         q[0] >= b[0] && q[0] <= b[2] && q[1] >= b[1] && q[1] <= b[3] && inside(&outlines[g], q) && !holes[g].iter().any(|h| inside(h, q))
     };
-    let size = |r: &[[f64; 2]]| (0..r.len()).map(|i| r[i][0] * r[(i + 1) % r.len()][1] - r[(i + 1) % r.len()][0] * r[i][1]).sum::<f64>().abs();
+    let size =
+        |r: &[[f64; 2]]| (0..r.len()).map(|i| r[i][0] * r[(i + 1) % r.len()][1] - r[(i + 1) % r.len()][0] * r[i][1]).sum::<f64>().abs();
     // the smallest face each face lies on
     let mut corners: Vec<Option<HashSet<u32>>> = vec![None; n];
     let mut under: Vec<Option<usize>> = vec![None; n];
@@ -273,9 +276,9 @@ impl<'a> Drawing<'a> {
         // cross between them), so the grid finds everything within any line's tolerance by looking a few times that far
         let most = Mesh { positions: points.to_vec(), ..Default::default() }.tolerance();
         let flat: Vec<[f64; 2]> = points.iter().map(|&p| plane.to_local(p)).collect();
-        let (lo, hi) = flat.iter().fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), p| {
-            ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])
-        });
+        let (lo, hi) = flat
+            .iter()
+            .fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), p| ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])]));
         let (lo, hi) = if points.is_empty() { ([0.0; 2], [0.0; 2]) } else { (lo, hi) };
         Drawing {
             plane,
@@ -596,12 +599,27 @@ impl Grid {
         let count = |s: f64| ((s / cell) as usize + 1).min(side + 1);
         let size = [count(span[0]), count(span[1])];
         let cells = size[0] * size[1];
-        Grid { at, cell, size, pad, corners: vec![Vec::new(); cells], edges: vec![Vec::new(); cells], entries: 0, budget: 64 * points + 65536, seen: Vec::new(), stamp: 0 }
+        Grid {
+            at,
+            cell,
+            size,
+            pad,
+            corners: vec![Vec::new(); cells],
+            edges: vec![Vec::new(); cells],
+            entries: 0,
+            budget: 64 * points + 65536,
+            seen: Vec::new(),
+            stamp: 0,
+        }
     }
 
     fn index(&self, x: f64, axis: usize) -> usize {
         let k = ((x - self.at[axis]) / self.cell).floor();
-        if k >= 0.0 { (k as usize).min(self.size[axis] - 1) } else { 0 }
+        if k >= 0.0 {
+            (k as usize).min(self.size[axis] - 1)
+        } else {
+            0
+        }
     }
 
     /// The cells that hold anything within `pad` of the box lo-hi: x from-to, y from-to.
@@ -783,10 +801,12 @@ mod tests {
 
     #[test]
     fn a_round_wall_hides_its_upright_edges() {
-        let ring: Vec<[f64; 2]> = (0..24).map(|i| {
-            let a = i as f64 / 24.0 * std::f64::consts::TAU;
-            [a.cos(), a.sin()]
-        }).collect();
+        let ring: Vec<[f64; 2]> = (0..24)
+            .map(|i| {
+                let a = i as f64 / 24.0 * std::f64::consts::TAU;
+                [a.cos(), a.sin()]
+            })
+            .collect();
         let cap = faces(&[ring], &Plane::ground()).unwrap();
         let solid = extrude(&cap, [0.0, 0.0, 1.0], 0.5);
         assert_eq!(solid.seams.len(), 24, "every upright edge of a 24-sided round");
@@ -810,10 +830,12 @@ mod tests {
     }
 
     fn round(c: [f64; 2], r: f64, n: usize) -> Vec<[f64; 2]> {
-        (0..n).map(|i| {
-            let a = i as f64 / n as f64 * std::f64::consts::TAU;
-            [c[0] + r * a.cos(), c[1] + r * a.sin()]
-        }).collect()
+        (0..n)
+            .map(|i| {
+                let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                [c[0] + r * a.cos(), c[1] + r * a.sin()]
+            })
+            .collect()
     }
 
     /// Planes to draw on: the ground, and a sloping one far from the origin (larger coordinates, so a larger tolerance).
@@ -852,16 +874,39 @@ mod tests {
         // a keyhole, as the logos in my SketchUp models come: the outline runs in along a bridge of three lines to a loop
         // inside, round it, and back out the same way
         let keyhole = vec![
-            [0.0, 0.0], [10.0, 0.0], [10.0, 1.0], [10.0, 2.0], [10.0, 3.0],
-            [8.0, 3.0], [8.0, 6.0], [12.0, 6.0], [12.0, 3.0], [10.0, 3.0],
-            [10.0, 2.0], [10.0, 1.0], [10.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0],
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 1.0],
+            [10.0, 2.0],
+            [10.0, 3.0],
+            [8.0, 3.0],
+            [8.0, 6.0],
+            [12.0, 6.0],
+            [12.0, 3.0],
+            [10.0, 3.0],
+            [10.0, 2.0],
+            [10.0, 1.0],
+            [10.0, 0.0],
+            [20.0, 0.0],
+            [20.0, 20.0],
+            [0.0, 20.0],
         ];
         // two squares touching at one corner, as one outline
         let eight = vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [4.0, 2.0], [4.0, 4.0], [2.0, 4.0], [2.0, 2.0], [0.0, 2.0]];
         // a hole touching the outline's corner, and one touching another hole's corner
-        let touching = vec![square(0.0, 0.0, 10.0), vec![[0.0, 0.0], [3.0, 1.0], [1.0, 3.0]], square(5.0, 5.0, 2.0), vec![[7.0, 7.0], [9.0, 7.5], [8.0, 9.0]]];
+        let touching = vec![
+            square(0.0, 0.0, 10.0),
+            vec![[0.0, 0.0], [3.0, 1.0], [1.0, 3.0]],
+            square(5.0, 5.0, 2.0),
+            vec![[7.0, 7.0], [9.0, 7.5], [8.0, 9.0]],
+        ];
         for plane in planes() {
-            for (outlines, what) in [(vec![keyhole.clone()], "keyhole"), (vec![keyhole.clone(), round([4.0, 12.0], 2.0, 9)], "keyhole with a hole"), (vec![eight.clone()], "figure eight"), (touching.clone(), "touching holes")] {
+            for (outlines, what) in [
+                (vec![keyhole.clone()], "keyhole"),
+                (vec![keyhole.clone(), round([4.0, 12.0], 2.0, 9)], "keyhole with a hole"),
+                (vec![eight.clone()], "figure eight"),
+                (touching.clone(), "touching holes"),
+            ] {
                 let counts = same_both_ways(&outlines, &plane);
                 assert_eq!(counts.lines, 0, "{what}: no line meets anything but corners");
                 assert!(counts.loops > 0, "{what}: a loop closed through earlier lines");
@@ -923,9 +968,22 @@ mod tests {
         // the keyhole: in along a bridge of three lines to a 4 x 3 loop, round it and back; drawn from a corner before the
         // bridge, the loop closed first and the outline filled it in
         let keyhole = vec![
-            [0.0, 0.0], [10.0, 0.0], [10.0, 1.0], [10.0, 2.0], [10.0, 3.0],
-            [8.0, 3.0], [8.0, 6.0], [12.0, 6.0], [12.0, 3.0], [10.0, 3.0],
-            [10.0, 2.0], [10.0, 1.0], [10.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0],
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 1.0],
+            [10.0, 2.0],
+            [10.0, 3.0],
+            [8.0, 3.0],
+            [8.0, 6.0],
+            [12.0, 6.0],
+            [12.0, 3.0],
+            [10.0, 3.0],
+            [10.0, 2.0],
+            [10.0, 1.0],
+            [10.0, 0.0],
+            [20.0, 0.0],
+            [20.0, 20.0],
+            [0.0, 20.0],
         ];
         let opening = corners_of(&[[10.0, 3.0], [8.0, 3.0], [8.0, 6.0], [12.0, 6.0], [12.0, 3.0]]);
         // the loop wound against the outline (as a hole is) or with it: by the even-odd rule an opening either way
@@ -980,8 +1038,18 @@ mod tests {
         }
         // a bridge out to a square of its own: two faces, as the loops enclose
         let pair = vec![
-            [0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [7.0, 2.0], [7.0, 0.0], [9.0, 0.0],
-            [9.0, 4.0], [7.0, 4.0], [7.0, 2.0], [4.0, 2.0], [4.0, 4.0], [0.0, 4.0],
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 2.0],
+            [7.0, 2.0],
+            [7.0, 0.0],
+            [9.0, 0.0],
+            [9.0, 4.0],
+            [7.0, 4.0],
+            [7.0, 2.0],
+            [4.0, 2.0],
+            [4.0, 4.0],
+            [0.0, 4.0],
         ];
         for plane in planes() {
             for r in every_start(&pair) {
@@ -999,8 +1067,23 @@ mod tests {
         // in along a bridge of three lines to an opening wound with the outline: the outline's loop closed last, and the
         // point `closing` tries (just inside its first corner) lay in the opening, closed first, so its lines were left
         let ring = vec![
-            [120.0, 390.0], [120.0, 0.0], [60.0, 0.0], [60.0, 80.0], [60.0, 160.0], [60.0, 240.0], [90.0, 240.0], [90.0, 300.0],
-            [60.0, 300.0], [30.0, 300.0], [30.0, 240.0], [60.0, 240.0], [60.0, 160.0], [60.0, 80.0], [60.0, 0.0], [0.0, 0.0], [0.0, 390.0],
+            [120.0, 390.0],
+            [120.0, 0.0],
+            [60.0, 0.0],
+            [60.0, 80.0],
+            [60.0, 160.0],
+            [60.0, 240.0],
+            [90.0, 240.0],
+            [90.0, 300.0],
+            [60.0, 300.0],
+            [30.0, 300.0],
+            [30.0, 240.0],
+            [60.0, 240.0],
+            [60.0, 160.0],
+            [60.0, 80.0],
+            [60.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 390.0],
         ];
         let plane = Plane::ground();
         same_both_ways(&[ring.clone()], &plane);
@@ -1010,9 +1093,30 @@ mod tests {
         // 4 x 13 mm with two openings, on a sloping plane far from the origin: the plate's first triangle was a sliver along
         // its bottom edge (corners in a row there, a hair off straight so far out), and the plate was taken for open
         let ring: Vec<[f64; 2]> = [
-            [1.0, 3.0], [2.0, 3.0], [2.0, 1.5], [2.0, 0.0], [0.0, 0.0], [0.0, 13.0], [2.0, 13.0], [2.0, 10.0], [3.0, 10.0], [3.0, 8.0],
-            [2.0, 8.0], [1.0, 8.0], [1.0, 10.0], [2.0, 10.0], [2.0, 13.0], [4.0, 13.0], [4.0, 0.0], [2.0, 0.0], [2.0, 1.5], [2.0, 3.0],
-            [3.0, 3.0], [3.0, 5.0], [2.0, 5.0], [1.0, 5.0],
+            [1.0, 3.0],
+            [2.0, 3.0],
+            [2.0, 1.5],
+            [2.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 13.0],
+            [2.0, 13.0],
+            [2.0, 10.0],
+            [3.0, 10.0],
+            [3.0, 8.0],
+            [2.0, 8.0],
+            [1.0, 8.0],
+            [1.0, 10.0],
+            [2.0, 10.0],
+            [2.0, 13.0],
+            [4.0, 13.0],
+            [4.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 1.5],
+            [2.0, 3.0],
+            [3.0, 3.0],
+            [3.0, 5.0],
+            [2.0, 5.0],
+            [1.0, 5.0],
         ]
         .iter()
         .map(|p| [p[0] * 0.001, p[1] * 0.001])
@@ -1176,7 +1280,8 @@ mod tests {
             let mut outlines: Vec<Vec<[f64; 2]>> = vec![walk];
             outlines.extend(plain.iter().map(|r| if rng.below(2) == 0 { r.iter().rev().copied().collect() } else { r.clone() }));
             let outlines: Vec<Vec<[f64; 2]>> = outlines.iter().map(|r| r.iter().map(|p| [p[0] * s, p[1] * s]).collect()).collect();
-            let mut holes: Vec<Vec<[i64; 2]>> = holes.iter().map(|r| r.iter().map(|p| p.map(|c| (c as f64 * s).round() as i64)).collect()).collect();
+            let mut holes: Vec<Vec<[i64; 2]>> =
+                holes.iter().map(|r| r.iter().map(|p| p.map(|c| (c as f64 * s).round() as i64)).collect()).collect();
             for r in &mut holes {
                 r.sort();
             }
@@ -1205,7 +1310,8 @@ mod tests {
         // PROFILE_CASES=n for more
         fn shape(rng: &mut Rng) -> Vec<[f64; 2]> {
             let lattice = rng.below(2) == 0;
-            let at = |rng: &mut Rng, span: f64| if lattice { (rng.below((span * 2.0) as usize + 1) as f64) * 0.5 } else { rng.unit() * span };
+            let at =
+                |rng: &mut Rng, span: f64| if lattice { (rng.below((span * 2.0) as usize + 1) as f64) * 0.5 } else { rng.unit() * span };
             let mut r = match rng.below(4) {
                 0 => {
                     let (x, y) = (at(rng, 8.0), at(rng, 8.0));
@@ -1216,10 +1322,12 @@ mod tests {
                 2 => {
                     let (c, n) = ([at(rng, 10.0), at(rng, 10.0)], 5 + rng.below(8));
                     let size = 0.5 + rng.unit() * 4.0;
-                    (0..n).map(|i| {
-                        let (a, r) = (i as f64 / n as f64 * std::f64::consts::TAU, size * (0.4 + 0.6 * rng.unit()));
-                        [c[0] + r * a.cos(), c[1] + r * a.sin()]
-                    }).collect()
+                    (0..n)
+                        .map(|i| {
+                            let (a, r) = (i as f64 / n as f64 * std::f64::consts::TAU, size * (0.4 + 0.6 * rng.unit()));
+                            [c[0] + r * a.cos(), c[1] + r * a.sin()]
+                        })
+                        .collect()
                 }
                 _ => {
                     // a keyhole: in along a bridge to a loop inside (wound either way), round it and back out

@@ -19,7 +19,10 @@ struct HalfEdge {
 pub enum TopologyError {
     /// A directed edge is used by more than one face: non-manifold geometry or
     /// inconsistent face winding.
-    NonManifoldEdge { from: u32, to: u32 },
+    NonManifoldEdge {
+        from: u32,
+        to: u32,
+    },
     DegenerateFace(usize),
     VertexOutOfRange(u32),
     /// The two vertices are not distinct, non-adjacent corners of the face.
@@ -119,7 +122,14 @@ impl HalfEdgeMesh {
     }
 
     pub fn to_mesh(&self) -> Mesh {
-        let mut m = Mesh { positions: self.positions.clone(), faces: Vec::new(), lines: self.lines.clone(), seams: self.seams.clone(), colors: self.colors.clone(), holes: Vec::new() };
+        let mut m = Mesh {
+            positions: self.positions.clone(),
+            faces: Vec::new(),
+            lines: self.lines.clone(),
+            seams: self.seams.clone(),
+            colors: self.colors.clone(),
+            holes: Vec::new(),
+        };
         for f in 0..self.faces.len() {
             m.faces.push(self.face_vertices(f));
             m.set_holes(f, self.face_holes(f));
@@ -137,11 +147,7 @@ impl HalfEdgeMesh {
 
     /// Number of undirected edges.
     pub fn edge_count(&self) -> usize {
-        self.half_edges
-            .iter()
-            .enumerate()
-            .filter(|(i, h)| h.twin == NONE || (*i as u32) < h.twin)
-            .count()
+        self.half_edges.iter().enumerate().filter(|(i, h)| h.twin == NONE || (*i as u32) < h.twin).count()
     }
 
     /// Half-edges without a twin.
@@ -171,7 +177,9 @@ impl HalfEdgeMesh {
 
     /// The openings in `face`, as vertex loops (wound against its outline).
     pub fn face_holes(&self, face: usize) -> Vec<Vec<u32>> {
-        self.holes.get(face).map_or(Vec::new(), |hs| hs.iter().map(|&s| self.walk(s).into_iter().map(|h| self.half_edges[h as usize].origin).collect()).collect())
+        self.holes.get(face).map_or(Vec::new(), |hs| {
+            hs.iter().map(|&s| self.walk(s).into_iter().map(|h| self.half_edges[h as usize].origin).collect()).collect()
+        })
     }
 
     /// Whether `face` has openings.
@@ -262,12 +270,12 @@ impl HalfEdgeMesh {
         let (ring, holes) = m.remove_face_loops(face);
         let still: std::collections::HashSet<(u32, u32)> = m.edges().into_iter().collect();
         for r in std::iter::once(&ring).chain(&holes) {
-          for i in 0..r.len() {
-            let (a, b) = (r[i], r[(i + 1) % r.len()]);
-            if !still.contains(&(a.min(b), a.max(b))) {
-                m.lines.push([a, b]);
+            for i in 0..r.len() {
+                let (a, b) = (r[i], r[(i + 1) % r.len()]);
+                if !still.contains(&(a.min(b), a.max(b))) {
+                    m.lines.push([a, b]);
+                }
             }
-          }
         }
         *self = Self::from_mesh(&m)?;
         Ok(())
@@ -354,7 +362,11 @@ impl HalfEdgeMesh {
                         let r = &m.faces[f];
                         (0..r.len()).any(|i| {
                             let s = key(r[i], r[(i + 1) % r.len()]);
-                            seams.contains(&s) && take.iter().any(|&t| { let q = &m.faces[t]; (0..q.len()).any(|j| key(q[j], q[(j + 1) % q.len()]) == s) })
+                            seams.contains(&s)
+                                && take.iter().any(|&t| {
+                                    let q = &m.faces[t];
+                                    (0..q.len()).any(|j| key(q[j], q[(j + 1) % q.len()]) == s)
+                                })
                         })
                     })
                     .collect();
@@ -683,7 +695,13 @@ pub(crate) fn closing(mesh: &Mesh, mut ring: Vec<u32>, tol: f64) -> Option<Closi
     }
 
     // which way it faces: up if it lies flat, else toward the front (-Y), else toward +X
-    let want = if n[2].abs() > 0.1 { n[2] > 0.0 } else if n[1].abs() > 0.1 { n[1] < 0.0 } else { n[0] > 0.0 };
+    let want = if n[2].abs() > 0.1 {
+        n[2] > 0.0
+    } else if n[1].abs() > 0.1 {
+        n[1] < 0.0
+    } else {
+        n[0] > 0.0
+    };
     if !want {
         ring.reverse();
     }
@@ -703,7 +721,13 @@ pub(crate) fn closing(mesh: &Mesh, mut ring: Vec<u32>, tol: f64) -> Option<Closi
 /// Whether `p` lies inside the polygon `ring` (in the plane with this normal), seen along the normal's main axis.
 fn point_in_ring(ring: &[[f64; 3]], p: [f64; 3], normal: [f64; 3]) -> bool {
     let a = normal.map(f64::abs);
-    let (x, y) = if a[0] >= a[1] && a[0] >= a[2] { (1, 2) } else if a[1] >= a[2] { (2, 0) } else { (0, 1) };
+    let (x, y) = if a[0] >= a[1] && a[0] >= a[2] {
+        (1, 2)
+    } else if a[1] >= a[2] {
+        (2, 0)
+    } else {
+        (0, 1)
+    };
     let mut inside = false;
     for i in 0..ring.len() {
         let (u, v) = (ring[i], ring[(i + 1) % ring.len()]);
@@ -764,14 +788,7 @@ mod tests {
             }
         }
         // Outward-facing, counter-clockwise quads.
-        for f in [
-            [0, 2, 3, 1],
-            [4, 5, 7, 6],
-            [0, 1, 5, 4],
-            [2, 6, 7, 3],
-            [0, 4, 6, 2],
-            [1, 3, 7, 5],
-        ] {
+        for f in [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]] {
             m.add_face(f.to_vec());
         }
         m
@@ -799,10 +816,7 @@ mod tests {
         c.faces[1] = vec![4, 6, 7, 5]; // flipped: now shares directed edges with a neighbour
         c.faces[2] = vec![0, 1, 5, 4];
         c.faces[0] = vec![0, 1, 3, 2]; // flipped
-        assert!(matches!(
-            HalfEdgeMesh::from_mesh(&c),
-            Err(TopologyError::NonManifoldEdge { .. })
-        ));
+        assert!(matches!(HalfEdgeMesh::from_mesh(&c), Err(TopologyError::NonManifoldEdge { .. })));
     }
 
     #[test]

@@ -95,7 +95,8 @@ fn quote(t: &str) -> String {
 }
 
 fn numbers(parts: &[String], n: usize, what: &str, line: usize) -> Result<Vec<f64>, IoError> {
-    let c: Vec<f64> = parts.iter().map(|p| p.parse::<f64>()).collect::<Result<_, _>>().map_err(|_| IoError::Parse(format!("line {line}: {what}")))?;
+    let c: Vec<f64> =
+        parts.iter().map(|p| p.parse::<f64>()).collect::<Result<_, _>>().map_err(|_| IoError::Parse(format!("line {line}: {what}")))?;
     if c.len() != n {
         return Err(IoError::Parse(format!("line {line}: {what}")));
     }
@@ -130,7 +131,9 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
     }
     let version: u32 = head.get(1).and_then(|v| v.parse().ok()).ok_or_else(|| IoError::Parse("no version on the first line".into()))?;
     if version > VERSION {
-        return Err(IoError::Unsupported(format!("a .daedalus file of version {version}, made by a newer Daedalus (this one reads up to {VERSION})")));
+        return Err(IoError::Unsupported(format!(
+            "a .daedalus file of version {version}, made by a newer Daedalus (this one reads up to {VERSION})"
+        )));
     }
     let mut scene = Scene::default();
     // the block being read: None the top level, Some(d) definition d
@@ -180,7 +183,11 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
                 if a.max(b) as usize >= mesh.positions.len() {
                     return Err(IoError::Parse(format!("line {n}: vertex {} is not defined above", a.max(b))));
                 }
-                if kind == "l" { mesh.lines.push([a, b]) } else { mesh.seams.push([a, b]) }
+                if kind == "l" {
+                    mesh.lines.push([a, b])
+                } else {
+                    mesh.seams.push([a, b])
+                }
             }
             "c" if v2 => {
                 let v = indices(rest, "a colour is a face number and red, green, blue", n)?;
@@ -214,7 +221,15 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
                 };
                 // after the kind: "glue" and "cut" (a component glued to faces, cutting an opening in the one it is on)
                 let flag = |f: &str| rest.iter().skip(2).any(|w| w == f);
-                scene.defs.push(Definition { name, component, glue: flag("glue"), cut: flag("cut"), attributes: Vec::new(), part: None, ctx: Context::default() });
+                scene.defs.push(Definition {
+                    name,
+                    component,
+                    glue: flag("glue"),
+                    cut: flag("cut"),
+                    attributes: Vec::new(),
+                    part: None,
+                    ctx: Context::default(),
+                });
                 block = Some(scene.defs.len() - 1);
             }
             "end" if v3 => {
@@ -255,7 +270,11 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
                 if rest.len() < 2 || rest.len() > 3 {
                     return Err(IoError::Parse(format!("line {n}: an attribute is a name, a value or formula, and maybe a label")));
                 }
-                scene.defs[d].attributes.push(daedalus_core::dynamic::Attribute { name: rest[0].clone(), formula: rest[1].clone(), label: rest.get(2).cloned() });
+                scene.defs[d].attributes.push(daedalus_core::dynamic::Attribute {
+                    name: rest[0].clone(),
+                    formula: rest[1].clone(),
+                    label: rest.get(2).cloned(),
+                });
             }
             "part" if version >= 6 => {
                 let Some(d) = block else { return Err(IoError::Parse(format!("line {n}: a part belongs inside a definition"))) };
@@ -384,11 +403,19 @@ pub fn write_scene(scene: &Scene) -> Vec<u8> {
     } else {
         1
     };
-    let mut s = format!("{MAGIC} {version}\n# Daedalus CAD model: v x y z (metres), f vertex numbers counter-clockwise from outside, l a loose line\n");
+    let mut s = format!(
+        "{MAGIC} {version}\n# Daedalus CAD model: v x y z (metres), f vertex numbers counter-clockwise from outside, l a loose line\n"
+    );
     write_mesh(&mut s, &scene.root.mesh);
     write_instances(&mut s, &scene.root.instances);
     for d in &scene.defs {
-        s.push_str(&format!("def {} {}{}{}\n", quote(&d.name), if d.component { "component" } else { "group" }, if d.glue { " glue" } else { "" }, if d.cut { " cut" } else { "" }));
+        s.push_str(&format!(
+            "def {} {}{}{}\n",
+            quote(&d.name),
+            if d.component { "component" } else { "group" },
+            if d.glue { " glue" } else { "" },
+            if d.cut { " cut" } else { "" }
+        ));
         write_mesh(&mut s, &d.ctx.mesh);
         write_instances(&mut s, &d.ctx.instances);
         for a in &d.attributes {
@@ -455,7 +482,16 @@ mod tests {
 
     fn cube() -> Mesh {
         let mut m = Mesh::new();
-        for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ] {
             m.add_vertex(p);
         }
         for f in [vec![0, 3, 2, 1], vec![4, 5, 6, 7], vec![0, 1, 5, 4], vec![1, 2, 6, 5], vec![2, 3, 7, 6], vec![3, 0, 4, 7]] {
@@ -524,9 +560,25 @@ mod tests {
     #[test]
     fn groups_components_and_notes_come_back() {
         let mut s = Scene::from_mesh(cube());
-        s.defs.push(Definition { name: "Shelf \"A\"".into(), component: true, glue: true, cut: true, attributes: Vec::new(), part: None, ctx: Context { mesh: cube(), instances: vec![] } });
+        s.defs.push(Definition {
+            name: "Shelf \"A\"".into(),
+            component: true,
+            glue: true,
+            cut: true,
+            attributes: Vec::new(),
+            part: None,
+            ctx: Context { mesh: cube(), instances: vec![] },
+        });
         let turn = Xform::from_fn(|p| [-p[1] + 2.0, p[0], p[2] + 0.5]);
-        s.defs.push(Definition { name: "Group#1".into(), component: false, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: Mesh::new(), instances: vec![Instance { def: 0, xf: turn }] } });
+        s.defs.push(Definition {
+            name: "Group#1".into(),
+            component: false,
+            glue: false,
+            cut: false,
+            attributes: Vec::new(),
+            part: None,
+            ctx: Context { mesh: Mesh::new(), instances: vec![Instance { def: 0, xf: turn }] },
+        });
         s.root.instances.push(Instance { def: 1, xf: Xform::translation([3.0, 0.0, 0.0]) });
         s.root.instances.push(Instance { def: 0, xf: Xform::IDENTITY });
         s.notes.guides = vec![Guide::Point([1.0, 2.0, 3.0]), Guide::Line([0.0; 3], [0.0, 1.0, 0.0])];
@@ -545,7 +597,11 @@ mod tests {
         assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 4\n"));
         assert_eq!(read_scene(&bytes).unwrap(), s);
         // Dynamic Components attributes: version 5
-        s.defs[0].attributes.push(daedalus_core::dynamic::Attribute { name: "Width".into(), formula: "600mm".into(), label: Some("Width \"W\"".into()) });
+        s.defs[0].attributes.push(daedalus_core::dynamic::Attribute {
+            name: "Width".into(),
+            formula: "600mm".into(),
+            label: Some("Width \"W\"".into()),
+        });
         s.defs[0].attributes.push(daedalus_core::dynamic::Attribute { name: "LenX".into(), formula: "=Width*2".into(), label: None });
         let bytes = write_scene(&s);
         assert!(String::from_utf8(bytes.clone()).unwrap().starts_with("daedalus 5\n"));
@@ -572,7 +628,16 @@ mod tests {
     #[test]
     fn a_face_with_a_hole_is_saved_and_read_back() {
         let mut m = Mesh::new();
-        for p in [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 4.0, 0.0], [0.0, 4.0, 0.0], [1.0, 1.0, 0.0], [3.0, 1.0, 0.0], [3.0, 3.0, 0.0], [1.0, 3.0, 0.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [4.0, 4.0, 0.0],
+            [0.0, 4.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [3.0, 3.0, 0.0],
+            [1.0, 3.0, 0.0],
+        ] {
             m.add_vertex(p);
         }
         m.add_face(vec![0, 1, 2, 3]);
@@ -591,7 +656,16 @@ mod tests {
         // version 2: the ring as two faces and two seams, as Daedalus saved it before faces had holes
         let old = "daedalus 2\nv 0 0 0\nv 9 0 0\nv 9 9 0\nv 0 9 0\nv 2 2 0\nv 7 2 0\nv 7 7 0\nv 2 7 0\n";
         let mut m = Mesh::new();
-        for p in [[0.0, 0.0, 0.0], [9.0, 0.0, 0.0], [9.0, 9.0, 0.0], [0.0, 9.0, 0.0], [2.0, 2.0, 0.0], [7.0, 2.0, 0.0], [7.0, 7.0, 0.0], [2.0, 7.0, 0.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [9.0, 0.0, 0.0],
+            [9.0, 9.0, 0.0],
+            [0.0, 9.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [7.0, 2.0, 0.0],
+            [7.0, 7.0, 0.0],
+            [2.0, 7.0, 0.0],
+        ] {
             m.add_vertex(p);
         }
         m.add_face(vec![0, 1, 2, 3]);

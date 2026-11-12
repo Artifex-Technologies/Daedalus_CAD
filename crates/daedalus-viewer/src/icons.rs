@@ -141,7 +141,10 @@ impl Draw {
         for i in (0..n).step_by(2) {
             let t0 = i as f32 / n as f32;
             let t1 = (i + 1) as f32 / n as f32;
-            self.line_with(&[(a.0 + (b.0 - a.0) * t0, a.1 + (b.1 - a.1) * t0), (a.0 + (b.0 - a.0) * t1, a.1 + (b.1 - a.1) * t1)], self.thin());
+            self.line_with(
+                &[(a.0 + (b.0 - a.0) * t0, a.1 + (b.1 - a.1) * t0), (a.0 + (b.0 - a.0) * t1, a.1 + (b.1 - a.1) * t1)],
+                self.thin(),
+            );
         }
     }
 
@@ -346,7 +349,12 @@ impl Draw {
                 self.magnifier(0.52, 0.52, 0.2);
             }
             Icon::ZoomExtents => {
-                for &(a, b, c) in &[((0.1, 0.32), (0.1, 0.1), (0.32, 0.1)), ((0.68, 0.1), (0.9, 0.1), (0.9, 0.32)), ((0.1, 0.68), (0.1, 0.9), (0.32, 0.9)), ((0.9, 0.68), (0.9, 0.9), (0.68, 0.9))] {
+                for &(a, b, c) in &[
+                    ((0.1, 0.32), (0.1, 0.1), (0.32, 0.1)),
+                    ((0.68, 0.1), (0.9, 0.1), (0.9, 0.32)),
+                    ((0.1, 0.68), (0.1, 0.9), (0.32, 0.9)),
+                    ((0.9, 0.68), (0.9, 0.9), (0.68, 0.9)),
+                ] {
                     self.line(&[a, b, c]);
                 }
                 self.closed(&[(0.32, 0.32), (0.68, 0.32), (0.68, 0.68), (0.32, 0.68)]);
@@ -378,7 +386,19 @@ impl Draw {
             Icon::FromContours => self.sandbox(None),
             Icon::Tool(Tool::Interact) => {
                 // a pointing hand: the finger up, the fist below, a spark where it touches
-                self.closed(&[(0.42, 0.18), (0.5, 0.12), (0.58, 0.18), (0.58, 0.45), (0.78, 0.5), (0.8, 0.78), (0.62, 0.92), (0.38, 0.92), (0.24, 0.72), (0.3, 0.55), (0.42, 0.6)]);
+                self.closed(&[
+                    (0.42, 0.18),
+                    (0.5, 0.12),
+                    (0.58, 0.18),
+                    (0.58, 0.45),
+                    (0.78, 0.5),
+                    (0.8, 0.78),
+                    (0.62, 0.92),
+                    (0.38, 0.92),
+                    (0.24, 0.72),
+                    (0.3, 0.55),
+                    (0.42, 0.6),
+                ]);
                 self.line_with(&[(0.58, 0.45), (0.58, 0.62)], self.thin());
                 self.line_with(&[(0.68, 0.48), (0.68, 0.64)], self.thin());
                 self.line_with(&[(0.32, 0.1), (0.24, 0.04)], Stroke::new(1.5_f32, self.accent));
@@ -449,7 +469,9 @@ impl Draw {
                 self.line_with(&[(0.3, 0.7), (0.5, 0.55), (0.7, 0.7)], self.thin());
                 self.line_with(&[(0.5, 0.55), (0.5, 0.35)], self.thin());
             }
-            Icon::Tool(t @ (Tool::OuterShell | Tool::SolidIntersect | Tool::SolidUnion | Tool::SolidSubtract | Tool::SolidTrim | Tool::SolidSplit)) => self.solid(t),
+            Icon::Tool(
+                t @ (Tool::OuterShell | Tool::SolidIntersect | Tool::SolidUnion | Tool::SolidSubtract | Tool::SolidTrim | Tool::SolidSplit),
+            ) => self.solid(t),
             Icon::Tool(Tool::Walk) => {
                 // two footprints: a sole and a heel each
                 for (x, y) in [(0.3, 0.42), (0.68, 0.22)] {
@@ -486,7 +508,9 @@ impl Draw {
                 // a shaded cube with brick courses on its faces
                 self.cube(Hidden::None, Some(self.accent));
                 let t = self.thin();
-                for (a, b) in [((0.14, 0.45), (0.5, 0.63)), ((0.14, 0.58), (0.5, 0.76)), ((0.5, 0.63), (0.86, 0.45)), ((0.5, 0.76), (0.86, 0.58))] {
+                for (a, b) in
+                    [((0.14, 0.45), (0.5, 0.63)), ((0.14, 0.58), (0.5, 0.76)), ((0.5, 0.63), (0.86, 0.45)), ((0.5, 0.76), (0.86, 0.58))]
+                {
                     self.line_with(&[a, b], t);
                 }
                 for (a, b) in [((0.32, 0.54), (0.32, 0.67)), ((0.68, 0.54), (0.68, 0.67))] {
@@ -602,7 +626,11 @@ impl Draw {
             }
             Planned::Axes => {
                 let o = (0.36, 0.64);
-                for (end, c) in [((0.9, 0.84), Color32::from_rgb(214, 70, 52)), ((0.86, 0.36), Color32::from_rgb(52, 160, 72)), ((0.36, 0.08), Color32::from_rgb(70, 120, 220))] {
+                for (end, c) in [
+                    ((0.9, 0.84), Color32::from_rgb(214, 70, 52)),
+                    ((0.86, 0.36), Color32::from_rgb(52, 160, 72)),
+                    ((0.36, 0.08), Color32::from_rgb(70, 120, 220)),
+                ] {
                     self.line_with(&[o, end], Stroke::new(self.w / 15.0, if self.dim { c.gamma_multiply(0.35) } else { c }));
                 }
             }
@@ -645,4 +673,3 @@ pub fn name(icon: Icon) -> String {
         Icon::Planned(pl) => format!("{} (not built yet)", pl.label()),
     }
 }
-

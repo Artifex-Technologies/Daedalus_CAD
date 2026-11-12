@@ -1,6 +1,6 @@
+use crate::weld::Welder;
 use crate::{IoError, MeshExporter, MeshImporter};
 use daedalus_core::Mesh;
-use crate::weld::Welder;
 
 pub struct Stl;
 
@@ -38,8 +38,7 @@ impl MeshImporter for Stl {
                 mesh.add_face(idx);
             }
         } else {
-            let text = std::str::from_utf8(bytes)
-                .map_err(|_| IoError::Parse("STL is neither valid binary nor UTF-8 ASCII".into()))?;
+            let text = std::str::from_utf8(bytes).map_err(|_| IoError::Parse("STL is neither valid binary nor UTF-8 ASCII".into()))?;
             let mut current: Vec<u32> = Vec::new();
             for line in text.lines() {
                 let mut parts = line.split_whitespace();
@@ -83,11 +82,7 @@ impl MeshExporter for Stl {
             let p: Vec<[f64; 3]> = t.iter().map(|&i| mesh.positions[i as usize]).collect();
             let u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
             let v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
-            let mut n = [
-                u[1] * v[2] - u[2] * v[1],
-                u[2] * v[0] - u[0] * v[2],
-                u[0] * v[1] - u[1] * v[0],
-            ];
+            let mut n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
             let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
             if len > 0.0 {
                 n.iter_mut().for_each(|c| *c /= len);

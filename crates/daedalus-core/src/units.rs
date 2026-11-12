@@ -153,7 +153,8 @@ pub fn parse(text: &str, units: Units) -> Option<f64> {
         (feet * 12.0 + inches) * INCH
     } else {
         let lower = t.to_ascii_lowercase();
-        let units_written: [(&str, f64); 7] = [("mm", 0.001), ("cm", 0.01), ("km", 1000.0), ("m", 1.0), ("in", INCH), ("\"", INCH), ("ft", 12.0 * INCH)];
+        let units_written: [(&str, f64); 7] =
+            [("mm", 0.001), ("cm", 0.01), ("km", 1000.0), ("m", 1.0), ("in", INCH), ("\"", INCH), ("ft", 12.0 * INCH)];
         match units_written.iter().find(|(s, _)| lower.ends_with(s)) {
             Some((s, factor)) => number(&t[..t.len() - s.len()])? * factor,
             None => number(t)? * units.metres(),

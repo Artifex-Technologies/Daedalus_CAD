@@ -165,7 +165,13 @@ pub fn outlines(text: &str, height: f64, font: Option<&Path>) -> Option<Vec<Vec<
 
 /// The solid (or, with no depth, flat) geometry of `text` laid on `plane`: each letter built on its own (letters do not
 /// touch, and it keeps the work small), then put together.
-pub fn geometry(text: &str, height: f64, depth: Option<f64>, plane: &daedalus_core::Plane, font: Option<&Path>) -> Result<daedalus_core::Mesh, String> {
+pub fn geometry(
+    text: &str,
+    height: f64,
+    depth: Option<f64>,
+    plane: &daedalus_core::Plane,
+    font: Option<&Path>,
+) -> Result<daedalus_core::Mesh, String> {
     let letters = outlines(text, height, font).ok_or("the font could not be read")?;
     let mut all = daedalus_core::Mesh::new();
     for rings in &letters {

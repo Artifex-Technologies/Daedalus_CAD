@@ -22,7 +22,8 @@ fn uncut_openings(m: &mut HalfEdgeMesh, s: &Scene, open: &[usize], ids: &[usize]
         return Ok(());
     }
     let mut mesh = m.to_mesh();
-    let outlines: Vec<Vec<[f64; 3]>> = ids.iter().filter_map(|&i| ctx.instances.get(i)).filter_map(|inst| crate::opening::footprint(s, open, inst, &mesh)).collect();
+    let outlines: Vec<Vec<[f64; 3]>> =
+        ids.iter().filter_map(|&i| ctx.instances.get(i)).filter_map(|inst| crate::opening::footprint(s, open, inst, &mesh)).collect();
     for o in &outlines {
         crate::opening::uncut(&mut mesh, o);
     }
@@ -75,7 +76,13 @@ fn placed(scene: &Scene, inst: &Instance) -> std::collections::HashMap<String, f
 
 /// The placement attributes X, Y, Z, LenX, LenY, LenZ, RotZ worked out (`v`) made into a copy's transform: what they set
 /// replaces where it is (`inst`) and how big; what they leave alone stays. `size` is its definition's size.
-fn dynamic_xf(size: [f64; 3], attrs: &[crate::dynamic::Attribute], inst: &Instance, given: &std::collections::HashMap<String, f64>, v: &std::collections::HashMap<String, crate::dynamic::Value>) -> Xform {
+fn dynamic_xf(
+    size: [f64; 3],
+    attrs: &[crate::dynamic::Attribute],
+    inst: &Instance,
+    given: &std::collections::HashMap<String, f64>,
+    v: &std::collections::HashMap<String, crate::dynamic::Value>,
+) -> Xform {
     let sets = |n: &str| attrs.iter().any(|a| a.name.eq_ignore_ascii_case(n));
     let num = |n: &str| v.get(n).map(|x| x.num()).unwrap_or_else(|| given.get(n).copied().unwrap_or(0.0));
     let m = &inst.xf.0;
@@ -114,7 +121,12 @@ fn dynamic_xf(size: [f64; 3], attrs: &[crate::dynamic::Attribute], inst: &Instan
 
 /// A copy's built-ins where it is, with the values of the component it sits in under `parent!<name>` (for `Parent!LenX` in
 /// a formula) and COPY = `copy` (0: the copy itself; 1, 2, ...: the copies its Copies attribute adds).
-fn given_for(scene: &Scene, inst: &Instance, parent: &std::collections::HashMap<String, f64>, copy: usize) -> std::collections::HashMap<String, f64> {
+fn given_for(
+    scene: &Scene,
+    inst: &Instance,
+    parent: &std::collections::HashMap<String, f64>,
+    copy: usize,
+) -> std::collections::HashMap<String, f64> {
     let mut given = placed(scene, inst);
     for (k, v) in parent {
         given.insert(format!("parent!{k}"), *v);
@@ -201,7 +213,8 @@ fn apply_dynamic(scene: &mut Scene, open: &[usize], def: usize) -> Result<(), St
     let (size, _) = def_box(scene, def);
     let attrs = scene.defs[def].attributes.clone();
     let parent = owner_values(scene, open);
-    let copies: Vec<usize> = scene.ctx(open).map(|c| (0..c.instances.len()).filter(|&i| c.instances[i].def == def).collect()).unwrap_or_default();
+    let copies: Vec<usize> =
+        scene.ctx(open).map(|c| (0..c.instances.len()).filter(|&i| c.instances[i].def == def).collect()).unwrap_or_default();
     for i in copies {
         let inst = scene.ctx(open).expect("there").instances[i];
         let given = given_for(scene, &inst, &parent, 0);
@@ -374,7 +387,13 @@ impl Model {
     /// The Outliner: every group and component placed, depth first from the top: (depth, name, component, path of instance
     /// numbers from the top level down to it).
     pub fn outline(&self) -> Vec<(usize, String, bool, Vec<usize>)> {
-        fn walk(scene: &Scene, ctx: &crate::scene::Context, path: &mut Vec<usize>, out: &mut Vec<(usize, String, bool, Vec<usize>)>, depth: usize) {
+        fn walk(
+            scene: &Scene,
+            ctx: &crate::scene::Context,
+            path: &mut Vec<usize>,
+            out: &mut Vec<(usize, String, bool, Vec<usize>)>,
+            depth: usize,
+        ) {
             for (i, inst) in ctx.instances.iter().enumerate() {
                 let Some(d) = scene.defs.get(inst.def) else { continue };
                 path.push(i);
@@ -418,10 +437,7 @@ impl Model {
         now
     }
 
-    fn edit<R>(
-        &mut self,
-        f: impl FnOnce(&mut HalfEdgeMesh) -> Result<R, TopologyError>,
-    ) -> Result<R, TopologyError> {
+    fn edit<R>(&mut self, f: impl FnOnce(&mut HalfEdgeMesh) -> Result<R, TopologyError>) -> Result<R, TopologyError> {
         self.edit_with(false, |m, _, _| f(m))
     }
 
@@ -499,9 +515,18 @@ impl Model {
             let xf = Xform::translation(corner);
             let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
             let un = xf.inverse().ok_or(TopologyError::DegenerateNormal)?;
-            let inner: Vec<Instance> = taken.iter().map(|&i| Instance { def: ctx.instances[i].def, xf: un.after(&ctx.instances[i].xf) }).collect();
+            let inner: Vec<Instance> =
+                taken.iter().map(|&i| Instance { def: ctx.instances[i].def, xf: un.after(&ctx.instances[i].xf) }).collect();
             let name = s.new_name(component);
-            s.defs.push(Definition { name, component, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: part.transformed(&to_def), instances: inner } });
+            s.defs.push(Definition {
+                name,
+                component,
+                glue: false,
+                cut: false,
+                attributes: Vec::new(),
+                part: None,
+                ctx: Context { mesh: part.transformed(&to_def), instances: inner },
+            });
             let def = s.defs.len() - 1;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             for &i in taken.iter().rev() {
@@ -528,7 +553,15 @@ impl Model {
             let xf = Xform::translation(back.apply(lo));
             let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
             let name = s.new_name(component);
-            s.defs.push(Definition { name, component, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: mesh.transformed(&to_def), instances: Vec::new() } });
+            s.defs.push(Definition {
+                name,
+                component,
+                glue: false,
+                cut: false,
+                attributes: Vec::new(),
+                part: None,
+                ctx: Context { mesh: mesh.transformed(&to_def), instances: Vec::new() },
+            });
             let def = s.defs.len() - 1;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             ctx.instances.push(Instance { def, xf });
@@ -540,7 +573,14 @@ impl Model {
     /// see `Definition::part`), its faces `faces` in the part's coordinates (metres), put at `place` (model coordinates).
     /// `from_face`: a face of the geometry being edited that the part is made from; it goes, as it would into a component.
     /// One undo step; returns the new instance.
-    pub fn place_part(&mut self, stem: &str, text: String, faces: &Mesh, place: &Xform, from_face: Option<usize>) -> Result<usize, TopologyError> {
+    pub fn place_part(
+        &mut self,
+        stem: &str,
+        text: String,
+        faces: &Mesh,
+        place: &Xform,
+        from_face: Option<usize>,
+    ) -> Result<usize, TopologyError> {
         if faces.faces.is_empty() {
             return Err(nothing());
         }
@@ -556,7 +596,15 @@ impl Model {
             }
             let n = s.defs.iter().filter_map(|d| d.name.strip_prefix(stem)?.strip_prefix('#')?.parse::<u32>().ok()).max().unwrap_or(0);
             let name = format!("{stem}#{}", n + 1);
-            s.defs.push(Definition { name, component: true, glue: false, cut: false, attributes: Vec::new(), part: Some(text), ctx: Context { mesh: faces.clone(), instances: Vec::new() } });
+            s.defs.push(Definition {
+                name,
+                component: true,
+                glue: false,
+                cut: false,
+                attributes: Vec::new(),
+                part: Some(text),
+                ctx: Context { mesh: faces.clone(), instances: Vec::new() },
+            });
             let def = s.defs.len() - 1;
             let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
             ctx.instances.push(Instance { def, xf: back.after(place) });
@@ -634,7 +682,15 @@ impl Model {
                 let xf = Xform::translation(back.apply(lo));
                 let to_def = w.after(&xf).inverse().ok_or(TopologyError::DegenerateNormal)?;
                 let name = s.new_name(false);
-                s.defs.push(Definition { name, component: false, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: r.transformed(&to_def), instances: Vec::new() } });
+                s.defs.push(Definition {
+                    name,
+                    component: false,
+                    glue: false,
+                    cut: false,
+                    attributes: Vec::new(),
+                    part: None,
+                    ctx: Context { mesh: r.transformed(&to_def), instances: Vec::new() },
+                });
                 let def = s.defs.len() - 1;
                 let ctx = s.ctx_mut(open).ok_or_else(nothing)?;
                 ctx.instances.push(Instance { def, xf });
@@ -653,7 +709,8 @@ impl Model {
         if pts.len() < 3 {
             return Err("select contour lines first (three corners at least)".into());
         }
-        let t = crate::sandbox::from_contours(&pts, mesh.tolerance().max(1e-6) * 10.0).ok_or("those lines make no ground (are they all in a row?)")?;
+        let t = crate::sandbox::from_contours(&pts, mesh.tolerance().max(1e-6) * 10.0)
+            .ok_or("those lines make no ground (are they all in a row?)")?;
         self.place_group(&t, false).map_err(|e| e.to_string())
     }
 
@@ -661,7 +718,8 @@ impl Model {
     /// above, at `a`'s height).
     pub fn sandbox_from_scratch(&mut self, a: [f64; 3], b: [f64; 3], spacing: f64) -> Result<usize, String> {
         let lo = [a[0].min(b[0]), a[1].min(b[1]), a[2]];
-        let t = crate::sandbox::grid(lo, (a[0] - b[0]).abs(), (a[1] - b[1]).abs(), spacing).ok_or("drag out a rectangle, and keep the grid coarser than 250,000 corners")?;
+        let t = crate::sandbox::grid(lo, (a[0] - b[0]).abs(), (a[1] - b[1]).abs(), spacing)
+            .ok_or("drag out a rectangle, and keep the grid coarser than 250,000 corners")?;
         self.place_group(&t, false).map_err(|e| e.to_string())
     }
 
@@ -741,7 +799,8 @@ impl Model {
                     z(a).total_cmp(&z(b))
                 })
                 .ok_or("the object has no face underneath to stamp with")?;
-            let ring: Vec<[f64; 2]> = obj.faces[low].iter().map(|&v| [obj.positions[v as usize][0], obj.positions[v as usize][1]]).collect();
+            let ring: Vec<[f64; 2]> =
+                obj.faces[low].iter().map(|&v| [obj.positions[v as usize][0], obj.positions[v as usize][1]]).collect();
             let z = obj.positions[obj.faces[low][0] as usize][2];
             if crate::sandbox::stamp(&mut ground, &ring, z, offset) == 0 {
                 return Err("the object is not over the ground".into());
@@ -914,10 +973,18 @@ impl Model {
     pub fn transform_all(&mut self, vertices: &[u32], instances: &[usize], t: &Xform) -> Result<(), TopologyError> {
         self.edit_scene(|m, s, open| {
             // components that cut an opening take it with them: their old holes go before the move, new ones are cut after
-            let cuts = |s: &Scene| s.ctx(open).is_some_and(|c| instances.iter().filter_map(|&i| c.instances.get(i)).any(|inst| s.defs.get(inst.def).is_some_and(|d| d.cut)));
+            let cuts = |s: &Scene| {
+                s.ctx(open).is_some_and(|c| {
+                    instances.iter().filter_map(|&i| c.instances.get(i)).any(|inst| s.defs.get(inst.def).is_some_and(|d| d.cut))
+                })
+            };
             let cutting = |s: &Scene, host: &Mesh| -> Vec<Vec<[f64; 3]>> {
                 let Some(ctx) = s.ctx(open) else { return Vec::new() };
-                instances.iter().filter_map(|&i| ctx.instances.get(i)).filter_map(|inst| crate::opening::footprint(s, open, inst, host)).collect()
+                instances
+                    .iter()
+                    .filter_map(|&i| ctx.instances.get(i))
+                    .filter_map(|inst| crate::opening::footprint(s, open, inst, host))
+                    .collect()
             };
             let mut mesh = cuts(s).then(|| m.to_mesh());
             if let Some(mesh) = mesh.as_mut() {
@@ -963,7 +1030,8 @@ impl Model {
         self.edit_scene(|m, s, open| {
             let d = s.defs.get(def).ok_or_else(nothing)?;
             let was = d.cut;
-            let copies: Vec<Instance> = s.ctx(open).map(|c| c.instances.iter().copied().filter(|i| i.def == def).collect()).unwrap_or_default();
+            let copies: Vec<Instance> =
+                s.ctx(open).map(|c| c.instances.iter().copied().filter(|i| i.def == def).collect()).unwrap_or_default();
             let mut mesh = m.to_mesh();
             if was {
                 for inst in &copies {
@@ -1002,10 +1070,10 @@ impl Model {
                     let (_, part) = mesh.extract(faces);
                     let mut joined = mesh.clone();
                     {
-                let part = part.transformed(t);
-                let tol = joined.tolerance().max(part.tolerance());
-                joined.append_welded(&part, tol);
-            }
+                        let part = part.transformed(t);
+                        let tol = joined.tolerance().max(part.tolerance());
+                        joined.append_welded(&part, tol);
+                    }
                     *m = HalfEdgeMesh::from_mesh(&joined)?;
                     made.0 = (mesh.faces.len()..joined.faces.len()).collect();
                 }
@@ -1289,7 +1357,11 @@ impl Model {
             let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
             let unit = |a: [f64; 3]| {
                 let l = dot(a, a).sqrt();
-                if l > 0.0 { a.map(|c| c / l) } else { a }
+                if l > 0.0 {
+                    a.map(|c| c / l)
+                } else {
+                    a
+                }
             };
             // the directions along the path, one per piece (a closed path has one more, back to the start)
             let pieces = if closed { n } else { n - 1 };
@@ -1339,7 +1411,11 @@ impl Model {
             for i in 1..=corners {
                 let at = path[i % n];
                 let d_in = dirs[i - 1];
-                let mitre = if !closed && i == n - 1 { d_in } else { unit([d_in[0] + dirs[i % pieces][0], d_in[1] + dirs[i % pieces][1], d_in[2] + dirs[i % pieces][2]]) };
+                let mitre = if !closed && i == n - 1 {
+                    d_in
+                } else {
+                    unit([d_in[0] + dirs[i % pieces][0], d_in[1] + dirs[i % pieces][1], d_in[2] + dirs[i % pieces][2]])
+                };
                 let denom = dot(d_in, mitre);
                 if denom.abs() < 1e-6 {
                     return Err(TopologyError::DegenerateNormal); // a bend that turns right back
@@ -1348,7 +1424,8 @@ impl Model {
                     break; // the ring closes onto the first section
                 }
                 let prev = sections.last().expect("one at least").clone();
-                let next: Vec<Vec<u32>> = prev.iter().map(|l| l.iter().map(|&v| carry(&mut mesh, v, at, d_in, mitre, denom)).collect()).collect();
+                let next: Vec<Vec<u32>> =
+                    prev.iter().map(|l| l.iter().map(|&v| carry(&mut mesh, v, at, d_in, mitre, denom)).collect()).collect();
                 sections.push(next);
             }
             if closed {
@@ -1872,7 +1949,10 @@ mod tests {
         assert_eq!(m.scene.defs.len(), defs + 1);
         let own = m.instances()[j].def;
         assert_ne!(own, def);
-        assert_eq!(m.scene.defs[own].name, format!("{}#2", m.scene.defs[def].name.rsplit_once('#').map(|p| p.0).unwrap_or(&m.scene.defs[def].name)));
+        assert_eq!(
+            m.scene.defs[own].name,
+            format!("{}#2", m.scene.defs[def].name.rsplit_once('#').map(|p| p.0).unwrap_or(&m.scene.defs[def].name))
+        );
         // now alone in its component, it changes in place
         m.set_copy_attributes(j, vec![a("Width", "3"), a("LenX", "=Width")]).unwrap();
         assert_eq!((m.instances()[j].def, m.scene.defs.len()), (own, defs + 1));
@@ -2231,7 +2311,14 @@ mod tests {
         // a mirrored copy; a dynamic component drawing copies of itself
         use crate::dynamic::Attribute;
         let (mut m, i, def) = cube_component();
-        m.set_attributes(def, vec![Attribute { name: "Copies".into(), formula: "2".into(), label: None }, Attribute { name: "X".into(), formula: "=COPY*1.5".into(), label: None }]).unwrap();
+        m.set_attributes(
+            def,
+            vec![
+                Attribute { name: "Copies".into(), formula: "2".into(), label: None },
+                Attribute { name: "X".into(), formula: "=COPY*1.5".into(), label: None },
+            ],
+        )
+        .unwrap();
         let copies = m.copy_instances(&[i], &Xform::from_fn(|p| [-p[0] - 3.0, p[1], p[2]])).unwrap();
         let g = m.make_group(&[], &[i], false).unwrap();
         m.add_rectangle([0.0, -5.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
@@ -2244,7 +2331,8 @@ mod tests {
         };
         let check = |m: &mut Model| {
             let (inside, outside) = m.parts();
-            let (pieces_inside, pieces_outside) = m.with_part_pieces(|inside, outside| (inside.iter().map(|(k, ps)| (*k, joined(ps))).collect::<Vec<_>>(), joined(&outside)));
+            let (pieces_inside, pieces_outside) =
+                m.with_part_pieces(|inside, outside| (inside.iter().map(|(k, ps)| (*k, joined(ps))).collect::<Vec<_>>(), joined(&outside)));
             assert_eq!(pieces_inside, inside);
             assert_eq!(pieces_outside, outside);
             let doc = m.document();

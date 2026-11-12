@@ -49,7 +49,11 @@ pub struct Curve {
 
 impl Curve {
     pub fn segments(&self) -> usize {
-        if self.closed { self.verts.len() } else { self.verts.len() - 1 }
+        if self.closed {
+            self.verts.len()
+        } else {
+            self.verts.len() - 1
+        }
     }
 
     /// Its length along the segments.
@@ -61,10 +65,12 @@ impl Curve {
     /// Its edges, as vertex pairs (lower number first).
     pub fn edges(&self) -> Vec<[u32; 2]> {
         let n = self.verts.len();
-        (0..self.segments()).map(|i| {
-            let (a, b) = (self.verts[i], self.verts[(i + 1) % n]);
-            [a.min(b), a.max(b)]
-        }).collect()
+        (0..self.segments())
+            .map(|i| {
+                let (a, b) = (self.verts[i], self.verts[(i + 1) % n]);
+                [a.min(b), a.max(b)]
+            })
+            .collect()
     }
 }
 
@@ -174,7 +180,8 @@ pub fn reshapeable(mesh: &Mesh, c: &Curve) -> bool {
     let tol = mesh.tolerance() * 10.0;
     let mine: std::collections::HashSet<(u32, u32)> = c.edges().iter().map(|e| (e[0], e[1])).collect();
     (0..mesh.faces.len()).all(|f| {
-        let touches = mesh.loops(f).any(|r| (0..r.len()).any(|i| mine.contains(&(r[i].min(r[(i + 1) % r.len()]), r[i].max(r[(i + 1) % r.len()])))));
+        let touches =
+            mesh.loops(f).any(|r| (0..r.len()).any(|i| mine.contains(&(r[i].min(r[(i + 1) % r.len()]), r[i].max(r[(i + 1) % r.len()])))));
         !touches || mesh.loops(f).flatten().all(|&v| dot(sub(mesh.positions[v as usize], c.center), c.normal).abs() <= tol)
     })
 }
@@ -265,10 +272,12 @@ mod tests {
     use crate::HalfEdgeMesh;
 
     fn circle(segments: usize, r: f64) -> Vec<[f64; 3]> {
-        (0..segments).map(|k| {
-            let t = std::f64::consts::TAU * k as f64 / segments as f64;
-            [r * t.cos(), r * t.sin(), 0.0]
-        }).collect()
+        (0..segments)
+            .map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / segments as f64;
+                [r * t.cos(), r * t.sin(), 0.0]
+            })
+            .collect()
     }
 
     #[test]
@@ -302,10 +311,14 @@ mod tests {
         let h2 = HalfEdgeMesh::from_mesh(&m).unwrap();
         assert_eq!(h2.face_count(), 1);
         // its area is near a circle's of radius 1.5
-        let area: f64 = m.triangulate_face(0).iter().map(|t| {
-            let [a, b, c] = t.map(|v| m.positions[v as usize]);
-            len(cross(sub(b, a), sub(c, a))) / 2.0
-        }).sum();
+        let area: f64 = m
+            .triangulate_face(0)
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|v| m.positions[v as usize]);
+                len(cross(sub(b, a), sub(c, a))) / 2.0
+            })
+            .sum();
         assert!((area - std::f64::consts::PI * 2.25).abs() < 0.03, "{area}");
         let again = curve_through(&m, m.faces[0][3], m.faces[0][4]).unwrap();
         assert_eq!(again.segments(), 48);
@@ -327,10 +340,12 @@ mod tests {
     fn an_arc_keeps_its_ends() {
         // a quarter circle of 6 segments as loose lines
         let mut m = Mesh::new();
-        let pts: Vec<u32> = (0..=6).map(|k| {
-            let t = std::f64::consts::FRAC_PI_2 * k as f64 / 6.0;
-            m.add_vertex([t.cos(), t.sin(), 0.0])
-        }).collect();
+        let pts: Vec<u32> = (0..=6)
+            .map(|k| {
+                let t = std::f64::consts::FRAC_PI_2 * k as f64 / 6.0;
+                m.add_vertex([t.cos(), t.sin(), 0.0])
+            })
+            .collect();
         for w in pts.windows(2) {
             m.lines.push([w[0], w[1]]);
         }

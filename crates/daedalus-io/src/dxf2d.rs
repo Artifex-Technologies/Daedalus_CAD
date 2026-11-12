@@ -43,9 +43,17 @@ fn layer_color(name: &str) -> i32 {
 /// A line or an arc on a layer, for [`write_entities`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Shape {
-    Line { a: [f64; 2], b: [f64; 2] },
+    Line {
+        a: [f64; 2],
+        b: [f64; 2],
+    },
     /// Counter-clockwise from `start` to `end` (degrees, as DXF has it); a whole turn is written as a CIRCLE.
-    Arc { center: [f64; 2], radius: f64, start: f64, end: f64 },
+    Arc {
+        center: [f64; 2],
+        radius: f64,
+        start: f64,
+        end: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -112,12 +120,7 @@ pub fn write_entities(entities: &[Entity], units: Units) -> String {
 pub fn flat_pattern_dxf(flat: &FlatPattern, units: Units) -> String {
     let (l, w) = (flat.length, flat.width);
     let cut = |a, b| Segment { layer: CUT_LAYER, a, b };
-    let mut segments = vec![
-        cut([0.0, 0.0], [l, 0.0]),
-        cut([l, 0.0], [l, w]),
-        cut([l, w], [0.0, w]),
-        cut([0.0, w], [0.0, 0.0]),
-    ];
+    let mut segments = vec![cut([0.0, 0.0], [l, 0.0]), cut([l, 0.0], [l, w]), cut([l, w], [0.0, w]), cut([0.0, w], [0.0, 0.0])];
     for b in &flat.bend_lines {
         segments.push(Segment { layer: BEND_LAYER, a: [b.position, 0.0], b: [b.position, w] });
     }

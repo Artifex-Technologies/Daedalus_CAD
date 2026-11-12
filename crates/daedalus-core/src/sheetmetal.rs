@@ -53,10 +53,19 @@ pub struct FlatPattern {
 pub enum SheetMetalError {
     InvalidMaterial(&'static str),
     InvalidWidth,
-    FlangeCount { flanges: usize, bends: usize },
-    InvalidBend { index: usize },
+    FlangeCount {
+        flanges: usize,
+        bends: usize,
+    },
+    InvalidBend {
+        index: usize,
+    },
     /// Flange `index` is not longer than the bend setbacks that eat into it.
-    FlangeTooShort { index: usize, length: f64, needed: f64 },
+    FlangeTooShort {
+        index: usize,
+        length: f64,
+        needed: f64,
+    },
 }
 
 impl fmt::Display for SheetMetalError {

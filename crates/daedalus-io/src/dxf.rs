@@ -55,8 +55,7 @@ impl MeshImporter for Dxf {
     }
 
     fn import(&self, bytes: &[u8]) -> Result<Mesh, IoError> {
-        let text = std::str::from_utf8(bytes)
-            .map_err(|_| IoError::Unsupported("binary or non-UTF-8 DXF".into()))?;
+        let text = std::str::from_utf8(bytes).map_err(|_| IoError::Unsupported("binary or non-UTF-8 DXF".into()))?;
         let pairs = pairs(text);
         let mut mesh = Mesh::new();
         let mut welder = Welder::default();
@@ -120,10 +119,7 @@ impl MeshImporter for Dxf {
                         let base: Vec<u32> = verts.iter().map(|&v| welder.vertex(&mut mesh, v)).collect();
                         for f in faces {
                             // Negative indices mark invisible edges; the vertex is still used.
-                            let idx: Vec<u32> = f
-                                .iter()
-                                .filter_map(|&i| base.get(i.unsigned_abs() as usize - 1).copied())
-                                .collect();
+                            let idx: Vec<u32> = f.iter().filter_map(|&i| base.get(i.unsigned_abs() as usize - 1).copied()).collect();
                             if idx.len() >= 3 {
                                 mesh.add_face(idx);
                             }

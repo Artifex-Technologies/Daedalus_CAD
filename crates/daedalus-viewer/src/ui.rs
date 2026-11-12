@@ -211,13 +211,31 @@ pub struct SheetView {
 pub enum Info {
     /// An arc or circle: whether it is an arc, its segments, radius and length (shown in the units), whether they can still
     /// change, and a key that changes with the curve (so a half-typed value is dropped when another is selected).
-    Curve { arc: bool, segments: usize, radius: String, length: String, editable: bool, key: u64 },
-    Edge { length: String },
+    Curve {
+        arc: bool,
+        segments: usize,
+        radius: String,
+        length: String,
+        editable: bool,
+        key: u64,
+    },
+    Edge {
+        length: String,
+    },
     /// A face: its area, its holes, and its texture if it has one (name, a tile's width and height shown in the units,
     /// and a key for the values being typed).
-    Face { area: String, holes: usize, texture: Option<(String, String, String, u64)> },
+    Face {
+        area: String,
+        holes: usize,
+        texture: Option<(String, String, String, u64)>,
+    },
     /// A group or component: its name, and for a component whether it glues to faces and cuts an opening.
-    Group { name: String, component: bool, glue: bool, cut: bool },
+    Group {
+        name: String,
+        component: bool,
+        glue: bool,
+        cut: bool,
+    },
     /// Several things: how many.
     Many(usize),
 }
@@ -317,35 +335,35 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView, fresh: bool) -> (
             ui.style_mut().visuals.button_frame = false;
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-            let mut item = |ui: &mut egui::Ui, enabled: bool, label: &str, shortcut: &str, action: UiAction| {
-                if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(shortcut)).clicked() {
-                    actions.push(action);
-                    open = false;
+                let mut item = |ui: &mut egui::Ui, enabled: bool, label: &str, shortcut: &str, action: UiAction| {
+                    if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(shortcut)).clicked() {
+                        actions.push(action);
+                        open = false;
+                    }
+                };
+                item(ui, true, "Entity Info", "", UiAction::EntityInfo);
+                item(ui, true, "Outliner", "", UiAction::Outliner);
+                item(ui, true, "Component Options", "", UiAction::ComponentOptions);
+                item(ui, true, "Component Attributes", "", UiAction::ComponentAttributes);
+                if v.sheet.is_some() {
+                    item(ui, true, "Sheet Metal Part", "", UiAction::SheetMetal);
+                } else if v.face_for_part {
+                    item(ui, v.editable, "Make Sheet Metal Part…", "", UiAction::SheetMetal);
                 }
-            };
-            item(ui, true, "Entity Info", "", UiAction::EntityInfo);
-            item(ui, true, "Outliner", "", UiAction::Outliner);
-            item(ui, true, "Component Options", "", UiAction::ComponentOptions);
-            item(ui, true, "Component Attributes", "", UiAction::ComponentAttributes);
-            if v.sheet.is_some() {
-                item(ui, true, "Sheet Metal Part", "", UiAction::SheetMetal);
-            } else if v.face_for_part {
-                item(ui, v.editable, "Make Sheet Metal Part…", "", UiAction::SheetMetal);
-            }
-            item(ui, v.editable && v.has_selection, "Erase", "Delete", UiAction::Erase);
-            ui.separator();
-            let kind = if v.one_instance == Some(true) { "Component" } else { "Group" };
-            item(ui, v.one_instance.is_some(), &format!("Edit {kind}"), "", UiAction::EditGroup);
-            item(ui, v.one_instance.is_some(), "Explode", "", UiAction::Explode);
-            item(ui, v.one_instance == Some(true), "Make Unique", "", UiAction::MakeUnique);
-            item(ui, v.editable && v.has_selection, "Make Group", "", UiAction::MakeGroup);
-            item(ui, v.editable && v.has_selection, "Make Component", "G", UiAction::MakeComponent);
-            if v.editing.is_some() {
-                item(ui, true, "Close Group/Component", "Esc", UiAction::CloseGroup);
-            }
-            ui.separator();
-            item(ui, true, "Select All", "Ctrl+A", UiAction::SelectAll);
-            item(ui, true, "Zoom Extents", "Shift+Z", UiAction::ZoomExtents);
+                item(ui, v.editable && v.has_selection, "Erase", "Delete", UiAction::Erase);
+                ui.separator();
+                let kind = if v.one_instance == Some(true) { "Component" } else { "Group" };
+                item(ui, v.one_instance.is_some(), &format!("Edit {kind}"), "", UiAction::EditGroup);
+                item(ui, v.one_instance.is_some(), "Explode", "", UiAction::Explode);
+                item(ui, v.one_instance == Some(true), "Make Unique", "", UiAction::MakeUnique);
+                item(ui, v.editable && v.has_selection, "Make Group", "", UiAction::MakeGroup);
+                item(ui, v.editable && v.has_selection, "Make Component", "G", UiAction::MakeComponent);
+                if v.editing.is_some() {
+                    item(ui, true, "Close Group/Component", "Esc", UiAction::CloseGroup);
+                }
+                ui.separator();
+                item(ui, true, "Select All", "Ctrl+A", UiAction::SelectAll);
+                item(ui, true, "Zoom Extents", "Shift+Z", UiAction::ZoomExtents);
             });
         });
     });
@@ -360,18 +378,30 @@ pub fn context_menu(ctx: &egui::Context, at: Pos2, v: &UiView, fresh: bool) -> (
 /// radius to change (applied on Enter).
 fn tray(ctx: &egui::Context, v: &UiView, actions: &mut Vec<UiAction>) {
     // wider while Component Attributes is open: its rows have three fields
-    let width = if v.sheet_open || v.stress_open { 360.0 } else if v.attributes_open { 340.0 } else { 230.0 };
+    let width = if v.sheet_open || v.stress_open {
+        360.0
+    } else if v.attributes_open {
+        340.0
+    } else {
+        230.0
+    };
     egui::SidePanel::right("tray").resizable(false).exact_width(width).show(ctx, |ui| {
         if v.stress_open {
-            egui::ScrollArea::vertical().id_salt("stress").max_height(ui.available_height() * if v.sheet_open || v.info_open || v.outliner_open { 0.6 } else { 1.0 }).show(ui, |ui| {
-                crate::stressui::panel(ui, v, actions);
-            });
+            egui::ScrollArea::vertical()
+                .id_salt("stress")
+                .max_height(ui.available_height() * if v.sheet_open || v.info_open || v.outliner_open { 0.6 } else { 1.0 })
+                .show(ui, |ui| {
+                    crate::stressui::panel(ui, v, actions);
+                });
             ui.add_space(10.0);
         }
         if v.sheet_open {
-            egui::ScrollArea::vertical().id_salt("sheet").max_height(ui.available_height() * if v.info_open || v.outliner_open { 0.7 } else { 1.0 }).show(ui, |ui| {
-                crate::sheetui::panel(ui, v, actions);
-            });
+            egui::ScrollArea::vertical()
+                .id_salt("sheet")
+                .max_height(ui.available_height() * if v.info_open || v.outliner_open { 0.7 } else { 1.0 })
+                .show(ui, |ui| {
+                    crate::sheetui::panel(ui, v, actions);
+                });
             ui.add_space(10.0);
         }
         if v.info_open {
@@ -424,12 +454,19 @@ fn component_options(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>)
     for i in offered {
         let (a, now) = &dc.attrs[i];
         let id = egui::Id::new(("dc-option", dc.key, i));
-        let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| if a.formula.trim_start().starts_with('=') { now.clone() } else { a.formula.clone() });
+        let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| {
+            if a.formula.trim_start().starts_with('=') {
+                now.clone()
+            } else {
+                a.formula.clone()
+            }
+        });
         let mut done = false;
         ui.horizontal(|ui| {
             ui.label(a.label.as_deref().unwrap_or(&a.name));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui.add_enabled(!a.formula.trim_start().starts_with('='), egui::TextEdit::singleline(&mut text).desired_width(100.0));
+                let r =
+                    ui.add_enabled(!a.formula.trim_start().starts_with('='), egui::TextEdit::singleline(&mut text).desired_width(100.0));
                 done = r.lost_focus() && ui.input(|k| k.key_pressed(egui::Key::Enter));
             });
         });
@@ -496,12 +533,20 @@ fn component_attributes(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiActio
             let list: Vec<Attribute> = rows
                 .iter()
                 .filter(|(n, _, _)| !n.trim().is_empty())
-                .map(|(n, f, l)| Attribute { name: n.trim().to_string(), formula: f.trim().to_string(), label: Some(l.trim().to_string()).filter(|l| !l.is_empty()) })
+                .map(|(n, f, l)| Attribute {
+                    name: n.trim().to_string(),
+                    formula: f.trim().to_string(),
+                    label: Some(l.trim().to_string()).filter(|l| !l.is_empty()),
+                })
                 .collect();
             *v.dc_out.borrow_mut() = Some((list, false));
         }
     });
-    ui.label(egui::RichText::new("X Y Z place it, LenX LenY LenZ size it, RotZ turns it; onClick: SET(\"Name\", value); ALTER(\"Name\", a, b)").weak().small());
+    ui.label(
+        egui::RichText::new("X Y Z place it, LenX LenY LenZ size it, RotZ turns it; onClick: SET(\"Name\", value); ALTER(\"Name\", a, b)")
+            .weak()
+            .small(),
+    );
     ui.data_mut(|d| d.insert_temp(id, rows));
 }
 
@@ -525,7 +570,13 @@ fn outliner(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
         for (i, (depth, name, component, selected, open)) in v.outline.iter().enumerate() {
             ui.horizontal(|ui| {
                 ui.add_space(*depth as f32 * 12.0);
-                let mark = if *open { "▾" } else if *component { "◆" } else { "▪" };
+                let mark = if *open {
+                    "▾"
+                } else if *component {
+                    "◆"
+                } else {
+                    "▪"
+                };
                 let text = format!("{mark} {name}");
                 let label = if *open { egui::RichText::new(text).strong() } else { egui::RichText::new(text) };
                 if ui.selectable_label(*selected, label).clicked() {
@@ -600,7 +651,10 @@ fn entity_info(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
                 if *component {
                     let (mut g, mut c) = (*glue, *cut);
                     let a = ui.checkbox(&mut g, "Glue to faces").on_hover_text("Moved, it stays on the face it sits on").clicked();
-                    let b = ui.checkbox(&mut c, "Cut opening").on_hover_text("Cuts a hole in that face where it touches it, as a window in a wall").clicked();
+                    let b = ui
+                        .checkbox(&mut c, "Cut opening")
+                        .on_hover_text("Cuts a hole in that face where it touches it, as a window in a wall")
+                        .clicked();
                     if a || b {
                         // cutting needs gluing; no glue, no cut
                         let (g, c) = if b { (g || c, c) } else { (g, c && g) };
@@ -612,7 +666,8 @@ fn entity_info(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
                 ui.label(if *arc { "Arc" } else { "Circle" });
                 // the values being typed, kept while the same curve is selected
                 let id = egui::Id::new(("curve-edit", *key));
-                let (mut segs, mut rad) = ui.data_mut(|d| d.get_temp::<(String, String)>(id)).unwrap_or_else(|| (segments.to_string(), radius.clone()));
+                let (mut segs, mut rad) =
+                    ui.data_mut(|d| d.get_temp::<(String, String)>(id)).unwrap_or_else(|| (segments.to_string(), radius.clone()));
                 let field = |ui: &mut egui::Ui, label: &str, text: &mut String| -> bool {
                     let mut done = false;
                     ui.horizontal(|ui| {
@@ -641,7 +696,9 @@ fn entity_info(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
                 row(ui, "Length", length);
                 if !*editable {
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new("Pushed or pulled into walls: its segments and radius can no longer change.").weak().small());
+                    ui.label(
+                        egui::RichText::new("Pushed or pulled into walls: its segments and radius can no longer change.").weak().small(),
+                    );
                 }
             }
         }
@@ -967,13 +1024,10 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
             };
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let text = if v.typing { format!("{}|", v.measure_value) } else { v.measure_value.to_string() };
-                egui::Frame::new()
-                    .stroke(Stroke::new(1.0_f32, Color32::GRAY))
-                    .inner_margin(egui::Margin::symmetric(6, 2))
-                    .show(ui, |ui| {
-                        ui.set_min_width(140.0);
-                        ui.label(RichText::new(text).monospace());
-                    });
+                egui::Frame::new().stroke(Stroke::new(1.0_f32, Color32::GRAY)).inner_margin(egui::Margin::symmetric(6, 2)).show(ui, |ui| {
+                    ui.set_min_width(140.0);
+                    ui.label(RichText::new(text).monospace());
+                });
                 ui.label(v.measure_label);
             });
         });
@@ -981,54 +1035,67 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
 
     // Paint Bucket's colours, while it is the tool
     if v.tool == Tool::PaintBucket {
-        egui::Window::new("Colours")
-            .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
-            .resizable(false)
-            .collapsible(true)
-            .show(ctx, |ui| {
-                const SWATCHES: [[u8; 3]; 16] = [
-                    [196, 92, 64], [214, 150, 60], [230, 200, 90], [120, 170, 80],
-                    [60, 130, 90], [70, 150, 170], [70, 110, 190], [120, 90, 170],
-                    [170, 90, 130], [140, 100, 70], [180, 150, 120], [230, 225, 215],
-                    [160, 160, 160], [100, 100, 104], [60, 60, 64], [250, 250, 250],
-                ];
-                egui::Grid::new("swatches").spacing([4.0, 4.0]).show(ui, |ui| {
-                    for (i, c) in SWATCHES.iter().enumerate() {
-                        let (rect, r) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
-                        ui.painter().rect_filled(rect, 4.0, Color32::from_rgb(c[0], c[1], c[2]));
-                        if v.paint_color == Some(*c) {
-                            ui.painter().rect_stroke(rect, 4.0, Stroke::new(2.0_f32, ui.visuals().strong_text_color()), egui::StrokeKind::Outside);
-                        }
-                        if r.clicked() {
-                            actions.push(UiAction::PaintColor(Some(*c)));
-                        }
-                        if i % 4 == 3 {
-                            ui.end_row();
-                        }
+        egui::Window::new("Colours").anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0]).resizable(false).collapsible(true).show(ctx, |ui| {
+            const SWATCHES: [[u8; 3]; 16] = [
+                [196, 92, 64],
+                [214, 150, 60],
+                [230, 200, 90],
+                [120, 170, 80],
+                [60, 130, 90],
+                [70, 150, 170],
+                [70, 110, 190],
+                [120, 90, 170],
+                [170, 90, 130],
+                [140, 100, 70],
+                [180, 150, 120],
+                [230, 225, 215],
+                [160, 160, 160],
+                [100, 100, 104],
+                [60, 60, 64],
+                [250, 250, 250],
+            ];
+            egui::Grid::new("swatches").spacing([4.0, 4.0]).show(ui, |ui| {
+                for (i, c) in SWATCHES.iter().enumerate() {
+                    let (rect, r) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                    ui.painter().rect_filled(rect, 4.0, Color32::from_rgb(c[0], c[1], c[2]));
+                    if v.paint_color == Some(*c) {
+                        ui.painter().rect_stroke(
+                            rect,
+                            4.0,
+                            Stroke::new(2.0_f32, ui.visuals().strong_text_color()),
+                            egui::StrokeKind::Outside,
+                        );
                     }
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    let mut rgb = v.paint_color.unwrap_or([200, 200, 205]);
-                    if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
-                        actions.push(UiAction::PaintColor(Some(rgb)));
+                    if r.clicked() {
+                        actions.push(UiAction::PaintColor(Some(*c)));
                     }
-                    ui.label("Any colour");
-                });
-                if ui.radio(v.paint_color.is_none() && v.paint_texture.is_none(), "Default (takes paint off)").clicked() {
-                    actions.push(UiAction::PaintColor(None));
-                }
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Textures").weak());
-                for (i, name) in v.textures.iter().enumerate() {
-                    if ui.radio(v.paint_texture == Some(i), name).clicked() {
-                        actions.push(UiAction::PaintTexture(i));
+                    if i % 4 == 3 {
+                        ui.end_row();
                     }
-                }
-                if ui.button("Texture from file…").clicked() {
-                    actions.push(UiAction::PickTexture);
                 }
             });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let mut rgb = v.paint_color.unwrap_or([200, 200, 205]);
+                if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
+                    actions.push(UiAction::PaintColor(Some(rgb)));
+                }
+                ui.label("Any colour");
+            });
+            if ui.radio(v.paint_color.is_none() && v.paint_texture.is_none(), "Default (takes paint off)").clicked() {
+                actions.push(UiAction::PaintColor(None));
+            }
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Textures").weak());
+            for (i, name) in v.textures.iter().enumerate() {
+                if ui.radio(v.paint_texture == Some(i), name).clicked() {
+                    actions.push(UiAction::PaintTexture(i));
+                }
+            }
+            if ui.button("Texture from file…").clicked() {
+                actions.push(UiAction::PickTexture);
+            }
+        });
     }
 
     // dimension labels, on a small plate so they read over the model
@@ -1077,13 +1144,7 @@ pub fn draw(ctx: &egui::Context, v: &UiView) -> Vec<UiAction> {
             }
         }
         if !matches!(snap, Snap::InPlane | Snap::Ground) {
-            painter.text(
-                pos + egui::vec2(10.0, 10.0),
-                egui::Align2::LEFT_TOP,
-                snap.label(),
-                egui::FontId::proportional(13.0),
-                color,
-            );
+            painter.text(pos + egui::vec2(10.0, 10.0), egui::Align2::LEFT_TOP, snap.label(), egui::FontId::proportional(13.0), color);
         }
     }
     if v.info_open || v.outliner_open || v.options_open || v.attributes_open || v.sheet_open || v.stress_open {
@@ -1101,7 +1162,8 @@ const BUTTON_GAP: f32 = 8.0;
 fn title_bar(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
     let controls = 3.0 * BUTTON + 2.0 * BUTTON_GAP + 14.0;
     let height = ui.available_height().max(22.0);
-    let (drag, resp) = ui.allocate_exact_size(egui::vec2((ui.available_width() - controls).max(0.0), height), egui::Sense::click_and_drag());
+    let (drag, resp) =
+        ui.allocate_exact_size(egui::vec2((ui.available_width() - controls).max(0.0), height), egui::Sense::click_and_drag());
     if resp.drag_started_by(egui::PointerButton::Primary) {
         actions.push(UiAction::MoveWindow);
     }

@@ -66,9 +66,9 @@ impl MeshImporter for Dae {
                 // Source vertex index -> output vertex index, per source.
                 let mut remap: HashMap<(&str, usize), u32> = HashMap::new();
 
-                for prim in mesh.children().filter(|c| {
-                    c.is_element() && matches!(c.tag_name().name(), "triangles" | "polylist" | "polygons")
-                }) {
+                for prim in
+                    mesh.children().filter(|c| c.is_element() && matches!(c.tag_name().name(), "triangles" | "polylist" | "polygons"))
+                {
                     let inputs: Vec<Node> = children(prim, "input").collect();
                     let stride = inputs
                         .iter()
@@ -130,10 +130,7 @@ impl MeshImporter for Dae {
                     }
 
                     for list in face_lists {
-                        let idx: Vec<u32> = list
-                            .chunks_exact(stride)
-                            .filter_map(|c| corner(c[voffset], &mut out))
-                            .collect();
+                        let idx: Vec<u32> = list.chunks_exact(stride).filter_map(|c| corner(c[voffset], &mut out)).collect();
                         if idx.len() >= 3 {
                             out.add_face(idx);
                         }
@@ -160,11 +157,7 @@ impl MeshExporter for Dae {
         s.push_str("<COLLADA xmlns=\"http://www.collada.org/2005/11/COLLADASchema\" version=\"1.4.1\">\n");
         s.push_str("<asset><unit name=\"meter\" meter=\"1\"/><up_axis>Z_UP</up_axis></asset>\n");
         s.push_str("<library_geometries><geometry id=\"mesh\" name=\"mesh\"><mesh>\n");
-        let _ = writeln!(
-            s,
-            "<source id=\"pos\"><float_array id=\"pos-array\" count=\"{}\">",
-            mesh.positions.len() * 3
-        );
+        let _ = writeln!(s, "<source id=\"pos\"><float_array id=\"pos-array\" count=\"{}\">", mesh.positions.len() * 3);
         for p in &mesh.positions {
             let _ = write!(s, "{} {} {} ", p[0], p[1], p[2]);
         }

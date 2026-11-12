@@ -14,7 +14,11 @@ use crate::material::Material;
 pub const CORNERS: [[usize; 3]; 8] = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
 
 fn sign(c: usize) -> f64 {
-    if c == 0 { -1.0 } else { 1.0 }
+    if c == 0 {
+        -1.0
+    } else {
+        1.0
+    }
 }
 
 /// Gradients (x, y, z) of the eight shape functions at a point of the unit cube's parent element (ξ, η, ζ in -1..1), for a
@@ -180,7 +184,6 @@ impl Element {
 pub fn unit_stiffness(poissons_ratio: f64) -> [[f64; 24]; 24] {
     Element::new(poissons_ratio).stiffness
 }
-
 
 /// Von Mises stress from a stress vector (xx, yy, zz, xy, yz, zx).
 pub fn von_mises(s: &[f64; 6]) -> f64 {

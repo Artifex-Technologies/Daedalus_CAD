@@ -33,7 +33,6 @@ impl From<solidcraft_kernel::KernelError> for DocError {
 
 pub type Result<T> = std::result::Result<T, DocError>;
 
-
 /// Column-major 4×4 affine transform (`m[col][row]`).
 pub type Mat = [[f64; 4]; 4];
 
@@ -124,4 +123,3 @@ pub fn rigid(translate: Vec3, origin: Vec3, axis: Vec3, angle: f64) -> Mat {
     m[3] = [tr.x, tr.y, tr.z, 1.0];
     m
 }
-

@@ -89,7 +89,10 @@ fn contact(scene: &Scene, open: &[usize], inst: &Instance, host: &Mesh) -> Optio
                 (prev, at) = (at, nx);
             }
             let pts: Vec<V> = lp.iter().map(|&v| m.positions[v as usize]).collect();
-            let a = { let n = area_vec(&pts); dot(n, n).sqrt() };
+            let a = {
+                let n = area_vec(&pts);
+                dot(n, n).sqrt()
+            };
             if pts.len() >= 3 && best.as_ref().is_none_or(|b| a > b.0) {
                 best = Some((a, pts));
             }
@@ -102,7 +105,9 @@ fn contact(scene: &Scene, open: &[usize], inst: &Instance, host: &Mesh) -> Optio
 /// when no face takes it.
 pub fn cut(mesh: &mut Mesh, outline: &[V]) -> bool {
     let tol = mesh.tolerance().max(1e-9) * 10.0;
-    let Some(host) = (0..mesh.faces.len()).find(|&f| outline.iter().all(|&p| crate::imprint::on_face(mesh, f, p, tol))) else { return false };
+    let Some(host) = (0..mesh.faces.len()).find(|&f| outline.iter().all(|&p| crate::imprint::on_face(mesh, f, p, tol))) else {
+        return false;
+    };
     let Some((n, _)) = crate::imprint::face_plane(mesh, &mesh.faces[host]) else { return false };
     let mut ring: Vec<u32> = outline.iter().map(|&p| mesh.add_vertex(p)).collect();
     // a hole runs the other way round from its face
@@ -122,7 +127,10 @@ pub fn uncut(mesh: &mut Mesh, outline: &[V]) -> bool {
     let near = |a: V, b: V| dot(sub(a, b), sub(a, b)).sqrt() <= tol;
     for f in 0..mesh.faces.len() {
         let holes = mesh.holes_of(f).to_vec();
-        if let Some(k) = holes.iter().position(|h| h.len() == outline.len() && outline.iter().all(|&p| h.iter().any(|&v| near(mesh.positions[v as usize], p)))) {
+        if let Some(k) = holes
+            .iter()
+            .position(|h| h.len() == outline.len() && outline.iter().all(|&p| h.iter().any(|&v| near(mesh.positions[v as usize], p))))
+        {
             let mut rest = holes;
             rest.remove(k);
             mesh.set_holes(f, rest);

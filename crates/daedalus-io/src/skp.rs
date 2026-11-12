@@ -87,7 +87,8 @@ fn num<T: std::str::FromStr>(w: Option<&String>, line: usize) -> Result<T, IoErr
 /// Reads a `.dskp` file into a scene.
 pub fn read(bytes: &[u8]) -> Result<Scene, IoError> {
     let text = std::str::from_utf8(bytes).map_err(|_| IoError::Parse("not UTF-8 text".into()))?;
-    let mut lines = text.lines().enumerate().map(|(i, l)| (i + 1, l)).filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#'));
+    let mut lines =
+        text.lines().enumerate().map(|(i, l)| (i + 1, l)).filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#'));
     let (_, head) = lines.next().ok_or_else(|| IoError::Parse("empty file".into()))?;
     let head = words(head);
     if head.first().map(String::as_str) != Some("daedalus-skp") {
@@ -156,7 +157,11 @@ pub fn read(bytes: &[u8]) -> Result<Scene, IoError> {
                 if a.max(c) as usize >= b.positions.len() {
                     return Err(IoError::Parse(format!("line {n}: an edge uses a vertex not defined above")));
                 }
-                if kind == "l" { b.lines.push([a, c]) } else { b.soft.push([a, c]) }
+                if kind == "l" {
+                    b.lines.push([a, c])
+                } else {
+                    b.soft.push([a, c])
+                }
             }
             ("i", Some(b)) => {
                 let def: i64 = num(w.get(1), n)?;
@@ -184,7 +189,9 @@ struct Poly {
 impl Poly {
     /// Its edges, outline and holes, as directed pairs (turned round with `rev`).
     fn edges(&self, rev: bool) -> impl Iterator<Item = (u32, u32)> + '_ {
-        std::iter::once(&self.ring).chain(&self.holes).flat_map(move |r| (0..r.len()).map(move |i| if rev { (r[(i + 1) % r.len()], r[i]) } else { (r[i], r[(i + 1) % r.len()]) }))
+        std::iter::once(&self.ring)
+            .chain(&self.holes)
+            .flat_map(move |r| (0..r.len()).map(move |i| if rev { (r[(i + 1) % r.len()], r[i]) } else { (r[i], r[(i + 1) % r.len()]) }))
     }
 
     /// Turned round: the outline and every hole.
@@ -301,11 +308,14 @@ fn face_polys(b: &Block, f: &FaceIn, points: &mut Points, colors: &HashMap<i64, 
         let first = b.positions[f.rings[0][0] as usize];
         let normal = if f.normal == [0.0; 3] { newell(&b.positions, &f.rings[0]) } else { f.normal };
         let Some(plane) = daedalus_core::sketch::Plane::from_point_normal(first, normal) else { return Vec::new() };
-        let outlines: Vec<Vec<[f64; 2]>> = f.rings.iter().map(|r| r.iter().map(|&i| plane.to_local(b.positions[i as usize])).collect()).collect();
+        let outlines: Vec<Vec<[f64; 2]>> =
+            f.rings.iter().map(|r| r.iter().map(|&i| plane.to_local(b.positions[i as usize])).collect()).collect();
         let Ok(cap) = daedalus_core::profile::faces(&outlines, &plane) else { return Vec::new() };
         let map: Vec<u32> = cap.positions.iter().map(|&p| points.add(p)).collect();
         let at = |r: &Vec<u32>| r.iter().map(|&v| map[v as usize]).collect::<Vec<u32>>();
-        return (0..cap.faces.len()).map(|k| Poly { ring: at(&cap.faces[k]), holes: cap.holes_of(k).iter().map(at).collect(), color }).collect();
+        return (0..cap.faces.len())
+            .map(|k| Poly { ring: at(&cap.faces[k]), holes: cap.holes_of(k).iter().map(at).collect(), color })
+            .collect();
     }
     let mut ring = rings[0].clone();
     let n = newell(&points.positions, &ring);
@@ -336,9 +346,7 @@ fn surface(polys: Vec<Vec<Poly>>, points: &Points) -> (Mesh, Vec<Vec<Poly>>) {
     let mut taken: HashSet<(u32, u32)> = HashSet::new();
     let mut mesh = Mesh { positions: points.positions.clone(), ..Default::default() };
     let mut rest = Vec::new();
-    let edges = |unit: &[Poly], rev: bool| -> Vec<(u32, u32)> {
-        unit.iter().flat_map(|p| p.edges(rev)).collect()
-    };
+    let edges = |unit: &[Poly], rev: bool| -> Vec<(u32, u32)> { unit.iter().flat_map(|p| p.edges(rev)).collect() };
     // faces in the order of a walk across their shared edges, so each one meets its neighbours already placed and takes its
     // facing from them (SketchUp lets neighbours face opposite ways; in file order two far-apart faces could be set facing
     // opposite ways before the face between them came, which then fitted neither way)
@@ -438,8 +446,20 @@ fn context(b: &Block, colors: &HashMap<i64, [u8; 3]>, scene: &mut Scene, ids: &H
         let mut m = m;
         m.seams = mesh.seams.clone();
         tidy(&mut m);
-        let name = format!("{} (overlapping faces{})", if b.name.is_empty() { "Model" } else { &b.name }, if depth > 1 { format!(" {depth}") } else { String::new() });
-        scene.defs.push(Definition { name, component: false, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: m, instances: Vec::new() } });
+        let name = format!(
+            "{} (overlapping faces{})",
+            if b.name.is_empty() { "Model" } else { &b.name },
+            if depth > 1 { format!(" {depth}") } else { String::new() }
+        );
+        scene.defs.push(Definition {
+            name,
+            component: false,
+            glue: false,
+            cut: false,
+            attributes: Vec::new(),
+            part: None,
+            ctx: Context { mesh: m, instances: Vec::new() },
+        });
         let d = scene.defs.len() - 1;
         match holder {
             None => instances.push(Instance { def: d, xf: Xform::IDENTITY }),
@@ -477,7 +497,15 @@ fn assemble(defs: Vec<(i64, Block)>, top: Block, colors: &HashMap<i64, [u8; 3]>)
     // definitions get their numbers first, so instances can name them; their insides are filled in after
     let ids: HashMap<i64, usize> = defs.iter().enumerate().map(|(i, (id, _))| (*id, i)).collect();
     for (_, b) in &defs {
-        scene.defs.push(Definition { name: b.name.clone(), component: b.component, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context::default() });
+        scene.defs.push(Definition {
+            name: b.name.clone(),
+            component: b.component,
+            glue: false,
+            cut: false,
+            attributes: Vec::new(),
+            part: None,
+            ctx: Context::default(),
+        });
     }
     for (i, (_, b)) in defs.iter().enumerate() {
         let ctx = context(b, colors, &mut scene, &ids);
@@ -624,7 +652,13 @@ mod timing {
         let m = daedalus_core::Model::from_scene(s.clone());
         println!("model: {:?} ok={}", t.elapsed(), m.is_ok());
         let flat = s.flatten();
-        println!("flat: {} vertices, {} faces, {} defs, {} top instances", flat.positions.len(), flat.faces.len(), s.defs.len(), s.root.instances.len());
+        println!(
+            "flat: {} vertices, {} faces, {} defs, {} top instances",
+            flat.positions.len(),
+            flat.faces.len(),
+            s.defs.len(),
+            s.root.instances.len()
+        );
         let t = std::time::Instant::now();
         let e = flat.visible_edges();
         println!("visible_edges: {:?} ({} edges)", t.elapsed(), e.len());
@@ -638,9 +672,15 @@ mod timing {
         let hit2 = flat.pick_triangles(&tris, [10.0, -30.0, 20.0], [0.0, 0.8, -0.6]);
         println!("pick_triangles (each move): {:?} {:?}", t.elapsed(), hit2.map(|h| h.0));
         let spilled: usize = s.defs.iter().filter(|d| d.name.contains("(overlapping faces")).map(|d| d.ctx.mesh.faces.len()).sum();
-        let tri_spilled: usize = s.defs.iter().filter(|d| d.name.contains("(overlapping faces")).map(|d| d.ctx.mesh.faces.iter().filter(|f| f.len() == 3).count()).sum();
+        let tri_spilled: usize = s
+            .defs
+            .iter()
+            .filter(|d| d.name.contains("(overlapping faces"))
+            .map(|d| d.ctx.mesh.faces.iter().filter(|f| f.len() == 3).count())
+            .sum();
         let all: usize = s.root.mesh.faces.len() + s.defs.iter().map(|d| d.ctx.mesh.faces.len()).sum::<usize>();
-        let tris_all: usize = s.root.mesh.faces.iter().chain(s.defs.iter().flat_map(|d| d.ctx.mesh.faces.iter())).filter(|f| f.len() == 3).count();
+        let tris_all: usize =
+            s.root.mesh.faces.iter().chain(s.defs.iter().flat_map(|d| d.ctx.mesh.faces.iter())).filter(|f| f.len() == 3).count();
         println!("faces {all} (triangles {tris_all}); in overlapping groups {spilled} (triangles {tri_spilled})");
         if let Ok(m) = m {
             let t = std::time::Instant::now();
@@ -711,12 +751,17 @@ mod holes_check {
                         bad += 1;
                         if bad == 1 {
                             if let Ok(out) = std::env::var("DSKP_DUMP") {
-                                let rings: Vec<Vec<[f64; 3]>> = f.rings.iter().map(|r| r.iter().map(|&i| b.positions[i as usize]).collect()).collect();
+                                let rings: Vec<Vec<[f64; 3]>> =
+                                    f.rings.iter().map(|r| r.iter().map(|&i| b.positions[i as usize]).collect()).collect();
                                 std::fs::write(out, format!("{rings:?}")).unwrap();
                             }
                         }
                         if bad <= 6 {
-                            println!("{} holes: area {want:.4}, faces {faces_area:.4} ({} faces), triangles {tri_area:.4}", f.rings.len() - 1, polys.len());
+                            println!(
+                                "{} holes: area {want:.4}, faces {faces_area:.4} ({} faces), triangles {tri_area:.4}",
+                                f.rings.len() - 1,
+                                polys.len()
+                            );
                         }
                     }
                 }

@@ -5,7 +5,7 @@
 
 use crate::icons::{self, Icon};
 use crate::tools::Tool;
-use egui::epaint::{Mesh, Tessellator, TessellationOptions};
+use egui::epaint::{Mesh, TessellationOptions, Tessellator};
 use egui::{pos2, Color32, Rect, Shape, Stroke};
 
 /// A cursor's picture: RGBA rows (square), and the point that clicks (from the top left).
@@ -43,7 +43,13 @@ pub fn image(tool: Tool, size: u32) -> Image {
     // the white rim: everything within a pixel and a half of the ink, under it
     let n = size as usize;
     let reach = (s / 21.0).max(1.0) as i32 + 1;
-    let alpha = |x: i32, y: i32| -> u8 { if x < 0 || y < 0 || x >= n as i32 || y >= n as i32 { 0 } else { ink_layer[(y as usize * n + x as usize) * 4 + 3] } };
+    let alpha = |x: i32, y: i32| -> u8 {
+        if x < 0 || y < 0 || x >= n as i32 || y >= n as i32 {
+            0
+        } else {
+            ink_layer[(y as usize * n + x as usize) * 4 + 3]
+        }
+    };
     let mut out = vec![0u8; n * n * 4];
     for y in 0..n as i32 {
         for x in 0..n as i32 {
@@ -99,7 +105,8 @@ fn raster(shapes: &[Shape], size: u32) -> Vec<u8> {
                     continue;
                 }
                 // premultiplied colour of the point, laid over what is there
-                let col: [f32; 4] = std::array::from_fn(|k| (w0 * v[0].color[k] as f32 + w1 * v[1].color[k] as f32 + w2 * v[2].color[k] as f32) / 255.0);
+                let col: [f32; 4] =
+                    std::array::from_fn(|k| (w0 * v[0].color[k] as f32 + w1 * v[1].color[k] as f32 + w2 * v[2].color[k] as f32) / 255.0);
                 let d = &mut px[y * n + x];
                 for k in 0..4 {
                     d[k] = col[k] + d[k] * (1.0 - col[3]);
@@ -147,7 +154,10 @@ mod tests {
                     for x in 0..size {
                         let i = ((y * size + x) * 4) as usize;
                         let a = img.rgba[i + 3] as f32 / 255.0;
-                        let px: [u8; 4] = std::array::from_fn(|c| if c == 3 { 255 } else { (img.rgba[i + c] as f32 * a + bg[c] as f32 * (1.0 - a)) as u8 });
+                        let px: [u8; 4] =
+                            std::array::from_fn(
+                                |c| if c == 3 { 255 } else { (img.rgba[i + c] as f32 * a + bg[c] as f32 * (1.0 - a)) as u8 },
+                            );
                         sheet.put_pixel(cx + x, cy + y + half * rows * size, image::Rgba(px));
                     }
                 }

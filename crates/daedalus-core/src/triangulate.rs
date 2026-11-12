@@ -130,11 +130,7 @@ fn bridged(positions: &[[f64; 3]], outer: &[u32], holes: &[Vec<u32>]) -> (Vec<u3
             let v = ring[pi];
             let copies: Vec<usize> = (0..ring.len()).filter(|&k| ring[k] == v).collect();
             let len = ring.len();
-            copies
-                .iter()
-                .copied()
-                .find(|&k| in_cone(pt(ring[(k + len - 1) % len]), pt(ring[k]), pt(ring[(k + 1) % len]), m))
-                .unwrap_or(pi)
+            copies.iter().copied().find(|&k| in_cone(pt(ring[(k + len - 1) % len]), pt(ring[k]), pt(ring[(k + 1) % len]), m)).unwrap_or(pi)
         };
         let mut joined = Vec::with_capacity(ring.len() + h.len() + 2);
         joined.extend_from_slice(&ring[..=pi]);
@@ -231,12 +227,14 @@ fn ears_plain(ring: &[u32], pts: &[[f64; 2]], orientation: f64, kind: Ring) -> (
                 idx.remove(i);
             }
             // a bridge's two sides meet with no area between them: a corner on a straight line goes without a triangle
-            None if kind == Ring::Bridged => match (0..m).find(|&i| cross_2d(pts[idx[(i + m - 1) % m]], pts[idx[i]], pts[idx[(i + 1) % m]]).abs() < 1e-18) {
-                Some(i) => {
-                    idx.remove(i);
+            None if kind == Ring::Bridged => {
+                match (0..m).find(|&i| cross_2d(pts[idx[(i + m - 1) % m]], pts[idx[i]], pts[idx[(i + 1) % m]]).abs() < 1e-18) {
+                    Some(i) => {
+                        idx.remove(i);
+                    }
+                    None => break,
                 }
-                None => break,
-            },
+            }
             None => break,
         }
     }
@@ -480,7 +478,8 @@ impl Grid {
         let grow = r + self.loose;
         Some((r0..=r1).flat_map(move |row| {
             let (lo, hi) = self.across(row, grow, [(a, b), (b, c), (c, a)]);
-            let (from, to) = if lo <= hi { (self.col(lo - grow).saturating_sub(1).max(c0), (self.col(hi + grow) + 1).min(c1)) } else { (1, 0) };
+            let (from, to) =
+                if lo <= hi { (self.col(lo - grow).saturating_sub(1).max(c0), (self.col(hi + grow) + 1).min(c1)) } else { (1, 0) };
             let k = row * self.cols;
             let (s, e) = if from <= to { (self.start[k + from] as usize, self.start[k + to + 1] as usize) } else { (0, 0) };
             self.items[s..e].iter().map(|&i| i as usize)
@@ -576,14 +575,7 @@ mod tests {
 
     /// L-shape: a 2 x 2 square with the top-right 1 x 1 quarter removed, area 3.
     fn l_shape() -> (Vec<[f64; 3]>, Vec<u32>) {
-        let p = vec![
-            [0.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [2.0, 1.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [1.0, 2.0, 0.0],
-            [0.0, 2.0, 0.0],
-        ];
+        let p = vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, 2.0, 0.0], [0.0, 2.0, 0.0]];
         // Start at (1, 2): a fan from there would spill into the missing quarter.
         (p, vec![4, 5, 0, 1, 2, 3])
     }
@@ -623,8 +615,14 @@ mod tests {
     fn a_square_with_a_square_hole_covers_the_ring_only() {
         // 4 x 4 square, a 2 x 2 hole in the middle: 16 - 4 = 12 square units
         let positions = vec![
-            [0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 4.0, 0.0], [0.0, 4.0, 0.0],
-            [1.0, 1.0, 0.0], [3.0, 1.0, 0.0], [3.0, 3.0, 0.0], [1.0, 3.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [4.0, 4.0, 0.0],
+            [0.0, 4.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [3.0, 3.0, 0.0],
+            [1.0, 3.0, 0.0],
         ];
         for hole in [vec![4, 7, 6, 5], vec![4, 5, 6, 7]] {
             let tris = triangulate_with_holes(&positions, &[0, 1, 2, 3], &[hole]);
@@ -640,9 +638,18 @@ mod tests {
     fn two_holes_side_by_side() {
         // 6 x 2 wall, two 1 x 1 windows: 12 - 2 = 10
         let positions = vec![
-            [0.0, 0.0, 0.0], [6.0, 0.0, 0.0], [6.0, 2.0, 0.0], [0.0, 2.0, 0.0],
-            [1.0, 0.5, 0.0], [2.0, 0.5, 0.0], [2.0, 1.5, 0.0], [1.0, 1.5, 0.0],
-            [4.0, 0.5, 0.0], [5.0, 0.5, 0.0], [5.0, 1.5, 0.0], [4.0, 1.5, 0.0],
+            [0.0, 0.0, 0.0],
+            [6.0, 0.0, 0.0],
+            [6.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [1.0, 0.5, 0.0],
+            [2.0, 0.5, 0.0],
+            [2.0, 1.5, 0.0],
+            [1.0, 1.5, 0.0],
+            [4.0, 0.5, 0.0],
+            [5.0, 0.5, 0.0],
+            [5.0, 1.5, 0.0],
+            [4.0, 1.5, 0.0],
         ];
         let tris = triangulate_with_holes(&positions, &[0, 1, 2, 3], &[vec![4, 7, 6, 5], vec![8, 11, 10, 9]]);
         assert!((area_3d(&positions, &tris) - 10.0).abs() < 1e-9, "area {}", area_3d(&positions, &tris));
@@ -767,10 +774,13 @@ mod tests {
     fn star(rng: &mut Rng, n: usize, jag: f64) -> Vec<[f64; 2]> {
         let mut angles: Vec<f64> = (0..n).map(|_| rng.unit() * std::f64::consts::TAU).collect();
         angles.sort_by(f64::total_cmp);
-        angles.iter().map(|&a| {
-            let r = 1.0 - jag * rng.unit();
-            [r * a.cos(), r * a.sin()]
-        }).collect()
+        angles
+            .iter()
+            .map(|&a| {
+                let r = 1.0 - jag * rng.unit();
+                [r * a.cos(), r * a.sin()]
+            })
+            .collect()
     }
 
     /// Every side of `ring` cut into `k` pieces along its straight line (corners in a row, as SketchUp's split edges are).
@@ -827,10 +837,13 @@ mod tests {
             }
         }
         cases.extend(more);
-        let mut rings: Vec<(Vec<[f64; 2]>, Vec<u32>)> = cases.into_iter().map(|p| {
-            let ring = (0..p.len() as u32).collect();
-            (p, ring)
-        }).collect();
+        let mut rings: Vec<(Vec<[f64; 2]>, Vec<u32>)> = cases
+            .into_iter()
+            .map(|p| {
+                let ring = (0..p.len() as u32).collect();
+                (p, ring)
+            })
+            .collect();
         // one corner made not a number; one infinitely far
         let (mut p, ring) = rings[20].clone();
         p[7][0] = f64::NAN;
@@ -877,7 +890,8 @@ mod tests {
             let u = [n[1], -n[0], 0.0];
             let v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]];
             for frame in [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]], [u, v]] {
-                let positions: Vec<[f64; 3]> = flat.iter().map(|p| std::array::from_fn(|k| frame[0][k] * p[0] + frame[1][k] * p[1])).collect();
+                let positions: Vec<[f64; 3]> =
+                    flat.iter().map(|p| std::array::from_fn(|k| frame[0][k] * p[0] + frame[1][k] * p[1])).collect();
                 assert_eq!(triangulate(&positions, &ring), old_triangulate(&positions, &ring), "{} corners", ring.len());
             }
         }
@@ -889,13 +903,15 @@ mod tests {
         for (outline, holes, size) in [(60, 1, 50), (200, 1, 180), (90, 6, 12), (40, 25, 5), (300, 3, 60)] {
             for _ in 0..3 {
                 // an outline round the origin and holes inside it, apart from each other, some cut along a line
-                let mut positions: Vec<[f64; 3]> = star(&mut rng, outline, 0.05).into_iter().map(|p| [p[0] * 10.0, p[1] * 10.0, 0.0]).collect();
+                let mut positions: Vec<[f64; 3]> =
+                    star(&mut rng, outline, 0.05).into_iter().map(|p| [p[0] * 10.0, p[1] * 10.0, 0.0]).collect();
                 let outer: Vec<u32> = (0..outline as u32).collect();
                 let mut hole_rings = Vec::new();
                 for h in 0..holes {
                     let (cx, cy) = (-6.0 + 12.0 * (h as f64 + 0.5) / holes as f64, 0.0);
                     let r = (5.0 / holes as f64).min(3.0);
-                    let shape = if h % 2 == 0 { star(&mut rng, size, 0.3) } else { split_sides(&star(&mut rng, size.div_ceil(3).max(3), 0.3), 3) };
+                    let shape =
+                        if h % 2 == 0 { star(&mut rng, size, 0.3) } else { split_sides(&star(&mut rng, size.div_ceil(3).max(3), 0.3), 3) };
                     let from = positions.len() as u32;
                     positions.extend(shape.iter().rev().map(|p| [cx + p[0] * r, cy + p[1] * r, 0.0]));
                     hole_rings.push((from..positions.len() as u32).collect::<Vec<u32>>());

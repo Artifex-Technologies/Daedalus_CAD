@@ -287,7 +287,10 @@ pub fn run(part: &Part, study: &Study, progress: &mut dyn FnMut(f32, &str)) -> R
     }
     let mut notes = Vec::new();
     if grid.odd_rows > 0 {
-        notes.push(format!("the part's surface is not closed everywhere ({} rows of cubes crossed it an odd number of times)", grid.odd_rows));
+        notes.push(format!(
+            "the part's surface is not closed everywhere ({} rows of cubes crossed it an odd number of times)",
+            grid.odd_rows
+        ));
     }
     let volume_error = error_of(&grid);
     if volume_error.abs() > 0.05 {

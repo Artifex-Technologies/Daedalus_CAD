@@ -26,8 +26,13 @@ pub fn cut_lines(mesh: &Mesh, point: [f64; 3], normal: [f64; 3]) -> Vec<([f64; 3
         }
         // along the cut line through the face: pair the crossings in order
         let far = hits.iter().copied().fold((hits[0], 0.0f64), |best, p| {
-            let d = dot([p[0] - hits[0][0], p[1] - hits[0][1], p[2] - hits[0][2]], [p[0] - hits[0][0], p[1] - hits[0][1], p[2] - hits[0][2]]);
-            if d > best.1 { (p, d) } else { best }
+            let d =
+                dot([p[0] - hits[0][0], p[1] - hits[0][1], p[2] - hits[0][2]], [p[0] - hits[0][0], p[1] - hits[0][1], p[2] - hits[0][2]]);
+            if d > best.1 {
+                (p, d)
+            } else {
+                best
+            }
         });
         let dir = [far.0[0] - hits[0][0], far.0[1] - hits[0][1], far.0[2] - hits[0][2]];
         hits.sort_by(|p, q| dot(*p, dir).total_cmp(&dot(*q, dir)));
@@ -45,7 +50,16 @@ mod tests {
     #[test]
     fn a_cube_cut_through_the_middle_gives_a_square() {
         let mut m = Mesh::new();
-        for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ] {
             m.add_vertex(p);
         }
         for f in [vec![0, 3, 2, 1], vec![4, 5, 6, 7], vec![0, 1, 5, 4], vec![1, 2, 6, 5], vec![2, 3, 7, 6], vec![3, 0, 4, 7]] {
@@ -63,7 +77,16 @@ mod tests {
     fn a_concave_face_is_cut_in_two_spans() {
         // a U shape standing up in the x-z plane, cut across both arms
         let mut m = Mesh::new();
-        for p in [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 0.0, 2.0], [2.0, 0.0, 2.0], [2.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 0.0, 2.0], [0.0, 0.0, 2.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [3.0, 0.0, 2.0],
+            [2.0, 0.0, 2.0],
+            [2.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 0.0, 2.0],
+            [0.0, 0.0, 2.0],
+        ] {
             m.add_vertex(p);
         }
         m.add_face((0..8).collect());

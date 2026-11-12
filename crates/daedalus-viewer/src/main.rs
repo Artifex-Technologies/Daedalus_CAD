@@ -3,16 +3,16 @@ mod camera;
 mod cursors;
 mod filedlg;
 mod frame;
-#[cfg(target_os = "linux")]
-mod portal;
-mod theme;
 mod icons;
 mod pieces;
+#[cfg(target_os = "linux")]
+mod portal;
+mod render;
 mod settings;
 mod sheetui;
 mod stressui;
 mod text3d;
-mod render;
+mod theme;
 mod tools;
 mod ui;
 
@@ -21,9 +21,9 @@ use daedalus_core::inspect;
 use daedalus_core::scene::{Scene, Section};
 use daedalus_core::{HalfEdgeMesh, Mesh, Model, Plane};
 use daedalus_io::formats::SaveTo;
+use filedlg::{FileDialog, Outcome, Purpose};
 use glam::DVec3;
 use render::{FaceStyle, LineVertex, Renderer, Style, UiFrame};
-use filedlg::{FileDialog, Outcome, Purpose};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tools::{Cursor, Guide, Hit, Snap, Tool, Tools, AXIS_COLORS};
@@ -347,7 +347,8 @@ impl State {
 
     /// "name — Daedalus", with a dot while there are unsaved changes.
     fn title(&self) -> String {
-        let name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
+        let name =
+            self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
         format!("{}{name} — Daedalus", if self.changed() { "• " } else { "" })
     }
 
@@ -489,7 +490,8 @@ impl State {
             match from_sketchup(path) {
                 Ok(scene) => {
                     self.replace(&scene, file);
-                    self.message = Some(format!("{verb} {} from SketchUp. Save writes a STEP file beside it; the .skp is not changed.", short(path)));
+                    self.message =
+                        Some(format!("{verb} {} from SketchUp. Save writes a STEP file beside it; the .skp is not changed.", short(path)));
                 }
                 Err(e) => self.message = Some(e),
             }
@@ -638,7 +640,10 @@ impl State {
             }
             Purpose::FlatDxf => {
                 let units = if self.dxf_inches { daedalus_io::dxf2d::Units::Inches } else { daedalus_io::dxf2d::Units::Millimeters };
-                let made = self.sheet_part().ok_or_else(|| "select a sheet-metal part first".to_string()).and_then(|(_, _, p)| p.flat_dxf(units).map_err(|e| e.to_string()));
+                let made = self
+                    .sheet_part()
+                    .ok_or_else(|| "select a sheet-metal part first".to_string())
+                    .and_then(|(_, _, p)| p.flat_dxf(units).map_err(|e| e.to_string()));
                 self.message = Some(match made.and_then(|t| std::fs::write(&path, t).map_err(|e| e.to_string())) {
                     Ok(()) => format!("Exported the flat pattern to {}.", short(&path)),
                     Err(e) => format!("Not exported: {e}."),
@@ -660,7 +665,8 @@ impl State {
         let name = path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Texture".into());
         let i = self.model.add_texture(daedalus_core::scene::Texture { name, path: path.display().to_string(), size: [1.0, 1.0] });
         self.sync_textures();
-        self.tools.paint_color = Some(daedalus_core::Paint { rgb: self.texture_colors.get(i).copied().unwrap_or([200, 200, 200]), texture: Some(i as u16) });
+        self.tools.paint_color =
+            Some(daedalus_core::Paint { rgb: self.texture_colors.get(i).copied().unwrap_or([200, 200, 200]), texture: Some(i as u16) });
         self.set_tool(Tool::PaintBucket);
         self.message = Some("Texture ready: click faces to paint them with it (View > Shaded with Textures shows it).".into());
     }
@@ -678,7 +684,13 @@ impl State {
         for p in &paths {
             let img = match image::open(p) {
                 Ok(i) => i.resize_exact(side, side, image::imageops::FilterType::Triangle).to_rgba8(),
-                Err(_) => image::RgbaImage::from_fn(side, side, |x, y| if (x / 32 + y / 32) % 2 == 0 { image::Rgba([170, 170, 175, 255]) } else { image::Rgba([210, 210, 215, 255]) }),
+                Err(_) => image::RgbaImage::from_fn(side, side, |x, y| {
+                    if (x / 32 + y / 32) % 2 == 0 {
+                        image::Rgba([170, 170, 175, 255])
+                    } else {
+                        image::Rgba([210, 210, 215, 255])
+                    }
+                }),
             };
             let n = (side * side) as u64;
             let sum = img.pixels().fold([0u64; 3], |s, px| [s[0] + px[0] as u64, s[1] + px[1] as u64, s[2] + px[2] as u64]);
@@ -787,7 +799,16 @@ impl State {
         // the ones before, so the lists add up in order: what `self.display.visible_edges()` gives, without sorting it all)
         self.sync_textures();
         let tiles: Vec<[f64; 2]> = self.model.textures().iter().map(|t| t.size).collect();
-        self.gpu.set_scene(&self.display, &self.tris, &self.edges, &highlight, &self.tools.edges, &self.flagged, (self.faded_from, self.faded_vertex), &tiles);
+        self.gpu.set_scene(
+            &self.display,
+            &self.tris,
+            &self.edges,
+            &highlight,
+            &self.tools.edges,
+            &self.flagged,
+            (self.faded_from, self.faded_vertex),
+            &tiles,
+        );
         self.shown_highlight = highlight;
         self.window.request_redraw();
     }
@@ -894,7 +915,14 @@ impl State {
             }
             (None, None) => {
                 let ground = self.ground();
-                ground.intersect_ray(origin.into(), dir.into()).map(|p| Hit { point: p, plane: ground, face: None, line: None, instance: None, snap: Snap::Ground })
+                ground.intersect_ray(origin.into(), dir.into()).map(|p| Hit {
+                    point: p,
+                    plane: ground,
+                    face: None,
+                    line: None,
+                    instance: None,
+                    snap: Snap::Ground,
+                })
             }
         };
         // the loose line nearest the mouse on screen, for the Eraser
@@ -965,7 +993,16 @@ impl State {
     fn info(&mut self) -> Option<ui::Info> {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (self.doc, self.model.state(), self.model.open_depth(), &self.tools.selected, &self.tools.edges, &self.tools.instances, self.tools.units.key()).hash(&mut h);
+        (
+            self.doc,
+            self.model.state(),
+            self.model.open_depth(),
+            &self.tools.selected,
+            &self.tools.edges,
+            &self.tools.instances,
+            self.tools.units.key(),
+        )
+            .hash(&mut h);
         let key = h.finish();
         if let Some((k, info)) = &self.info_cache {
             if *k == key {
@@ -999,17 +1036,26 @@ impl State {
             }
         } else if faces.len() == 1 && edges.is_empty() && inst.is_empty() && faces[0] < mesh.faces.len() {
             let f = faces[0];
-            let area: f64 = mesh.triangulate_face(f).iter().map(|t| {
-                let [a, b, c] = t.map(|v| DVec3::from(mesh.positions[v as usize]));
-                (b - a).cross(c - a).length() / 2.0
-            }).sum();
+            let area: f64 = mesh
+                .triangulate_face(f)
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.map(|v| DVec3::from(mesh.positions[v as usize]));
+                    (b - a).cross(c - a).length() / 2.0
+                })
+                .sum();
             let texture = mesh.color_of(f).and_then(|p| p.texture).and_then(|t| self.model.textures().get(t as usize)).map(|t| {
                 (t.name.clone(), daedalus_core::units::format(t.size[0], units), daedalus_core::units::format(t.size[1], units), key)
             });
             Some(ui::Info::Face { area: daedalus_core::units::format_area(area, units), holes: mesh.holes_of(f).len(), texture })
         } else if inst.len() == 1 && faces.is_empty() && edges.is_empty() {
             let def = self.model.instances().get(inst[0]).map(|i| i.def);
-            def.and_then(|d| self.model.definition(d)).map(|d| ui::Info::Group { name: d.name.clone(), component: d.component, glue: d.glue, cut: d.cut })
+            def.and_then(|d| self.model.definition(d)).map(|d| ui::Info::Group {
+                name: d.name.clone(),
+                component: d.component,
+                glue: d.glue,
+                cut: d.cut,
+            })
         } else if self.tools.has_selection() {
             Some(ui::Info::Many(faces.len() + edges.len() + inst.len()))
         } else {
@@ -1087,7 +1133,11 @@ impl State {
     }
 
     /// A change to the selected part: `f` changes it; its faces are made again and put in the model as one undo step.
-    fn change_part(&mut self, what: &str, f: impl FnOnce(&mut daedalus_sheet::part::SheetPart) -> Result<(), daedalus_sheet::util::DocError>) {
+    fn change_part(
+        &mut self,
+        what: &str,
+        f: impl FnOnce(&mut daedalus_sheet::part::SheetPart) -> Result<(), daedalus_sheet::util::DocError>,
+    ) {
         if self.readonly.is_some() {
             return;
         }
@@ -1095,7 +1145,10 @@ impl State {
             self.message = Some(format!("{what}: select a sheet-metal part first."));
             return;
         };
-        let done = f(&mut p).and_then(|()| p.faces(p.shown_flat)).map_err(|e| e.to_string()).and_then(|faces| self.model.set_part(def, p.to_text(), faces).map_err(|e| e.to_string()));
+        let done = f(&mut p)
+            .and_then(|()| p.faces(p.shown_flat))
+            .map_err(|e| e.to_string())
+            .and_then(|faces| self.model.set_part(def, p.to_text(), faces).map_err(|e| e.to_string()));
         match done {
             Ok(()) => self.message = None,
             Err(e) => self.message = Some(format!("{what}: {e}.")),
@@ -1121,13 +1174,20 @@ impl State {
         };
         let name = self.material_name(preset, t);
         // square corner reliefs, as cutting shops such as SendCutSend ask for (SolidCraft's own default cuts none)
-        let rule = RuleValues { k_factor: k, bend_radius: r, corner_relief_shape: daedalus_sheet::sheet::ReliefShape::Rectangular, ..RuleValues::steel(t) };
+        let rule = RuleValues {
+            k_factor: k,
+            bend_radius: r,
+            corner_relief_shape: daedalus_sheet::sheet::ReliefShape::Rectangular,
+            ..RuleValues::steel(t)
+        };
         // the face as the model has it (open context coordinates are model coordinates while editing)
         let mesh = self.model.mesh().to_mesh();
         let made = part_from_face(&mesh, f, &name, rule)
             .and_then(|(p, place)| p.faces(false).map(|faces| (p, place, faces)))
             .map_err(|e| e.to_string())
-            .and_then(|(p, place, faces)| self.model.place_part("Sheet Part", p.to_text(), &faces, &place, Some(f)).map_err(|e| e.to_string()));
+            .and_then(|(p, place, faces)| {
+                self.model.place_part("Sheet Part", p.to_text(), &faces, &place, Some(f)).map_err(|e| e.to_string())
+            });
         match made {
             Ok(i) => {
                 self.tools.model_changed();
@@ -1270,7 +1330,11 @@ impl State {
         };
         let (rows, note) = daedalus_sheet::table::read(&text);
         if rows.is_empty() {
-            self.message = Some(format!("Bend table: no row of {} reads ({}).", short(path), note.first().map(String::as_str).unwrap_or("it is empty")));
+            self.message = Some(format!(
+                "Bend table: no row of {} reads ({}).",
+                short(path),
+                note.first().map(String::as_str).unwrap_or("it is empty")
+            ));
             return;
         }
         let kept = settings::config_file("bend-table.csv").ok_or_else(|| "no home folder".to_string()).and_then(|to| {
@@ -1305,7 +1369,10 @@ impl State {
                             s.settings = old.settings;
                         }
                     }
-                    self.message = Some(format!("Stress Test {}: click the faces that hold it (supports), then switch to Loads in the panel.", s.name()));
+                    self.message = Some(format!(
+                        "Stress Test {}: click the faces that hold it (supports), then switch to Loads in the panel.",
+                        s.name()
+                    ));
                     self.stress = Some(s);
                 }
                 Err(e) => self.message = Some(format!("Stress Test: {e}.")),
@@ -1339,7 +1406,8 @@ impl State {
                 match nearest {
                     Some(p) => {
                         bends.push(p);
-                        self.message = Some(format!("Convert: {} bend edge(s) picked; click more, or Convert in the Sheet Metal panel.", bends.len()));
+                        self.message =
+                            Some(format!("Convert: {} bend edge(s) picked; click more, or Convert in the Sheet Metal panel.", bends.len()));
                     }
                     None => self.message = Some("Convert: that solid has no edges.".into()),
                 }
@@ -1348,7 +1416,8 @@ impl State {
                 self.convert = Some((i, Some(local), Vec::new()));
                 self.tools.selected.clear();
                 self.tools.instances = vec![i];
-                self.message = Some(format!("Convert {}: the face that stays put is picked; now click each edge that becomes a bend.", d.name));
+                self.message =
+                    Some(format!("Convert {}: the face that stays put is picked; now click each edge that becomes a bend.", d.name));
             }
         }
         self.sheet_open = true;
@@ -1365,7 +1434,12 @@ impl State {
         let Some(mesh) = self.model.definition(def).map(|d| d.ctx.mesh.clone()) else { return };
         let name = self.material_name(preset, t);
         // square corner reliefs, as cutting shops such as SendCutSend ask for (SolidCraft's own default cuts none)
-        let rule = RuleValues { k_factor: k, bend_radius: r, corner_relief_shape: daedalus_sheet::sheet::ReliefShape::Rectangular, ..RuleValues::steel(t) };
+        let rule = RuleValues {
+            k_factor: k,
+            bend_radius: r,
+            corner_relief_shape: daedalus_sheet::sheet::ReliefShape::Rectangular,
+            ..RuleValues::steel(t)
+        };
         let made = daedalus_sheet::part::part_from_solid(&mesh, fixed, &bends, &name, rule)
             .map(|mut p| {
                 // a shelled solid keeps its own walls: named by them when they are not the preset's thickness
@@ -1384,7 +1458,11 @@ impl State {
                 self.tools.instances = vec![i];
                 self.sheet_tab = 2;
                 self.set_tool(Tool::Select);
-                self.message = Some(if p.notes.is_empty() { "Converted to sheet metal.".into() } else { format!("Converted; note: {}", p.notes.join("; ")) });
+                self.message = Some(if p.notes.is_empty() {
+                    "Converted to sheet metal.".into()
+                } else {
+                    format!("Converted; note: {}", p.notes.join("; "))
+                });
             }
             Err(e) => self.message = Some(format!("Convert to Sheet Metal: {e}.")),
         }
@@ -1672,7 +1750,10 @@ impl State {
                     self.tools.model_changed();
                     self.after_edit();
                 }
-                None => self.message = Some("Flip Edge: click an edge between two triangles of the ground (double-click the ground first).".into()),
+                None => {
+                    self.message =
+                        Some("Flip Edge: click an edge between two triangles of the ground (double-click the ground first).".into())
+                }
             }
             return;
         }
@@ -1772,7 +1853,10 @@ impl State {
                     match self.model.sandbox_onto(inst, object, drape, 1.0) {
                         Ok(()) => {
                             self.tools.model_changed();
-                            self.message = Some(if drape { "Drape: the edges lie on the ground." } else { "Stamp: the ground is flattened under it." }.into());
+                            self.message = Some(
+                                if drape { "Drape: the edges lie on the ground." } else { "Stamp: the ground is flattened under it." }
+                                    .into(),
+                            );
                         }
                         Err(e) => {
                             self.tools.instances.clear();
@@ -1907,7 +1991,13 @@ impl State {
     fn box_select(&mut self) {
         let (w, h) = self.size();
         let owners = &self.owners[..self.owners.len().min(self.faded_from.saturating_sub(self.active_faces))];
-        let d = boxsel::Display { mesh: &self.display, edges: &self.edges, active_faces: self.active_faces, active_vertices: self.active_vertices, owners };
+        let d = boxsel::Display {
+            mesh: &self.display,
+            edges: &self.edges,
+            active_faces: self.active_faces,
+            active_vertices: self.active_vertices,
+            owners,
+        };
         let r = boxsel::Rect::new(self.press_at, self.cursor);
         let picked = boxsel::pick(&d, |p| self.camera.project(DVec3::from(p), w, h), r, boxsel::is_crossing(self.press_at, self.cursor));
         self.tools.select_box(&picked.faces, &picked.edges, &picked.instances, self.modifiers.control_key(), self.modifiers.shift_key());
@@ -1961,7 +2051,13 @@ impl State {
             Ok(i) => {
                 self.tools.model_changed();
                 self.tools.instances = vec![i];
-                let name = self.model.instances().get(i).and_then(|inst| self.model.definition(inst.def)).map(|d| d.name.clone()).unwrap_or_default();
+                let name = self
+                    .model
+                    .instances()
+                    .get(i)
+                    .and_then(|inst| self.model.definition(inst.def))
+                    .map(|d| d.name.clone())
+                    .unwrap_or_default();
                 self.message = Some(format!("Made {name}. Double-click it to edit inside."));
             }
             Err(e) => self.message = Some(format!("Not grouped: {e}.")),
@@ -2155,7 +2251,10 @@ impl State {
             }
             UiAction::PaintColor(c) => self.tools.paint_color = c.map(daedalus_core::Paint::from),
             UiAction::PaintTexture(i) => {
-                self.tools.paint_color = Some(daedalus_core::Paint { rgb: self.texture_colors.get(i).copied().unwrap_or([200, 200, 200]), texture: Some(i as u16) });
+                self.tools.paint_color = Some(daedalus_core::Paint {
+                    rgb: self.texture_colors.get(i).copied().unwrap_or([200, 200, 200]),
+                    texture: Some(i as u16),
+                });
             }
             UiAction::PickTexture => self.choose(Purpose::Texture, ""),
             UiAction::TextureSize(w, h) => {
@@ -2295,12 +2394,18 @@ impl State {
             UiAction::Minimize => self.window.set_minimized(true),
             UiAction::Close => self.begin(Pending::Quit),
             UiAction::Export => {
-                let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|n| format!("{}.stl", n.to_string_lossy())).unwrap_or_default();
+                let stem =
+                    self.path.as_ref().and_then(|p| p.file_stem()).map(|n| format!("{}.stl", n.to_string_lossy())).unwrap_or_default();
                 self.choose(Purpose::Export, &stem);
             }
             UiAction::ExportStep => {
                 // a name of its own: the model may be saved as STEP under its own name already
-                let stem = self.path.as_ref().and_then(|p| p.file_stem()).map(|n| format!("{} fabrication.step", n.to_string_lossy())).unwrap_or_else(|| "fabrication.step".into());
+                let stem = self
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.file_stem())
+                    .map(|n| format!("{} fabrication.step", n.to_string_lossy()))
+                    .unwrap_or_else(|| "fabrication.step".into());
                 self.choose(Purpose::Step, &stem);
             }
             UiAction::ExportPartStep => match self.sheet_part() {
@@ -2398,7 +2503,13 @@ impl State {
                 });
             }
             UiAction::SheetRelief(shape, corner, width, depth) => self.change_part("Reliefs", |p| {
-                let rule = daedalus_sheet::sheet::RuleValues { corner_relief_shape: RELIEFS[shape.min(3)], corner_relief: corner, relief_width: width, relief_depth: depth, ..p.rule };
+                let rule = daedalus_sheet::sheet::RuleValues {
+                    corner_relief_shape: RELIEFS[shape.min(3)],
+                    corner_relief: corner,
+                    relief_width: width,
+                    relief_depth: depth,
+                    ..p.rule
+                };
                 let material = p.material.clone();
                 p.set_rule(&material, rule)
             }),
@@ -2475,7 +2586,9 @@ impl State {
             Key::Character(_) if ctrl => {}
             Key::Character(c) if self.modifiers.shift_key() && c.eq_ignore_ascii_case("z") => self.zoom_extents(),
             // an array right after a Move copy: x5, 5x, *5 or /5
-            Key::Character(c) if (self.tools.can_array() || !self.typed.is_empty()) && (c == "*" || c == "/" || c.eq_ignore_ascii_case("x")) => {
+            Key::Character(c)
+                if (self.tools.can_array() || !self.typed.is_empty()) && (c == "*" || c == "/" || c.eq_ignore_ascii_case("x")) =>
+            {
                 self.typed.push_str(c)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("g") && self.typed.is_empty() => self.make_group(true),
@@ -2605,11 +2718,9 @@ impl State {
             | Tool::Axes
                 if !self.over_ui =>
             {
-                self
-
-                .last_cursor
-                .and_then(|c| self.tools.marker(&c))
-                .and_then(|(p, snap)| self.camera.project(DVec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), snap)))
+                self.last_cursor
+                    .and_then(|c| self.tools.marker(&c))
+                    .and_then(|(p, snap)| self.camera.project(DVec3::from(p), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), snap)))
             }
             _ => None,
         };
@@ -2666,7 +2777,11 @@ impl State {
                 let def = self.model.instances().get(*i)?.def;
                 Some((self.model.definition(def)?.name.clone(), fixed.is_some(), bends.len()))
             }),
-            one_instance: self.one_instance().and_then(|i| self.model.instances().get(i)).and_then(|inst| self.model.definition(inst.def)).map(|d| d.component),
+            one_instance: self
+                .one_instance()
+                .and_then(|i| self.model.instances().get(i))
+                .and_then(|inst| self.model.definition(inst.def))
+                .map(|d| d.component),
             editing: (self.model.open_depth() > 0).then(|| self.model.open_names().join(" › ")),
             labels: self
                 .tools
@@ -2681,7 +2796,9 @@ impl State {
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| self.label_edit.as_ref().is_none_or(|e| e.0 != *i))
-                .filter_map(|(_, l)| self.camera.project(DVec3::from(l.at), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), l.text.clone())))
+                .filter_map(|(_, l)| {
+                    self.camera.project(DVec3::from(l.at), w, h).map(|(x, y)| (egui::pos2(x / ppp, y / ppp), l.text.clone()))
+                })
                 .collect(),
             can_go_back: !self.views.is_empty(),
             own_frame: frame::OWN_FRAME,
@@ -2691,11 +2808,17 @@ impl State {
         // the resize handle under the pointer (own frame only, not while maximized)
         let resize_at = self.resize_edge();
         let zoom_rect = (self.left_down && self.tools.tool == Tool::ZoomWindow).then(|| {
-            egui::Rect::from_two_pos(egui::pos2(self.press_at.0 / ppp, self.press_at.1 / ppp), egui::pos2(self.cursor.0 / ppp, self.cursor.1 / ppp))
+            egui::Rect::from_two_pos(
+                egui::pos2(self.press_at.0 / ppp, self.press_at.1 / ppp),
+                egui::pos2(self.cursor.0 / ppp, self.cursor.1 / ppp),
+            )
         });
         // Select: the box being dragged (dashed when it goes right to left: a crossing box)
         let select_rect = (self.left_down && self.tools.tool == Tool::Select && self.dragged()).then(|| {
-            let r = egui::Rect::from_two_pos(egui::pos2(self.press_at.0 / ppp, self.press_at.1 / ppp), egui::pos2(self.cursor.0 / ppp, self.cursor.1 / ppp));
+            let r = egui::Rect::from_two_pos(
+                egui::pos2(self.press_at.0 / ppp, self.press_at.1 / ppp),
+                egui::pos2(self.cursor.0 / ppp, self.cursor.1 / ppp),
+            );
             (r, boxsel::is_crossing(self.press_at, self.cursor))
         });
         let raw = self.egui_state.take_egui_input(&self.window);
@@ -2716,7 +2839,8 @@ impl State {
         let mut dialog_out = None;
         let ask = self.ask;
         let mut answer: Option<&'static str> = None;
-        let doc_name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
+        let doc_name =
+            self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
         let context_at = self.context_at;
         let context_fresh = std::mem::take(&mut self.context_fresh);
         let mut context_open = context_at.is_some();
@@ -2740,7 +2864,11 @@ impl State {
                         ui.horizontal(|ui| {
                             if let Some(copy) = &n.copy {
                                 let label = format!("Also save a full copy ({})", short(copy));
-                                if ui.button(label).on_hover_text("A .ddls file keeps everything; the file just saved stays as it is.").clicked() {
+                                if ui
+                                    .button(label)
+                                    .on_hover_text("A .ddls file keeps everything; the file just saved stays as it is.")
+                                    .clicked()
+                                {
                                     notice_answer = Some(true);
                                 }
                             }
@@ -2780,77 +2908,94 @@ impl State {
             if view.own_frame && !view.maximized {
                 // a hairline around the window, so its edge shows without a system frame
                 let rect = ctx.screen_rect().shrink(0.5);
-                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("window-outline")))
-                    .rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::from_gray(150)), egui::StrokeKind::Inside);
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("window-outline"))).rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_gray(150)),
+                    egui::StrokeKind::Inside,
+                );
             }
             if let Some(d) = dialog.as_mut() {
                 dialog_out = d.show(ctx).map(|o| (d.purpose, o));
             }
             if let Some(f) = form.as_mut() {
-                egui::Window::new("3D Text").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut f.text).desired_rows(3).desired_width(260.0));
-                    egui::Grid::new("text3d-grid").num_columns(2).show(ui, |ui| {
-                        ui.label("Height");
-                        ui.add(egui::TextEdit::singleline(&mut f.height).desired_width(120.0));
-                        ui.end_row();
-                        ui.checkbox(&mut f.extruded, "Extruded");
-                        ui.add_enabled(f.extruded, egui::TextEdit::singleline(&mut f.depth).desired_width(120.0));
-                        ui.end_row();
-                    });
-                    // the font, from those on the system (the list is read once, the first time it is opened)
-                    let fonts = text3d::fonts();
-                    let now = fonts.iter().find(|x| x.path == f.font).map_or("Ubuntu Light (built in)", |x| x.name.as_str());
-                    egui::ComboBox::from_label("Font").selected_text(now).width(220.0).height(320.0).show_ui(ui, |ui| {
-                        for x in fonts {
-                            ui.selectable_value(&mut f.font, x.path.clone(), &x.name);
-                        }
-                    });
-                    ui.label(egui::RichText::new("Lengths in any unit (300mm, 1').").small());
-                    ui.horizontal(|ui| {
-                        if ui.button("Place").clicked() {
-                            form_answer = Some(true);
-                        }
-                        if ui.button("Cancel").clicked() {
-                            form_answer = Some(false);
-                        }
-                    });
-                });
+                egui::Window::new("3D Text").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
+                    ctx,
+                    |ui| {
+                        ui.add(egui::TextEdit::multiline(&mut f.text).desired_rows(3).desired_width(260.0));
+                        egui::Grid::new("text3d-grid").num_columns(2).show(ui, |ui| {
+                            ui.label("Height");
+                            ui.add(egui::TextEdit::singleline(&mut f.height).desired_width(120.0));
+                            ui.end_row();
+                            ui.checkbox(&mut f.extruded, "Extruded");
+                            ui.add_enabled(f.extruded, egui::TextEdit::singleline(&mut f.depth).desired_width(120.0));
+                            ui.end_row();
+                        });
+                        // the font, from those on the system (the list is read once, the first time it is opened)
+                        let fonts = text3d::fonts();
+                        let now = fonts.iter().find(|x| x.path == f.font).map_or("Ubuntu Light (built in)", |x| x.name.as_str());
+                        egui::ComboBox::from_label("Font").selected_text(now).width(220.0).height(320.0).show_ui(ui, |ui| {
+                            for x in fonts {
+                                ui.selectable_value(&mut f.font, x.path.clone(), &x.name);
+                            }
+                        });
+                        ui.label(egui::RichText::new("Lengths in any unit (300mm, 1').").small());
+                        ui.horizontal(|ui| {
+                            if ui.button("Place").clicked() {
+                                form_answer = Some(true);
+                            }
+                            if ui.button("Cancel").clicked() {
+                                form_answer = Some(false);
+                            }
+                        });
+                    },
+                );
             }
             // typing into text: a box where the text stands; Enter or a click elsewhere finishes
             if let (Some((_, text)), Some(pos)) = (label_edit.as_mut(), label_pos) {
-                egui::Area::new(egui::Id::new("text-edit")).fixed_pos(pos - egui::vec2(80.0, 12.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        let out = egui::TextEdit::singleline(text).desired_width(160.0).hint_text("Text").show(ui);
-                        if label_fresh {
-                            // the words it starts with are selected, so typing replaces them (as in SketchUp)
-                            let mut st = out.state.clone();
-                            let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()));
-                            st.cursor.set_char_range(Some(all));
-                            st.store(ui.ctx(), out.response.id);
-                        }
-                        let r = out.response;
-                        r.request_focus();
-                        if r.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape)) {
-                            label_done = true;
-                        }
-                    });
-                });
+                egui::Area::new(egui::Id::new("text-edit")).fixed_pos(pos - egui::vec2(80.0, 12.0)).order(egui::Order::Foreground).show(
+                    ctx,
+                    |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            let out = egui::TextEdit::singleline(text).desired_width(160.0).hint_text("Text").show(ui);
+                            if label_fresh {
+                                // the words it starts with are selected, so typing replaces them (as in SketchUp)
+                                let mut st = out.state.clone();
+                                let all = egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(text.chars().count()),
+                                );
+                                st.cursor.set_char_range(Some(all));
+                                st.store(ui.ctx(), out.response.id);
+                            }
+                            let r = out.response;
+                            r.request_focus();
+                            if r.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape)) {
+                                label_done = true;
+                            }
+                        });
+                    },
+                );
             }
             if ask.is_some() {
-                egui::Window::new("Save changes?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-                    ui.label(format!("{doc_name} has changes that are not saved."));
-                    ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
-                            answer = Some("save");
-                        }
-                        if ui.button("Don't Save").clicked() {
-                            answer = Some("discard");
-                        }
-                        if ui.button("Cancel").clicked() {
-                            answer = Some("cancel");
-                        }
+                egui::Window::new("Save changes?")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label(format!("{doc_name} has changes that are not saved."));
+                        ui.horizontal(|ui| {
+                            if ui.button("Save").clicked() {
+                                answer = Some("save");
+                            }
+                            if ui.button("Don't Save").clicked() {
+                                answer = Some("discard");
+                            }
+                            if ui.button("Cancel").clicked() {
+                                answer = Some("cancel");
+                            }
+                        });
                     });
-                });
             }
         });
         self.dialog = if dialog_out.is_some() { None } else { dialog };
@@ -2895,7 +3040,13 @@ impl State {
         }
         // over the model, the tool's own cursor; egui is told the arrow then, so it sets its own again when the pointer is
         // back over the toolbar or a menu
-        let want = (self.pointer_in && !self.over_ui && resize_at.is_none() && self.context_at.is_none() && cursors::has_cursor(self.tools.tool) && self.tool_cursors.contains_key(&self.tools.tool)).then_some(self.tools.tool);
+        let want = (self.pointer_in
+            && !self.over_ui
+            && resize_at.is_none()
+            && self.context_at.is_none()
+            && cursors::has_cursor(self.tools.tool)
+            && self.tool_cursors.contains_key(&self.tools.tool))
+        .then_some(self.tools.tool);
         let mut platform = out.platform_output;
         if want.is_some() {
             platform.cursor_icon = egui::CursorIcon::Default;
@@ -2999,10 +3150,20 @@ fn from_sketchup(path: &Path) -> Result<Scene, String> {
         .chain([home.join(".local/bin")])
         .map(|d| d.join("skp-convert"))
         .find(|p| p.is_file())
-        .ok_or_else(|| format!("{} is a SketchUp file. Reading those needs the skp-convert helper (OpenSKP), which is not installed here.", short(path)))?;
+        .ok_or_else(|| {
+            format!(
+                "{} is a SketchUp file. Reading those needs the skp-convert helper (OpenSKP), which is not installed here.",
+                short(path)
+            )
+        })?;
     let cache = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".cache")).join("daedalus/sketchup");
     let out = cache.join(format!("{}.dskp", path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "model".into())));
-    let run = std::process::Command::new(&converter).arg("--one").arg(path).arg(&out).output().map_err(|e| format!("skp-convert did not start: {e}"))?;
+    let run = std::process::Command::new(&converter)
+        .arg("--one")
+        .arg(path)
+        .arg(&out)
+        .output()
+        .map_err(|e| format!("skp-convert did not start: {e}"))?;
     if !run.status.success() {
         let why = String::from_utf8_lossy(&run.stderr);
         let last = why.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no reason given").to_string();
@@ -3024,7 +3185,9 @@ fn short(path: &Path) -> String {
 fn saved_notice(path: &Path, left_out: &[String]) -> Option<Notice> {
     (!left_out.is_empty()).then(|| Notice {
         title: format!("Saved {}", short(path)),
-        lines: std::iter::once("These are not in it (the file's format has no place for them):".to_string()).chain(left_out.iter().map(|l| format!("•  {l}"))).collect(),
+        lines: std::iter::once("These are not in it (the file's format has no place for them):".to_string())
+            .chain(left_out.iter().map(|l| format!("•  {l}")))
+            .collect(),
         copy: Some(path.with_extension(daedalus_io::formats::Format::Native.extension())),
     })
 }
@@ -3046,7 +3209,9 @@ mod tests {
 /// Events from outside the window: the desktop switched between light and dark; the file chooser answered.
 #[derive(Debug, Clone)]
 enum AppEvent {
-    Theme { dark: bool },
+    Theme {
+        dark: bool,
+    },
     #[cfg(target_os = "linux")]
     Picked(Purpose, portal::Answer),
 }
@@ -3345,7 +3510,11 @@ fn step_text(p: &daedalus_sheet::part::SheetPart, f: &daedalus_sheet::part::Flan
                     made += c;
                 }
                 // a converted part's own bends come first
-                if p.solid.is_some() { format!("flange {}", k + 1) } else { name }
+                if p.solid.is_some() {
+                    format!("flange {}", k + 1)
+                } else {
+                    name
+                }
             }
         };
         return (h.size_text(), format!("{}, {}", fmt(h.at[0]), fmt(h.at[1])), on);

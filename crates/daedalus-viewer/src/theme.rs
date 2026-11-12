@@ -35,10 +35,7 @@ mod portal {
     /// Whether the desktop prefers dark, read once. None when there is no portal.
     pub fn read(conn: &Connection) -> Option<bool> {
         let p = proxy(conn).ok()?;
-        let v: OwnedValue = p
-            .call("ReadOne", &(NAMESPACE, KEY))
-            .or_else(|_| p.call("Read", &(NAMESPACE, KEY)))
-            .ok()?;
+        let v: OwnedValue = p.call("ReadOne", &(NAMESPACE, KEY)).or_else(|_| p.call("Read", &(NAMESPACE, KEY))).ok()?;
         as_u32(&v).map(super::is_dark_scheme)
     }
 

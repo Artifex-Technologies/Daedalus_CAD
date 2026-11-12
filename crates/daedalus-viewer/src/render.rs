@@ -78,7 +78,8 @@ pub enum FaceStyle {
 }
 
 impl FaceStyle {
-    pub const ALL: [FaceStyle; 6] = [FaceStyle::Wireframe, FaceStyle::HiddenLine, FaceStyle::Shaded, FaceStyle::Textured, FaceStyle::Monochrome, FaceStyle::XRay];
+    pub const ALL: [FaceStyle; 6] =
+        [FaceStyle::Wireframe, FaceStyle::HiddenLine, FaceStyle::Shaded, FaceStyle::Textured, FaceStyle::Monochrome, FaceStyle::XRay];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -117,7 +118,14 @@ pub struct Style {
 /// Flat-shaded triangle list: every face gets its own vertices and normal.
 /// `tiles`: each texture's tile size (width, height, metres), by number; a face painted with one gets its place on it, the
 /// tiles lined up with the face (across: level in the face; up: square to that in it).
-fn face_vertices(mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagged: &[usize], faded_from: usize, tiles: &[[f64; 2]]) -> Vec<Vertex> {
+fn face_vertices(
+    mesh: &Mesh,
+    tris: &[Vec<[u32; 3]>],
+    selected: &[usize],
+    flagged: &[usize],
+    faded_from: usize,
+    tiles: &[[f64; 2]],
+) -> Vec<Vertex> {
     let mut out = Vec::new();
     for (fi, face) in mesh.faces.iter().enumerate() {
         let normal = newell(mesh, face).map(|c| c as f32);
@@ -135,7 +143,9 @@ fn face_vertices(mesh: &Mesh, tris: &[Vec<[u32; 3]>], selected: &[usize], flagge
         // the texture's axes on this face: across level (or along x when it lies flat), up square to that
         let texture = paint.and_then(|p| p.texture).filter(|&t| (t as usize) < tiles.len());
         let n = newell(mesh, face);
-        let across = if n[2].abs() > 0.999 { [1.0, 0.0, 0.0] } else {
+        let across = if n[2].abs() > 0.999 {
+            [1.0, 0.0, 0.0]
+        } else {
             let a = [-n[1], n[0], 0.0];
             let l = (a[0] * a[0] + a[1] * a[1]).sqrt();
             [a[0] / l, a[1] / l, 0.0]
@@ -266,20 +276,16 @@ impl Renderer {
         for backends in [wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY), wgpu::Backends::GL] {
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends, ..Default::default() });
             let Ok(surface) = instance.create_surface(window.clone()) else { continue };
-            let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }).await;
+            let adapter =
+                instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }).await;
             if let Some(adapter) = adapter {
                 found = Some((instance, surface, adapter));
                 break;
             }
         }
         let (_instance, surface, adapter) = found.expect("no suitable GPU adapter (Vulkan or OpenGL)");
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
-            .await
-            .expect("request device");
-        let config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
-            .expect("surface not supported by adapter");
+        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default(), None).await.expect("request device");
+        let config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("surface not supported by adapter");
         surface.configure(&device, &config);
         // 4x MSAA where the GPU offers it for the window's format (it nearly always does)
         let samples = if adapter.get_texture_format_features(config.format).flags.sample_count_supported(MSAA)
@@ -346,9 +352,8 @@ impl Renderer {
 
         let face_shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let line_shader = device.create_shader_module(wgpu::include_wgsl!("lines.wgsl"));
-        let target = |blend| {
-            [Some(wgpu::ColorTargetState { format: config.format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })]
-        };
+        let target =
+            |blend| [Some(wgpu::ColorTargetState { format: config.format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })];
         let opaque = target(wgpu::BlendState::REPLACE);
         let blended = target(wgpu::BlendState::ALPHA_BLENDING);
         let face_layout = wgpu::VertexBufferLayout {
@@ -520,7 +525,17 @@ impl Renderer {
     /// `selected_edges`: edges drawn in the selection colour (vertex pairs, lower number first, sorted).
     /// `tiles`: each texture's tile size, by number (see `face_vertices`).
     #[allow(clippy::too_many_arguments)]
-    pub fn set_scene(&mut self, mesh: &Mesh, tris: &[Vec<[u32; 3]>], edges: &[(u32, u32)], selected: &[usize], selected_edges: &[[u32; 2]], flagged: &[usize], faded: (usize, u32), tiles: &[[f64; 2]]) {
+    pub fn set_scene(
+        &mut self,
+        mesh: &Mesh,
+        tris: &[Vec<[u32; 3]>],
+        edges: &[(u32, u32)],
+        selected: &[usize],
+        selected_edges: &[[u32; 2]],
+        flagged: &[usize],
+        faded: (usize, u32),
+        tiles: &[[f64; 2]],
+    ) {
         let faces = face_vertices(mesh, tris, selected, flagged, faded.0, tiles);
         let edges = edge_vertices(mesh, edges, faded.1, selected_edges);
         self.faces = (self.buffer(bytemuck::cast_slice(&faces)), faces.len() as u32);
@@ -617,7 +632,9 @@ impl Renderer {
             pass.set_pipeline(&self.edge_pipeline);
             pass.set_vertex_buffer(0, self.edges.0.slice(..));
             pass.draw(0..6, 0..self.edges.1 / 2);
-            if style.back_edges && matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded | FaceStyle::Textured | FaceStyle::Monochrome) {
+            if style.back_edges
+                && matches!(style.faces, FaceStyle::HiddenLine | FaceStyle::Shaded | FaceStyle::Textured | FaceStyle::Monochrome)
+            {
                 pass.set_pipeline(&self.back_edge_pipeline);
                 pass.draw(0..6, 0..self.edges.1 / 2);
             }
@@ -634,10 +651,8 @@ impl Renderer {
             pass.draw(0..6, 0..overlay.len() as u32 / 2);
         }
 
-        let screen = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [self.config.width, self.config.height],
-            pixels_per_point: ui.pixels_per_point,
-        };
+        let screen =
+            egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: ui.pixels_per_point };
         for (id, delta) in &ui.textures.set {
             self.egui.update_texture(&self.device, &self.queue, *id, delta);
         }
@@ -681,7 +696,14 @@ mod shader_tests {
 }
 
 /// The bind group: the uniforms, the textures as layers of one array (a blank layer when there are none), the sampler.
-fn texture_bind_group(device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu::BindGroupLayout, uniforms: &wgpu::Buffer, sampler: &wgpu::Sampler, layers: &[Vec<u8>]) -> wgpu::BindGroup {
+fn texture_bind_group(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    uniforms: &wgpu::Buffer,
+    sampler: &wgpu::Sampler,
+    layers: &[Vec<u8>],
+) -> wgpu::BindGroup {
     let count = layers.len().max(1) as u32;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("textures"),
@@ -699,13 +721,19 @@ fn texture_bind_group(device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu:
             continue;
         }
         queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: i as u32 }, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y: 0, z: i as u32 },
+                aspect: wgpu::TextureAspect::All,
+            },
             data,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * TEXTURE_SIZE), rows_per_image: Some(TEXTURE_SIZE) },
             wgpu::Extent3d { width: TEXTURE_SIZE, height: TEXTURE_SIZE, depth_or_array_layers: 1 },
         );
     }
-    let view = texture.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+    let view =
+        texture.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout,

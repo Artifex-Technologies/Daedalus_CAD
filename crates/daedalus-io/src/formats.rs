@@ -123,7 +123,12 @@ fn mesh_left_out(format: Format, scene: &Scene) -> Vec<String> {
         out.push("groups and components (all written as one mesh)".into());
     }
     let n = &scene.notes;
-    for (k, one, many) in [(n.guides.len(), "guide", "guides"), (n.dims.len(), "dimension", "dimensions"), (n.labels.len(), "text note", "text notes"), (n.sections.len(), "section plane", "section planes")] {
+    for (k, one, many) in [
+        (n.guides.len(), "guide", "guides"),
+        (n.dims.len(), "dimension", "dimensions"),
+        (n.labels.len(), "text note", "text notes"),
+        (n.sections.len(), "section plane", "section planes"),
+    ] {
         if k > 0 {
             out.push(count(k, one, many));
         }
@@ -141,7 +146,8 @@ fn mesh_left_out(format: Format, scene: &Scene) -> Vec<String> {
         out.push(count(flat.lines.len(), "loose line", "loose lines"));
     }
     let edges: std::collections::HashSet<(u32, u32)> = flat.edges().into_iter().collect();
-    let soft: std::collections::HashSet<(u32, u32)> = flat.seams.iter().map(|&[a, b]| (a.min(b), a.max(b))).filter(|e| edges.contains(e)).collect();
+    let soft: std::collections::HashSet<(u32, u32)> =
+        flat.seams.iter().map(|&[a, b]| (a.min(b), a.max(b))).filter(|e| edges.contains(e)).collect();
     if !soft.is_empty() {
         out.push(format!("{} (every edge is drawn)", count(soft.len(), "soft edge", "soft edges")));
     }
@@ -200,7 +206,11 @@ mod tests {
     #[test]
     fn a_sketchup_model_is_saved_beside_itself_as_step() {
         for f in ["/m/Sample 2.skp", "/m/Sample 2.dskp", "/m/Sample 2.SKP"] {
-            assert_eq!(save_target(Some(Path::new(f)), true, false), ask(Some("/m"), "Sample 2.step", Format::Step), "{f}: never written over");
+            assert_eq!(
+                save_target(Some(Path::new(f)), true, false),
+                ask(Some("/m"), "Sample 2.step", Format::Step),
+                "{f}: never written over"
+            );
             assert_eq!(save_target(Some(Path::new(f)), true, true), ask(Some("/m"), "Sample 2.step", Format::Step));
         }
     }
@@ -257,7 +267,15 @@ mod tests {
         let v = m.add_vertex([2.0, 0.0, 0.0]);
         m.lines.push([1, v]);
         let mut s = Scene::default();
-        s.defs.push(Definition { name: "G".into(), component: false, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: m, instances: Vec::new() } });
+        s.defs.push(Definition {
+            name: "G".into(),
+            component: false,
+            glue: false,
+            cut: false,
+            attributes: Vec::new(),
+            part: None,
+            ctx: Context { mesh: m, instances: Vec::new() },
+        });
         s.root.instances.push(Instance { def: 0, xf: Xform::IDENTITY });
         s.notes.guides.push(Guide::Point([0.0; 3]));
         let stl = left_out(Format::Stl, &s);

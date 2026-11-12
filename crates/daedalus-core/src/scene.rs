@@ -336,7 +336,15 @@ impl Scene {
 
     /// One instance and the copies its attributes add, each its definition placed, piece by piece into `out`; `paint` is the
     /// material inherited from around it, `parent` the values of the component it sits in.
-    fn place<'a>(&'a self, inst: &Instance, parent_xf: &Xform, depth: usize, paint: Option<crate::Paint>, parent: &HashMap<String, f64>, out: &mut dyn FnMut(Piece<'a>)) {
+    fn place<'a>(
+        &'a self,
+        inst: &Instance,
+        parent_xf: &Xform,
+        depth: usize,
+        paint: Option<crate::Paint>,
+        parent: &HashMap<String, f64>,
+        out: &mut dyn FnMut(Piece<'a>),
+    ) {
         let Some(view) = crate::model::dc_view(self, inst, parent) else { return };
         let paint = view.paint.or(paint);
         for xf in &view.xfs {
@@ -344,7 +352,15 @@ impl Scene {
         }
     }
 
-    fn walk_def<'a>(&'a self, def: usize, xf: &Xform, depth: usize, paint: Option<crate::Paint>, values: &HashMap<String, f64>, out: &mut dyn FnMut(Piece<'a>)) {
+    fn walk_def<'a>(
+        &'a self,
+        def: usize,
+        xf: &Xform,
+        depth: usize,
+        paint: Option<crate::Paint>,
+        values: &HashMap<String, f64>,
+        out: &mut dyn FnMut(Piece<'a>),
+    ) {
         // a definition cannot hold itself, but a damaged file could say so
         let Some(d) = self.defs.get(def) else { return };
         if depth > 64 {
@@ -480,9 +496,25 @@ mod tests {
         }
         unit.add_face(vec![0, 1, 2]);
         let mut s = Scene::default();
-        s.defs.push(Definition { name: "Leaf".into(), component: true, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: unit, instances: vec![] } });
+        s.defs.push(Definition {
+            name: "Leaf".into(),
+            component: true,
+            glue: false,
+            cut: false,
+            attributes: Vec::new(),
+            part: None,
+            ctx: Context { mesh: unit, instances: vec![] },
+        });
         let inner = Instance { def: 0, xf: Xform::translation([0.0, 0.0, 1.0]) };
-        s.defs.push(Definition { name: "Box".into(), component: false, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh: Mesh::new(), instances: vec![inner, inner] } });
+        s.defs.push(Definition {
+            name: "Box".into(),
+            component: false,
+            glue: false,
+            cut: false,
+            attributes: Vec::new(),
+            part: None,
+            ctx: Context { mesh: Mesh::new(), instances: vec![inner, inner] },
+        });
         s.root.instances.push(Instance { def: 1, xf: Xform::translation([5.0, 0.0, 0.0]) });
         let flat = s.flatten();
         assert_eq!(flat.faces.len(), 2);

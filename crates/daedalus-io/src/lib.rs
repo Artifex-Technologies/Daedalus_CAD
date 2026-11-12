@@ -69,10 +69,8 @@ pub fn import_mesh(path: &Path) -> Result<Mesh, IoError> {
         return Ok(skp::read(&std::fs::read(path)?)?.flatten());
     }
     let importers: [&dyn MeshImporter; 6] = [&native::Native, &stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae, &step::Step];
-    let importer = importers
-        .iter()
-        .find(|i| i.extensions().contains(&ext.as_str()))
-        .ok_or_else(|| IoError::Unsupported(format!(".{ext}")))?;
+    let importer =
+        importers.iter().find(|i| i.extensions().contains(&ext.as_str())).ok_or_else(|| IoError::Unsupported(format!(".{ext}")))?;
     importer.import(&std::fs::read(path)?)
 }
 
@@ -141,10 +139,8 @@ pub fn save_scene_with(scene: &daedalus_core::scene::Scene, path: &Path, opts: &
 pub fn export_mesh(mesh: &Mesh, path: &Path) -> Result<(), IoError> {
     let ext = extension(path).ok_or_else(|| IoError::Unsupported("no file extension".into()))?;
     let exporters: [&dyn MeshExporter; 6] = [&native::Native, &stl::Stl, &obj::Obj, &dxf::Dxf, &dae::Dae, &step::Step];
-    let exporter = exporters
-        .iter()
-        .find(|e| e.extensions().contains(&ext.as_str()))
-        .ok_or_else(|| IoError::Unsupported(format!(".{ext}")))?;
+    let exporter =
+        exporters.iter().find(|e| e.extensions().contains(&ext.as_str())).ok_or_else(|| IoError::Unsupported(format!(".{ext}")))?;
     std::fs::write(path, exporter.export(mesh)?)?;
     Ok(())
 }

@@ -5,8 +5,8 @@
 
 use crate::part::{self, SheetPart};
 use crate::util::Result;
-use daedalus_core::scene::{Context, Scene, Xform};
 use daedalus_core::Mesh;
+use daedalus_core::scene::{Context, Scene, Xform};
 use solidcore_record::Vec3;
 
 /// What went into a STEP file.
@@ -35,7 +35,14 @@ pub fn scene_step(scene: &Scene) -> Result<StepReport> {
     Ok(report)
 }
 
-fn walk(scene: &Scene, ctx: &Context, world: &Xform, bodies: &mut Vec<crate::kernel::Body>, report: &mut StepReport, depth: usize) -> Result<()> {
+fn walk(
+    scene: &Scene,
+    ctx: &Context,
+    world: &Xform,
+    bodies: &mut Vec<crate::kernel::Body>,
+    report: &mut StepReport,
+    depth: usize,
+) -> Result<()> {
     if depth > 64 {
         return Ok(());
     }
@@ -91,7 +98,10 @@ pub(crate) fn sew_polygons(faces: &[Vec<Vec<[f64; 3]>>]) -> Result<crate::kernel
     let specs: Vec<FaceSpec> = faces
         .iter()
         .map(|loops| FaceSpec {
-            loops: loops.iter().map(|lp| (0..lp.len()).map(|i| EdgeSpec::Line { a: v(lp[i]), b: v(lp[(i + 1) % lp.len()]) }).collect()).collect(),
+            loops: loops
+                .iter()
+                .map(|lp| (0..lp.len()).map(|i| EdgeSpec::Line { a: v(lp[i]), b: v(lp[(i + 1) % lp.len()]) }).collect())
+                .collect(),
             surface: SurfSpec::Plane,
             probe: None,
         })
@@ -102,7 +112,7 @@ pub(crate) fn sew_polygons(faces: &[Vec<Vec<[f64; 3]>>]) -> Result<crate::kernel
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::part::{part_from_face, FlangePosition};
+    use crate::part::{FlangePosition, part_from_face};
     use crate::sheet::RuleValues;
     use daedalus_core::scene::{Definition, Instance};
 

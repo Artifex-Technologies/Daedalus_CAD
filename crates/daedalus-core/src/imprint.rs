@@ -137,7 +137,8 @@ fn rehome_holes(m: &mut Mesh, from: usize, to: usize, tol: f64) {
         return;
     }
     let plane = face_plane(m, &m.faces[to]);
-    let (moved, kept): (Vec<Vec<u32>>, Vec<Vec<u32>>) = holes.into_iter().partition(|h| inside_plane(m, &m.faces[to], plane, m.positions[h[0] as usize], tol));
+    let (moved, kept): (Vec<Vec<u32>>, Vec<Vec<u32>>) =
+        holes.into_iter().partition(|h| inside_plane(m, &m.faces[to], plane, m.positions[h[0] as usize], tol));
     let mut theirs = m.holes_of(to).to_vec();
     theirs.extend(moved);
     m.set_holes(from, kept);
@@ -339,11 +340,7 @@ pub fn cut_hole_avoiding(m: &mut Mesh, outer: usize, inner: &[u32], avoid: &[Vec
         inner2.reverse();
     }
     let inner = &inner[..];
-    let span = outer2
-        .iter()
-        .chain(&inner2)
-        .fold(0.0f64, |s, p| s.max(p[0].abs()).max(p[1].abs()))
-        .max(1e-6);
+    let span = outer2.iter().chain(&inner2).fold(0.0f64, |s, p| s.max(p[0].abs()).max(p[1].abs())).max(1e-6);
     let eps = span * 1e-6;
     // a seam may join outer corner p and hole corner q only if it stays inside the face: it crosses no edge of the outline
     // or of the hole (touching them only at its own two ends), and its middle is inside the outline and outside the hole
@@ -371,10 +368,8 @@ pub fn cut_hole_avoiding(m: &mut Mesh, outer: usize, inner: &[u32], avoid: &[Vec
     };
     // every pair by length, shortest first, but tested for a clear path only until enough are found: testing all of them
     // first took 24 s on a face of 3,100 corners (a curved terrace in my Dream House model)
-    let mut all: Vec<(f64, u32, u32)> = (0..n)
-        .flat_map(|pi| (0..k).map(move |qi| (pi, qi)))
-        .map(|(pi, qi)| (d2(pi, qi), pi as u32, qi as u32))
-        .collect();
+    let mut all: Vec<(f64, u32, u32)> =
+        (0..n).flat_map(|pi| (0..k).map(move |qi| (pi, qi))).map(|(pi, qi)| (d2(pi, qi), pi as u32, qi as u32)).collect();
     all.sort_unstable_by(|x, y| x.0.total_cmp(&y.0));
     const ENOUGH: usize = 256;
     let mut pairs: Vec<(usize, usize)> = Vec::new();
@@ -490,7 +485,11 @@ fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2], eps: f64) 
     }
     // touching: an end of one lying on the other
     let on = |p: [f64; 2], q: [f64; 2], r: [f64; 2], v: f64| {
-        v.abs() <= tol && r[0] >= p[0].min(q[0]) - eps && r[0] <= p[0].max(q[0]) + eps && r[1] >= p[1].min(q[1]) - eps && r[1] <= p[1].max(q[1]) + eps
+        v.abs() <= tol
+            && r[0] >= p[0].min(q[0]) - eps
+            && r[0] <= p[0].max(q[0]) + eps
+            && r[1] >= p[1].min(q[1]) - eps
+            && r[1] <= p[1].max(q[1]) + eps
     };
     on(c, d, a, d1) || on(c, d, b, d2) || on(a, b, c, d3) || on(a, b, d, d4)
 }
@@ -565,14 +564,8 @@ mod tests {
         let (t, p) = crossing([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], 1e-5).unwrap();
         assert!((t - 0.5).abs() < 1e-6 && (p[0] - 1.0).abs() < 1e-6);
         assert!(crossing([0.0; 3], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [2.0, 1.0, 0.0], 1e-5).is_none());
-        assert!(
-            crossing([0.0; 3], [2.0, 0.0, 0.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], 1e-5).is_none(),
-            "one above the other"
-        );
-        assert!(
-            crossing([0.0; 3], [2.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0], 1e-5).is_none(),
-            "touching at an end"
-        );
+        assert!(crossing([0.0; 3], [2.0, 0.0, 0.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], 1e-5).is_none(), "one above the other");
+        assert!(crossing([0.0; 3], [2.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0], 1e-5).is_none(), "touching at an end");
     }
 
     #[test]

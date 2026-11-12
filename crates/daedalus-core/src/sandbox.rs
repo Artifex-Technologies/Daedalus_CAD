@@ -21,7 +21,8 @@ fn in_circle(a: P, b: P, c: P, p: P) -> bool {
     let (ax, ay) = (a[0] - p[0], a[1] - p[1]);
     let (bx, by) = (b[0] - p[0], b[1] - p[1]);
     let (cx, cy) = (c[0] - p[0], c[1] - p[1]);
-    let det = (ax * ax + ay * ay) * (bx * cy - cx * by) - (bx * bx + by * by) * (ax * cy - cx * ay) + (cx * cx + cy * cy) * (ax * by - bx * ay);
+    let det =
+        (ax * ax + ay * ay) * (bx * cy - cx * by) - (bx * bx + by * by) * (ax * cy - cx * ay) + (cx * cx + cy * cy) * (ax * by - bx * ay);
     det > 0.0
 }
 
@@ -49,10 +50,14 @@ pub fn delaunay(pts: &[P]) -> Vec<[usize; 3]> {
         [a * span * 1e-9, b * span * 1e-9]
     };
     // a triangle round everything, far out
-    let mut all: Vec<P> = pts.iter().enumerate().map(|(i, p)| {
-        let d = nudge(i);
-        [p[0] + d[0], p[1] + d[1]]
-    }).collect();
+    let mut all: Vec<P> = pts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let d = nudge(i);
+            [p[0] + d[0], p[1] + d[1]]
+        })
+        .collect();
     all.push([mid[0] - 40.0 * span, mid[1] - 20.0 * span]);
     all.push([mid[0] + 40.0 * span, mid[1] - 20.0 * span]);
     all.push([mid[0], mid[1] + 40.0 * span]);
@@ -177,13 +182,15 @@ fn point_in(poly: &[P], p: P) -> bool {
 }
 
 fn dist_to_poly(poly: &[P], p: P) -> f64 {
-    (0..poly.len()).map(|i| {
-        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
-        let d = [b[0] - a[0], b[1] - a[1]];
-        let l2 = d[0] * d[0] + d[1] * d[1];
-        let t = if l2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
-        ((p[0] - a[0] - d[0] * t).powi(2) + (p[1] - a[1] - d[1] * t).powi(2)).sqrt()
-    }).fold(f64::MAX, f64::min)
+    (0..poly.len())
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let l2 = d[0] * d[0] + d[1] * d[1];
+            let t = if l2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            ((p[0] - a[0] - d[0] * t).powi(2) + (p[1] - a[1] - d[1] * t).powi(2)).sqrt()
+        })
+        .fold(f64::MAX, f64::min)
 }
 
 /// Stamp: the ground under the outline `footprint` (seen from above) set to `height`, and within `offset` round it eased
@@ -309,10 +316,12 @@ pub fn add_detail(m: &mut Mesh, faces: &[usize]) {
 /// Flip Edge: the edge `a`-`b` between two triangles swapped for the other diagonal of the four corners round it. None
 /// when it is not between two triangles, or the swap would fold the surface over (the four corners not convex from above).
 pub fn flip_edge(m: &mut Mesh, a: u32, b: u32) -> Option<()> {
-    let on: Vec<usize> = (0..m.faces.len()).filter(|&f| {
-        let r = &m.faces[f];
-        r.len() == 3 && m.holes_of(f).is_empty() && r.contains(&a) && r.contains(&b)
-    }).collect();
+    let on: Vec<usize> = (0..m.faces.len())
+        .filter(|&f| {
+            let r = &m.faces[f];
+            r.len() == 3 && m.holes_of(f).is_empty() && r.contains(&a) && r.contains(&b)
+        })
+        .collect();
     let [f, g] = on[..] else { return None };
     let other = |f: usize| *m.faces[f].iter().find(|&&v| v != a && v != b).expect("a triangle");
     let (c, d) = (other(f), other(g));

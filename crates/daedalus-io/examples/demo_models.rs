@@ -8,8 +8,8 @@
 
 use daedalus_core::model::Model;
 use daedalus_core::scene::Texture;
-use daedalus_core::Paint;
 use daedalus_core::scene::{Dimension, Label};
+use daedalus_core::Paint;
 use std::path::Path;
 
 const WALL: [u8; 3] = [232, 222, 198];
@@ -114,14 +114,22 @@ fn main() {
         let xs = (x + if course % 2 == 1 { 64 } else { 0 }) % 128;
         let mortar = y % 64 < 6 || xs < 6;
         let shade = ((x * 7 + y * 13) % 23) as u8;
-        if mortar { image::Rgb([205, 200, 190]) } else { image::Rgb([150 + shade, 62 + shade / 2, 44]) }
+        if mortar {
+            image::Rgb([205, 200, 190])
+        } else {
+            image::Rgb([150 + shade, 62 + shade / 2, 44])
+        }
     })
     .save(&brick)
     .unwrap();
     let tiles = out.join("roof-tiles.png");
     image::RgbImage::from_fn(128, 128, |x, y| {
         let edge = y % 64 < 5 || (x + if (y / 64) % 2 == 1 { 32 } else { 0 }) % 64 < 3;
-        if edge { image::Rgb([70, 40, 35]) } else { image::Rgb([120, (48 + y % 64 / 4) as u8, 40]) }
+        if edge {
+            image::Rgb([70, 40, 35])
+        } else {
+            image::Rgb([120, (48 + y % 64 / 4) as u8, 40])
+        }
     })
     .save(&tiles)
     .unwrap();

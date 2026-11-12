@@ -135,7 +135,8 @@ pub fn merge_coplanar(mesh: &Mesh, tol: f64) -> (Mesh, Vec<usize>) {
     for members in groups.values() {
         // faces of different colours stay apart
         let same_color = members.iter().all(|&i| mesh.color_of(i) == mesh.color_of(members[0]));
-        let merged = if members.len() > 1 && same_color { outline(&members.iter().map(|&i| &mesh.faces[i]).collect::<Vec<_>>()) } else { None };
+        let merged =
+            if members.len() > 1 && same_color { outline(&members.iter().map(|&i| &mesh.faces[i]).collect::<Vec<_>>()) } else { None };
         match merged {
             Some(loop_) => {
                 for &i in members {
@@ -252,7 +253,16 @@ mod tests {
     #[test]
     fn triangle_pairs_become_quads() {
         let mut m = Mesh::new();
-        for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ] {
             m.add_vertex(p);
         }
         for q in [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]] {

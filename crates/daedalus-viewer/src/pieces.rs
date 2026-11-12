@@ -195,7 +195,10 @@ fn hash_mesh(m: &Mesh) -> u64 {
     }
     h.add(m.colors.len() as u64);
     for c in &m.colors {
-        h.add(c.map_or(u64::MAX, |p| u64::from_le_bytes([p.rgb[0], p.rgb[1], p.rgb[2], p.texture.is_some() as u8, 0, 0, 0, 0]) | (p.texture.unwrap_or(0) as u64) << 32));
+        h.add(c.map_or(u64::MAX, |p| {
+            u64::from_le_bytes([p.rgb[0], p.rgb[1], p.rgb[2], p.texture.is_some() as u8, 0, 0, 0, 0])
+                | (p.texture.unwrap_or(0) as u64) << 32
+        }));
     }
     h.0
 }
@@ -235,7 +238,10 @@ mod tests {
     fn check(model: &mut Model, cache: &mut PieceCache) -> usize {
         let want = from_scratch(model);
         let got = cached(model, cache);
-        assert_eq!(got.0.positions.iter().map(|p| p.map(f64::to_bits)).collect::<Vec<_>>(), want.0.positions.iter().map(|p| p.map(f64::to_bits)).collect::<Vec<_>>());
+        assert_eq!(
+            got.0.positions.iter().map(|p| p.map(f64::to_bits)).collect::<Vec<_>>(),
+            want.0.positions.iter().map(|p| p.map(f64::to_bits)).collect::<Vec<_>>()
+        );
         assert_eq!(got, want);
         cache.made
     }
@@ -244,7 +250,11 @@ mod tests {
     fn cube(lo: [f64; 3], hi: [f64; 3]) -> Mesh {
         let mut m = Mesh::new();
         for k in 0..8 {
-            m.add_vertex([if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] }]);
+            m.add_vertex([
+                if k & 1 == 0 { lo[0] } else { hi[0] },
+                if k & 2 == 0 { lo[1] } else { hi[1] },
+                if k & 4 == 0 { lo[2] } else { hi[2] },
+            ]);
         }
         for f in [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]] {
             m.add_face(f.to_vec());
@@ -270,7 +280,15 @@ mod tests {
     }
 
     fn def(name: &str, component: bool, mesh: Mesh, instances: Vec<Instance>) -> Definition {
-        Definition { name: name.into(), component, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh, instances } }
+        Definition {
+            name: name.into(),
+            component,
+            glue: false,
+            cut: false,
+            attributes: Vec::new(),
+            part: None,
+            ctx: Context { mesh, instances },
+        }
     }
 
     fn at(def: usize, d: [f64; 3]) -> Instance {
@@ -286,7 +304,8 @@ mod tests {
         s.defs.push(def("B", false, cube([0.0; 3], [2.0, 1.0, 1.0]), vec![at(0, [0.3, 0.2, 1.0])]));
         s.defs.push(def("Floor", false, floor_with_well(), vec![]));
         let mut shelf = def("Shelf", true, cube([0.0; 3], [1.0, 0.3, 0.3]), vec![]);
-        let attribute = |name: &str, formula: &str| daedalus_core::dynamic::Attribute { name: name.into(), formula: formula.into(), label: None };
+        let attribute =
+            |name: &str, formula: &str| daedalus_core::dynamic::Attribute { name: name.into(), formula: formula.into(), label: None };
         shelf.attributes = vec![attribute("Copies", "1"), attribute("X", "=-7+COPY*1.5")];
         s.defs.push(shelf);
         s.root.instances = vec![

@@ -32,11 +32,7 @@ impl Plane {
     /// same way they do in SketchUp. Returns None for a zero normal.
     pub fn from_point_normal(origin: [f64; 3], normal: [f64; 3]) -> Option<Self> {
         let n = normalize(normal)?;
-        let u = if n[2].abs() > 0.999 {
-            normalize(sub([1.0, 0.0, 0.0], scale(n, n[0])))?
-        } else {
-            normalize(cross([0.0, 0.0, 1.0], n))?
-        };
+        let u = if n[2].abs() > 0.999 { normalize(sub([1.0, 0.0, 0.0], scale(n, n[0])))? } else { normalize(cross([0.0, 0.0, 1.0], n))? };
         Some(Plane { origin, u, v: cross(n, u), normal: n })
     }
 

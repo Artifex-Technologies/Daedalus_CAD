@@ -17,12 +17,6 @@ pub fn load_raster(path: &Path) -> Result<Raster, IoError> {
         let psd = psd::Psd::from_bytes(&bytes).map_err(|e| IoError::Parse(e.to_string()))?;
         return Ok(Raster { width: psd.width(), height: psd.height(), rgba8: psd.rgba() });
     }
-    let img = image::open(path)
-        .map_err(|e| IoError::Parse(e.to_string()))?
-        .into_rgba8();
-    Ok(Raster {
-        width: img.width(),
-        height: img.height(),
-        rgba8: img.into_raw(),
-    })
+    let img = image::open(path).map_err(|e| IoError::Parse(e.to_string()))?.into_rgba8();
+    Ok(Raster { width: img.width(), height: img.height(), rgba8: img.into_raw() })
 }

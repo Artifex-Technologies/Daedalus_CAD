@@ -66,14 +66,28 @@ fn split(plane: Plane, p: Poly, eps: f64, cf: &mut Vec<Poly>, cb: &mut Vec<Poly>
     const COPLANAR: u8 = 0;
     const FRONT: u8 = 1;
     const BACK: u8 = 2;
-    let kinds: Vec<u8> = p.pts.iter().map(|&v| {
-        let t = dot(plane.n, v) - plane.w;
-        if t < -eps { BACK } else if t > eps { FRONT } else { COPLANAR }
-    }).collect();
+    let kinds: Vec<u8> = p
+        .pts
+        .iter()
+        .map(|&v| {
+            let t = dot(plane.n, v) - plane.w;
+            if t < -eps {
+                BACK
+            } else if t > eps {
+                FRONT
+            } else {
+                COPLANAR
+            }
+        })
+        .collect();
     let all = kinds.iter().fold(0, |a, &k| a | k);
     match all {
         COPLANAR => {
-            if dot(plane.n, p.plane.n) > 0.0 { cf.push(p) } else { cb.push(p) }
+            if dot(plane.n, p.plane.n) > 0.0 {
+                cf.push(p)
+            } else {
+                cb.push(p)
+            }
         }
         FRONT => front.push(p),
         BACK => back.push(p),
@@ -484,10 +498,12 @@ mod tests {
     fn a_round_hole_through_a_box() {
         // a 24-sided prism of radius 0.5 through a 2 x 2 x 1 box
         let mut h = HalfEdgeMesh::default();
-        let ring: Vec<V> = (0..24).map(|k| {
-            let t = std::f64::consts::TAU * k as f64 / 24.0;
-            [1.0 + 0.5 * t.cos(), 1.0 + 0.5 * t.sin(), -0.5]
-        }).collect();
+        let ring: Vec<V> = (0..24)
+            .map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / 24.0;
+                [1.0 + 0.5 * t.cos(), 1.0 + 0.5 * t.sin(), -0.5]
+            })
+            .collect();
         h.add_polygon(&ring).unwrap();
         // the prism stands up from the ring (its face may look down: push it whichever way gives a solid upward)
         let n = h.face_normal(0);

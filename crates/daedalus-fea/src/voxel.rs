@@ -59,11 +59,7 @@ impl Grid {
 
     pub fn cube_centre(&self, c: usize) -> [f64; 3] {
         let [i, j, k] = self.cube_ijk(c);
-        [
-            self.origin[0] + (i as f64 + 0.5) * self.h,
-            self.origin[1] + (j as f64 + 0.5) * self.h,
-            self.origin[2] + (k as f64 + 0.5) * self.h,
-        ]
+        [self.origin[0] + (i as f64 + 0.5) * self.h, self.origin[1] + (j as f64 + 0.5) * self.h, self.origin[2] + (k as f64 + 0.5) * self.h]
     }
 
     /// The eight corner nodes of a cube, in hex8's corner order.
@@ -119,8 +115,10 @@ pub fn voxelize(tris: &[Tri], h: f64) -> Grid {
     let mut rows: Vec<Vec<usize>> = vec![Vec::new(); n[1] * n[2]];
     let row_of = |v: f64, a: usize| ((v - origin[a]) / h - 0.5).floor();
     for (t, tri) in tris.iter().enumerate() {
-        let (ylo, yhi) = (tri.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min), tri.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max));
-        let (zlo, zhi) = (tri.iter().map(|p| p[2]).fold(f64::INFINITY, f64::min), tri.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max));
+        let (ylo, yhi) =
+            (tri.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min), tri.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max));
+        let (zlo, zhi) =
+            (tri.iter().map(|p| p[2]).fold(f64::INFINITY, f64::min), tri.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max));
         let j0 = (row_of(ylo, 1).max(-1.0) + 1.0) as usize;
         let j1 = (row_of(yhi, 1) as isize).min(n[1] as isize - 1);
         let k0 = (row_of(zlo, 2).max(-1.0) + 1.0) as usize;
@@ -192,7 +190,9 @@ pub(crate) mod tests {
 
     /// A closed box as 12 outward-facing triangles; the face number of each pair is 0..6 = -x, +x, -y, +y, -z, +z.
     pub fn boxed(lo: [f64; 3], hi: [f64; 3]) -> (Vec<Tri>, Vec<usize>) {
-        let p = |i: usize| [if i & 1 == 0 { lo[0] } else { hi[0] }, if i & 2 == 0 { lo[1] } else { hi[1] }, if i & 4 == 0 { lo[2] } else { hi[2] }];
+        let p = |i: usize| {
+            [if i & 1 == 0 { lo[0] } else { hi[0] }, if i & 2 == 0 { lo[1] } else { hi[1] }, if i & 4 == 0 { lo[2] } else { hi[2] }]
+        };
         // quads wound outward
         let quads = [[0, 4, 6, 2], [1, 3, 7, 5], [0, 1, 5, 4], [2, 6, 7, 3], [0, 2, 3, 1], [4, 5, 7, 6]];
         let mut tris = Vec::new();

@@ -163,7 +163,10 @@ mod tests {
         assert!((rows[3].k_factor - (6.1 / FRAC_PI_2 - 3.0) / 3.0).abs() < 1e-12);
         // the heading and the comment pass quietly; the three bad rows are named by line
         assert_eq!(skipped.len(), 3, "{skipped:?}");
-        assert!(skipped[0].starts_with("line 8:") && skipped[1].starts_with("line 9:") && skipped[2].starts_with("line 10:"), "{skipped:?}");
+        assert!(
+            skipped[0].starts_with("line 8:") && skipped[1].starts_with("line 9:") && skipped[2].starts_with("line 10:"),
+            "{skipped:?}"
+        );
         assert_eq!(rows[2].name(), "Aluminium 5052 2 mm, R 2.5");
         let rule = rows[2].rule().checked().unwrap();
         assert_eq!((rule.thickness, rule.bend_radius, rule.k_factor), (2.0, 2.5, rows[2].k_factor));

@@ -168,10 +168,16 @@ impl Scale {
     /// The Daedalus units this is, if it is one of them (feet: feet and inches).
     fn units(self) -> Option<Units> {
         let m = self.mul / self.div;
-        [(0.001, Units::Millimetres), (0.01, Units::Centimetres), (1.0, Units::Metres), (0.0254, Units::Inches), (0.3048, Units::FeetInches)]
-            .into_iter()
-            .find(|(k, _)| (m / k - 1.0).abs() < 1e-9)
-            .map(|(_, u)| u)
+        [
+            (0.001, Units::Millimetres),
+            (0.01, Units::Centimetres),
+            (1.0, Units::Metres),
+            (0.0254, Units::Inches),
+            (0.3048, Units::FeetInches),
+        ]
+        .into_iter()
+        .find(|(k, _)| (m / k - 1.0).abs() < 1e-9)
+        .map(|(_, u)| u)
     }
 }
 
@@ -234,7 +240,9 @@ impl Kind {
         match self {
             Kind::Model => "Daedalus model".into(),
             Kind::Group => "Daedalus group".into(),
-            Kind::Component { glue, cut } => format!("Daedalus component{}{}", if glue { " glue" } else { "" }, if cut { " cut" } else { "" }),
+            Kind::Component { glue, cut } => {
+                format!("Daedalus component{}{}", if glue { " glue" } else { "" }, if cut { " cut" } else { "" })
+            }
         }
     }
 
@@ -273,7 +281,16 @@ struct Plan<'s> {
 
 impl<'s> Plan<'s> {
     fn new(scene: &'s Scene, name: String) -> Plan<'s> {
-        let mut plan = Plan { scene, parts: Vec::new(), made: HashMap::new(), building: Vec::new(), reached: vec![false; scene.defs.len()], reshaped: 0, dynamic: 0, broken: 0 };
+        let mut plan = Plan {
+            scene,
+            parts: Vec::new(),
+            made: HashMap::new(),
+            building: Vec::new(),
+            reached: vec![false; scene.defs.len()],
+            reshaped: 0,
+            dynamic: 0,
+            broken: 0,
+        };
         plan.parts.push(Part { name, kind: Kind::Model, mesh: Cow::Borrowed(&scene.root.mesh), children: Vec::new() });
         let children = plan.children(&scene.root, None, 0);
         plan.parts[0].children = children;
@@ -483,7 +500,8 @@ fn polys(mesh: &Mesh, tally: &mut Tally) -> (Vec<Poly>, Vec<(u32, u32)>) {
         let outer = (0..loops.len()).max_by(|&i, &j| dot(areas[i], u).abs().total_cmp(&dot(areas[j], u).abs())).unwrap_or(0);
         loops.swap(0, outer);
         let at = pos[loops[0][0] as usize];
-        let (lo, hi) = loops.iter().flatten().map(|&v| dot(sub(pos[v as usize], at), u)).fold((0.0f64, 0.0f64), |(lo, hi), d| (lo.min(d), hi.max(d)));
+        let (lo, hi) =
+            loops.iter().flatten().map(|&v| dot(sub(pos[v as usize], at), u)).fold((0.0f64, 0.0f64), |(lo, hi), d| (lo.min(d), hi.max(d)));
         if (hi - lo) / 2.0 > flat {
             tally.split += 1;
             let key = |a: u32, b: u32| (a.min(b), a.max(b));
@@ -678,7 +696,15 @@ fn id_list(ids: &[u64]) -> String {
 
 impl Writer {
     fn new(unit: Scale) -> Writer {
-        Writer { data: String::new(), next: 1, unit, directions: HashMap::new(), looks: HashMap::new(), styled: Vec::new(), soft: Vec::new() }
+        Writer {
+            data: String::new(),
+            next: 1,
+            unit,
+            directions: HashMap::new(),
+            looks: HashMap::new(),
+            styled: Vec::new(),
+            soft: Vec::new(),
+        }
     }
 
     /// Adds an entity; returns its number.
@@ -783,7 +809,12 @@ impl Writer {
     fn wireframe(&mut self, mesh: &Mesh, points: &mut HashMap<u32, u64>, tally: &mut Tally) -> Option<u64> {
         let pos = &mesh.positions;
         let n = pos.len();
-        let lines: Vec<[u32; 2]> = mesh.lines.iter().copied().filter(|&[a, b]| (a as usize) < n && (b as usize) < n && pos[a as usize] != pos[b as usize]).collect();
+        let lines: Vec<[u32; 2]> = mesh
+            .lines
+            .iter()
+            .copied()
+            .filter(|&[a, b]| (a as usize) < n && (b as usize) < n && pos[a as usize] != pos[b as usize])
+            .collect();
         tally.lines_dropped += mesh.lines.len() - lines.len();
         if lines.is_empty() {
             return None;
@@ -892,7 +923,10 @@ fn product_id(name: &str, kind: Kind, taken: &mut HashSet<String>) -> String {
 
 /// Writes a whole model to STEP: see the module's notes for how, and [`Written::left_out`] for what it cannot hold.
 pub fn write(scene: &Scene, opts: &WriteOptions) -> Result<Written, IoError> {
-    let finite = |c: &Context| c.mesh.positions.iter().flatten().all(|v| v.is_finite()) && c.instances.iter().all(|i| i.xf.0.iter().flatten().all(|v| v.is_finite()));
+    let finite = |c: &Context| {
+        c.mesh.positions.iter().flatten().all(|v| v.is_finite())
+            && c.instances.iter().all(|i| i.xf.0.iter().flatten().all(|v| v.is_finite()))
+    };
     if !std::iter::once(&scene.root).chain(scene.defs.iter().map(|d| &d.ctx)).all(finite) {
         return Err(IoError::Unsupported("the model has a point or a placement that is not a finite number".into()));
     }
@@ -951,7 +985,8 @@ pub fn write(scene: &Scene, opts: &WriteOptions) -> Result<Written, IoError> {
             w.add(format_args!("SHAPE_REPRESENTATION_RELATIONSHIP('','',#{shape},#{rep})"));
         }
         let id = product_id(&part.name, part.kind, &mut taken);
-        let product = w.add(format_args!("PRODUCT({},{},{},(#{product_ctx}))", string(&id), string(&part.name), string(&part.kind.description())));
+        let product =
+            w.add(format_args!("PRODUCT({},{},{},(#{product_ctx}))", string(&id), string(&part.name), string(&part.kind.description())));
         let formation = w.add(format_args!("PRODUCT_DEFINITION_FORMATION('','',#{product})"));
         let definition = w.add(format_args!("PRODUCT_DEFINITION('design','',#{formation},#{definition_ctx})"));
         let definition_shape = w.add(format_args!("PRODUCT_DEFINITION_SHAPE('','',#{definition})"));
@@ -1013,7 +1048,12 @@ fn count(n: usize, one: &str, many: &str) -> String {
 fn left_out(scene: &Scene, plan: &Plan, tally: &Tally) -> Vec<String> {
     let mut out = Vec::new();
     let n = &scene.notes;
-    for (k, one, many) in [(n.guides.len(), "guide", "guides"), (n.dims.len(), "dimension", "dimensions"), (n.labels.len(), "text note", "text notes"), (n.sections.len(), "section plane", "section planes")] {
+    for (k, one, many) in [
+        (n.guides.len(), "guide", "guides"),
+        (n.dims.len(), "dimension", "dimensions"),
+        (n.labels.len(), "text note", "text notes"),
+        (n.sections.len(), "section plane", "section planes"),
+    ] {
         if k > 0 {
             out.push(count(k, one, many));
         }
@@ -1029,14 +1069,20 @@ fn left_out(scene: &Scene, plan: &Plan, tally: &Tally) -> Vec<String> {
     }
     let parts = scene.defs.iter().enumerate().filter(|(i, d)| d.part.is_some() && plan.reached[*i]).count();
     if parts > 0 {
-        out.push(format!("{} (as their faces; File > Export STEP for Fabrication writes them exact)", count(parts, "sheet-metal part", "sheet-metal parts")));
+        out.push(format!(
+            "{} (as their faces; File > Export STEP for Fabrication writes them exact)",
+            count(parts, "sheet-metal part", "sheet-metal parts")
+        ));
     }
     let unplaced = plan.reached.iter().filter(|r| !**r).count();
     if unplaced > 0 {
         out.push(count(unplaced, "group or component placed nowhere", "groups or components placed nowhere"));
     }
     if plan.reshaped > 0 {
-        out.push(format!("{} (each written as a part of its own)", count(plan.reshaped, "scaled or mirrored copy", "scaled or mirrored copies")));
+        out.push(format!(
+            "{} (each written as a part of its own)",
+            count(plan.reshaped, "scaled or mirrored copy", "scaled or mirrored copies")
+        ));
     }
     if plan.broken > 0 {
         out.push(count(plan.broken, "copy of a missing or self-holding definition", "copies of missing or self-holding definitions"));
@@ -1211,13 +1257,27 @@ impl File {
 
     /// An entity's type for a message; of a complex one, its most telling part (RATIONAL_B_SPLINE_SURFACE, not SURFACE).
     fn type_name(&self, id: u64) -> String {
-        const PLAIN: [&str; 9] = ["BOUNDED_CURVE", "BOUNDED_SURFACE", "CURVE", "SURFACE", "GEOMETRIC_REPRESENTATION_ITEM", "REPRESENTATION_ITEM", "TOPOLOGICAL_REPRESENTATION_ITEM", "B_SPLINE_CURVE", "B_SPLINE_SURFACE"];
+        const PLAIN: [&str; 9] = [
+            "BOUNDED_CURVE",
+            "BOUNDED_SURFACE",
+            "CURVE",
+            "SURFACE",
+            "GEOMETRIC_REPRESENTATION_ITEM",
+            "REPRESENTATION_ITEM",
+            "TOPOLOGICAL_REPRESENTATION_ITEM",
+            "B_SPLINE_CURVE",
+            "B_SPLINE_SURFACE",
+        ];
         match self.get(id) {
             None => format!("#{id} (not in the file)"),
             Some(Ent::One(n, _)) => self.name(*n).to_string(),
             Some(Ent::Many(parts)) => {
                 let names: Vec<&str> = parts.iter().map(|(n, _)| self.name(*n)).collect();
-                let telling = names.iter().find(|n| n.starts_with("RATIONAL_")).or_else(|| names.iter().find(|n| n.ends_with("_WITH_KNOTS"))).or_else(|| names.iter().find(|n| !PLAIN.contains(n)));
+                let telling = names
+                    .iter()
+                    .find(|n| n.starts_with("RATIONAL_"))
+                    .or_else(|| names.iter().find(|n| n.ends_with("_WITH_KNOTS")))
+                    .or_else(|| names.iter().find(|n| !PLAIN.contains(n)));
                 telling.or(names.first()).map(|s| s.to_string()).unwrap_or_default()
             }
         }
@@ -1371,7 +1431,9 @@ impl<'a> Lexer<'a> {
             Some(b'(') => self.list(depth + 1).map(P::List),
             Some(b'.') if self.s.get(self.i + 1).is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') => {
                 let start = self.i + 1;
-                let Some(k) = self.s[start..].iter().position(|&c| c == b'.') else { return Err(self.error("an enumeration is not closed")) };
+                let Some(k) = self.s[start..].iter().position(|&c| c == b'.') else {
+                    return Err(self.error("an enumeration is not closed"));
+                };
                 self.i = start + k + 1;
                 Ok(P::Enum(String::from_utf8_lossy(&self.s[start..start + k]).to_ascii_uppercase()))
             }
@@ -1414,7 +1476,11 @@ impl<'a> Lexer<'a> {
             }
         }
         let t = std::str::from_utf8(&self.s[start..self.i]).unwrap_or("");
-        let value = if real { t.parse::<f64>().ok().map(P::Real) } else { t.parse::<i64>().ok().map(P::Int).or_else(|| t.parse::<f64>().ok().map(P::Real)) };
+        let value = if real {
+            t.parse::<f64>().ok().map(P::Real)
+        } else {
+            t.parse::<i64>().ok().map(P::Int).or_else(|| t.parse::<f64>().ok().map(P::Real))
+        };
         value.ok_or_else(|| self.error(&format!("{t:?} is not a number")))
     }
 
@@ -1459,7 +1525,9 @@ impl<'a> Lexer<'a> {
                         let digits: Vec<u8> = rest[3..3 + end].iter().copied().filter(|c| !c.is_ascii_whitespace()).collect();
                         let codes: Vec<u32> = digits.chunks(width).filter_map(hex).collect();
                         if width == 4 {
-                            out.extend(char::decode_utf16(codes.iter().map(|&c| c as u16)).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)));
+                            out.extend(
+                                char::decode_utf16(codes.iter().map(|&c| c as u16)).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)),
+                            );
                         } else {
                             out.extend(codes.iter().map(|&c| char::from_u32(c).unwrap_or(char::REPLACEMENT_CHARACTER)));
                         }
@@ -1618,7 +1686,10 @@ pub struct Read {
 pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
     let r = read(bytes)?;
     if !r.skipped.is_empty() {
-        return Err(IoError::Unsupported(format!("this STEP file has what Daedalus cannot read yet: {} (only flat faces so far)", r.skipped.join(", "))));
+        return Err(IoError::Unsupported(format!(
+            "this STEP file has what Daedalus cannot read yet: {} (only flat faces so far)",
+            r.skipped.join(", ")
+        )));
     }
     Ok(r.scene)
 }
@@ -1811,7 +1882,9 @@ impl Index {
                         x.pds.push(id);
                     }
                     // a shape made of others; with a transformation it is an assembly placement instead
-                    if file.part(e, "SHAPE_REPRESENTATION_RELATIONSHIP").is_some() && file.part(e, "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION").is_none() {
+                    if file.part(e, "SHAPE_REPRESENTATION_RELATIONSHIP").is_some()
+                        && file.part(e, "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION").is_none()
+                    {
                         if let Some(p) = file.part(e, "REPRESENTATION_RELATIONSHIP") {
                             link(&mut x, at(p, 2), at(p, 3));
                         }
@@ -1918,9 +1991,9 @@ impl<'f> Reader<'f> {
                 let Some(("SURFACE_SIDE_STYLE", s)) = side.and_then(|id| f.simple(id)) else { continue };
                 for element in ids(s, 1) {
                     let colour = match f.simple(element) {
-                        Some(("SURFACE_STYLE_FILL_AREA", e)) => at(e, 0)
-                            .and_then(|a| f.simple(a))
-                            .and_then(|(_, area)| ids(area, 1).find_map(|fill| f.rec(fill, "FILL_AREA_STYLE_COLOUR").and_then(|c| at(c, 1)))),
+                        Some(("SURFACE_STYLE_FILL_AREA", e)) => at(e, 0).and_then(|a| f.simple(a)).and_then(|(_, area)| {
+                            ids(area, 1).find_map(|fill| f.rec(fill, "FILL_AREA_STYLE_COLOUR").and_then(|c| at(c, 1)))
+                        }),
                         Some(("SURFACE_STYLE_RENDERING" | "SURFACE_STYLE_RENDERING_WITH_PROPERTIES", e)) => at(e, 1),
                         _ => None,
                     };
@@ -2016,7 +2089,8 @@ impl<'f> Reader<'f> {
         let x = self.index;
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        let mut queue: VecDeque<u64> = x.shapes_of.get(&pd).into_iter().flatten().flat_map(|s| x.reps_of.get(s).into_iter().flatten()).copied().collect();
+        let mut queue: VecDeque<u64> =
+            x.shapes_of.get(&pd).into_iter().flatten().flat_map(|s| x.reps_of.get(s).into_iter().flatten()).copied().collect();
         while let Some(r) = queue.pop_front() {
             if !seen.insert(r) {
                 continue;
@@ -2031,7 +2105,12 @@ impl<'f> Reader<'f> {
     /// A product definition's PRODUCT as a definition: its name (its id when it has none) and, if Daedalus wrote it, what it was.
     fn product(&self, pd: u64) -> Definition {
         let f = self.f;
-        let product = f.rec(pd, "PRODUCT_DEFINITION").and_then(|p| at(p, 2)).and_then(|formation| f.simple(formation)).and_then(|(_, q)| at(q, 2)).and_then(|p| f.rec(p, "PRODUCT"));
+        let product = f
+            .rec(pd, "PRODUCT_DEFINITION")
+            .and_then(|p| at(p, 2))
+            .and_then(|formation| f.simple(formation))
+            .and_then(|(_, q)| at(q, 2))
+            .and_then(|p| f.rec(p, "PRODUCT"));
         let (id, name, description) = product.map(|p| (text(p, 0), text(p, 1), text(p, 2))).unwrap_or(("", "", ""));
         let words: Vec<&str> = description.split_whitespace().collect();
         let ours = words.first() == Some(&"Daedalus");
@@ -2104,7 +2183,9 @@ impl<'f> Reader<'f> {
         let Some((_, p)) = f.simple(id) else { return Xform::IDENTITY };
         let o = at(p, 1).and_then(|c| self.point(c)).map(|c| c.map(|v| scale.metres(v))).unwrap_or([0.0; 3]);
         let (z, x) = match f.simple(id) {
-            Some(("AXIS2_PLACEMENT_3D", _)) => (at(p, 2).and_then(|d| self.direction(d)).unwrap_or(Z), at(p, 3).and_then(|d| self.direction(d))),
+            Some(("AXIS2_PLACEMENT_3D", _)) => {
+                (at(p, 2).and_then(|d| self.direction(d)).unwrap_or(Z), at(p, 3).and_then(|d| self.direction(d)))
+            }
             _ => (Z, at(p, 2).and_then(|d| self.direction(d))),
         };
         let x = x.unwrap_or(if z[0].abs() > 1.0 - 1e-12 { [0.0, 1.0, 0.0] } else { X });
@@ -2202,7 +2283,9 @@ impl<'f> Reader<'f> {
         };
         match f.simple(c) {
             Some(("POLYLINE", p)) => return poly(self, &ids(p, 1).collect::<Vec<u64>>(), b),
-            Some(("B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE", p)) if num(p.get(1)) == Some(1.0) => return poly(self, &ids(p, 2).collect::<Vec<u64>>(), b),
+            Some(("B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE", p)) if num(p.get(1)) == Some(1.0) => {
+                return poly(self, &ids(p, 2).collect::<Vec<u64>>(), b)
+            }
             Some(("CARTESIAN_POINT", _)) => return,
             Some(("CIRCLE" | "ELLIPSE", p)) => {
                 let Some(position) = at(p, 1) else { return };
@@ -2217,18 +2300,32 @@ impl<'f> Reader<'f> {
             }
             Some(("TRIMMED_CURVE", p)) => {
                 // TRIMMED_CURVE(name, basis, trim_1, trim_2, sense_agreement, master): a trim is a point, a parameter, or both
-                let point = |trim: &[P]| trim.iter().find_map(|t| if let P::Ref(id) = t { f.rec(*id, "CARTESIAN_POINT").map(|_| *id) } else { None });
-                let parameter = |trim: &[P]| trim.iter().find_map(|t| if let P::Typed(name, v) = t { (name == "PARAMETER_VALUE").then(|| num(Some(v))).flatten() } else { None });
+                let point = |trim: &[P]| {
+                    trim.iter().find_map(|t| if let P::Ref(id) = t { f.rec(*id, "CARTESIAN_POINT").map(|_| *id) } else { None })
+                };
+                let parameter = |trim: &[P]| {
+                    trim.iter().find_map(|t| {
+                        if let P::Typed(name, v) = t {
+                            (name == "PARAMETER_VALUE").then(|| num(Some(v))).flatten()
+                        } else {
+                            None
+                        }
+                    })
+                };
                 let (t1, t2) = (list(p, 2), list(p, 3));
                 let basis = at(p, 1).and_then(|id| f.simple(id).map(|(k, q)| (id, k, q)));
                 match basis {
                     Some((_, "LINE", q)) => {
                         // LINE(name, pnt, VECTOR(name, orientation, magnitude))
                         let origin = at(q, 1).and_then(|cp| self.point(cp));
-                        let vector = at(q, 2).and_then(|v| f.simple(v)).and_then(|(_, v)| Some((at(v, 1).and_then(|d| self.direction(d))?, num(v.get(2))?)));
+                        let vector = at(q, 2)
+                            .and_then(|v| f.simple(v))
+                            .and_then(|(_, v)| Some((at(v, 1).and_then(|d| self.direction(d))?, num(v.get(2))?)));
                         let end = |r: &mut Self, trim: &[P], b: &mut Builder| match (point(trim), parameter(trim), origin, vector) {
                             (Some(cp), _, _, _) => r.vertex_at(cp, scale, b),
-                            (None, Some(t), Some(o), Some((d, m))) => Some(b.mesh.add_vertex(plus(o, times(d, t * m)).map(|x| scale.metres(x)))),
+                            (None, Some(t), Some(o), Some((d, m))) => {
+                                Some(b.mesh.add_vertex(plus(o, times(d, t * m)).map(|x| scale.metres(x))))
+                            }
                             _ => None,
                         };
                         if let (Some(a), Some(z)) = (end(self, t1, b), end(self, t2, b)) {
@@ -2273,7 +2370,15 @@ impl<'f> Reader<'f> {
                 }
                 let name = self.rep_params(rep).map(|p| text(p, 0)).filter(|n| !n.is_empty()).unwrap_or("Mapped item").to_string();
                 let d = self.defs.len();
-                self.defs.push(Definition { name, component: true, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context::default() });
+                self.defs.push(Definition {
+                    name,
+                    component: true,
+                    glue: false,
+                    cut: false,
+                    attributes: Vec::new(),
+                    part: None,
+                    ctx: Context::default(),
+                });
                 self.of_rep.insert(rep, d);
                 self.building.push(rep);
                 let mut inner = Builder::default();
@@ -2355,7 +2460,9 @@ impl<'f> Reader<'f> {
         let f = self.f;
         let basis = |p: &[P]| at(p, 1).ok_or_else(|| f.type_name(s));
         match f.simple(s) {
-            Some(("PLANE", p)) => Ok(at(p, 1).and_then(|a| f.simple(a)).and_then(|(_, q)| at(q, 2)).and_then(|d| self.direction(d)).unwrap_or(Z)),
+            Some(("PLANE", p)) => {
+                Ok(at(p, 1).and_then(|a| f.simple(a)).and_then(|(_, q)| at(q, 2)).and_then(|d| self.direction(d)).unwrap_or(Z))
+            }
             // its first and second parameters may run against the plane's, which turns it over
             Some(("RECTANGULAR_TRIMMED_SURFACE", p)) if depth < 8 => {
                 let n = self.plane_normal(basis(p)?, depth + 1)?;
@@ -2537,7 +2644,16 @@ impl<'f> Reader<'f> {
     /// The vertices along an edge's curve between its ends, from `start` to `end` (`same`: the edge runs the curve's way):
     /// none for a line, a polyline's corners, a circle or ellipse in segments.
     #[allow(clippy::too_many_arguments)]
-    fn curve_points(&mut self, curve: u64, same: bool, start: u32, end: u32, closed: bool, scale: Scale, b: &mut Builder) -> Result<Vec<u32>, Option<String>> {
+    fn curve_points(
+        &mut self,
+        curve: u64,
+        same: bool,
+        start: u32,
+        end: u32,
+        closed: bool,
+        scale: Scale,
+        b: &mut Builder,
+    ) -> Result<Vec<u32>, Option<String>> {
         let f = self.f;
         let (mut c, mut same) = (curve, same);
         // past what only wraps a curve: on a surface, trimmed (its trimming runs against it, maybe)
@@ -2557,7 +2673,9 @@ impl<'f> Reader<'f> {
         let (ps, pe) = (b.mesh.positions[start as usize], b.mesh.positions[end as usize]);
         // a B-spline's degree and control points: from its own record, or from the B_SPLINE_CURVE part of a complex one
         let spline = match f.simple(c) {
-            Some(("B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE" | "BEZIER_CURVE" | "UNIFORM_CURVE" | "QUASI_UNIFORM_CURVE", p)) => Some((num(p.get(1)), ids(p, 2).collect::<Vec<u64>>())),
+            Some(("B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE" | "BEZIER_CURVE" | "UNIFORM_CURVE" | "QUASI_UNIFORM_CURVE", p)) => {
+                Some((num(p.get(1)), ids(p, 2).collect::<Vec<u64>>()))
+            }
             Some(_) => None,
             None => f.rec(c, "B_SPLINE_CURVE").map(|p| (num(p.first()), ids(p, 1).collect())),
         };
@@ -2587,7 +2705,16 @@ impl<'f> Reader<'f> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn polyline(&mut self, corners: &[u64], same: bool, ps: V3, pe: V3, closed: bool, scale: Scale, b: &mut Builder) -> Result<Vec<u32>, Option<String>> {
+    fn polyline(
+        &mut self,
+        corners: &[u64],
+        same: bool,
+        ps: V3,
+        pe: V3,
+        closed: bool,
+        scale: Scale,
+        b: &mut Builder,
+    ) -> Result<Vec<u32>, Option<String>> {
         let mut pts: Vec<(u64, V3)> = corners.iter().filter_map(|&c| Some((c, self.point(c)?.map(|v| scale.metres(v))))).collect();
         if pts.len() < 2 {
             return Ok(Vec::new());
@@ -2615,7 +2742,18 @@ impl<'f> Reader<'f> {
     /// The points along a circle or ellipse from `ps` to `pe`, counter-clockwise about its axis when `same` (the whole way
     /// round when `closed`), in segments of at most 1/24 of a turn.
     #[allow(clippy::too_many_arguments)]
-    fn arc(&mut self, position: u64, r1: f64, r2: f64, same: bool, ps: V3, pe: V3, closed: bool, scale: Scale, b: &mut Builder) -> Vec<u32> {
+    fn arc(
+        &mut self,
+        position: u64,
+        r1: f64,
+        r2: f64,
+        same: bool,
+        ps: V3,
+        pe: V3,
+        closed: bool,
+        scale: Scale,
+        b: &mut Builder,
+    ) -> Vec<u32> {
         let ax = self.axes(position, scale);
         let (c, x, y) = (ax.origin(), column(&ax, 0), column(&ax, 1));
         let (r1, r2) = (scale.metres(r1), scale.metres(r2));
@@ -2683,7 +2821,15 @@ mod tests {
     }
 
     fn def(name: &str, component: bool, mesh: Mesh, instances: Vec<Instance>) -> Definition {
-        Definition { name: name.into(), component, glue: false, cut: false, attributes: Vec::new(), part: None, ctx: Context { mesh, instances } }
+        Definition {
+            name: name.into(),
+            component,
+            glue: false,
+            cut: false,
+            attributes: Vec::new(),
+            part: None,
+            ctx: Context { mesh, instances },
+        }
     }
 
     /// A turn by `degrees` about `axis` through `at`.
@@ -2756,7 +2902,10 @@ mod tests {
         assert!(header.contains("FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));"));
         let file_name = header.lines().find(|l| l.starts_with("FILE_NAME(")).expect("FILE_NAME");
         assert!(file_name.ends_with(",'Daedalus CAD','');"), "{file_name}");
-        assert!(file_name.contains(&format!("'Daedalus CAD {}'", include_str!("../../../VERSION").trim())), "the program and Daedalus's VERSION: {file_name}");
+        assert!(
+            file_name.contains(&format!("'Daedalus CAD {}'", include_str!("../../../VERSION").trim())),
+            "the program and Daedalus's VERSION: {file_name}"
+        );
         // the time it was written, in ISO 8601: 2026-11-08T14:03:12+00:00
         let stamp = file_name.split('\'').nth(3).unwrap();
         assert_eq!(stamp.len(), 25, "{stamp}");
@@ -2821,9 +2970,26 @@ mod tests {
         let m = cube(1.0);
         let w = written(&Scene::from_mesh(m.clone()));
         assert_eq!((w.products, w.solids, w.shells, w.faces), (1, 1, 0, 6));
-        assert_eq!((n(&w.text, "MANIFOLD_SOLID_BREP"), n(&w.text, "CLOSED_SHELL"), n(&w.text, "OPEN_SHELL"), n(&w.text, "SHELL_BASED_SURFACE_MODEL")), (1, 1, 0, 0));
+        assert_eq!(
+            (
+                n(&w.text, "MANIFOLD_SOLID_BREP"),
+                n(&w.text, "CLOSED_SHELL"),
+                n(&w.text, "OPEN_SHELL"),
+                n(&w.text, "SHELL_BASED_SURFACE_MODEL")
+            ),
+            (1, 1, 0, 0)
+        );
         // each face once, each edge and corner once though two or three faces share it
-        assert_eq!((n(&w.text, "ADVANCED_FACE"), n(&w.text, "PLANE"), n(&w.text, "EDGE_CURVE"), n(&w.text, "VERTEX_POINT"), n(&w.text, "ORIENTED_EDGE")), (6, 6, 12, 8, 24));
+        assert_eq!(
+            (
+                n(&w.text, "ADVANCED_FACE"),
+                n(&w.text, "PLANE"),
+                n(&w.text, "EDGE_CURVE"),
+                n(&w.text, "VERTEX_POINT"),
+                n(&w.text, "ORIENTED_EDGE")
+            ),
+            (6, 6, 12, 8, 24)
+        );
         assert_eq!((n(&w.text, "FACE_OUTER_BOUND"), n(&w.text, "FACE_BOUND")), (6, 0));
         assert!(w.left_out.is_empty(), "{:?}", w.left_out);
         let back = read_back(&w);
@@ -2839,8 +3005,14 @@ mod tests {
         m.remove_face(0);
         let w = written(&Scene::from_mesh(m.clone()));
         assert_eq!((w.solids, w.shells, w.faces), (0, 1, 5));
-        assert_eq!((n(&w.text, "SHELL_BASED_SURFACE_MODEL"), n(&w.text, "OPEN_SHELL"), n(&w.text, "MANIFOLD_SURFACE_SHAPE_REPRESENTATION")), (1, 1, 1));
-        assert_eq!((n(&w.text, "MANIFOLD_SOLID_BREP"), n(&w.text, "CLOSED_SHELL"), n(&w.text, "ADVANCED_BREP_SHAPE_REPRESENTATION")), (0, 0, 0));
+        assert_eq!(
+            (n(&w.text, "SHELL_BASED_SURFACE_MODEL"), n(&w.text, "OPEN_SHELL"), n(&w.text, "MANIFOLD_SURFACE_SHAPE_REPRESENTATION")),
+            (1, 1, 1)
+        );
+        assert_eq!(
+            (n(&w.text, "MANIFOLD_SOLID_BREP"), n(&w.text, "CLOSED_SHELL"), n(&w.text, "ADVANCED_BREP_SHAPE_REPRESENTATION")),
+            (0, 0, 0)
+        );
         assert_same_faces(&m, &read_back(&w).scene.root.mesh);
     }
 
@@ -2869,7 +3041,19 @@ mod tests {
         assert!((daedalus_core::inspect::signed_volume(&back) - 98.0).abs() < 1e-9);
         // and a lone face with two holes
         let mut face = Mesh::new();
-        for p in [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 2.0, 0.0], [0.0, 2.0, 0.0], [1.0, 0.5, 0.0], [1.0, 1.5, 0.0], [1.5, 1.5, 0.0], [1.5, 0.5, 0.0], [2.5, 0.5, 0.0], [2.5, 1.5, 0.0], [3.0, 1.0, 0.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [4.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [1.0, 0.5, 0.0],
+            [1.0, 1.5, 0.0],
+            [1.5, 1.5, 0.0],
+            [1.5, 0.5, 0.0],
+            [2.5, 0.5, 0.0],
+            [2.5, 1.5, 0.0],
+            [3.0, 1.0, 0.0],
+        ] {
             face.add_vertex(p);
         }
         face.add_face(vec![0, 1, 2, 3]);
@@ -2892,7 +3076,10 @@ mod tests {
         ];
         s.root.instances = places.iter().map(|&xf| Instance { def: 0, xf }).collect();
         let w = written(&s);
-        assert_eq!((n(&w.text, "PRODUCT"), n(&w.text, "NEXT_ASSEMBLY_USAGE_OCCURRENCE"), n(&w.text, "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")), (2, 5, 5));
+        assert_eq!(
+            (n(&w.text, "PRODUCT"), n(&w.text, "NEXT_ASSEMBLY_USAGE_OCCURRENCE"), n(&w.text, "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")),
+            (2, 5, 5)
+        );
         assert_eq!((n(&w.text, "ADVANCED_FACE"), n(&w.text, "MANIFOLD_SOLID_BREP")), (6, 1), "the bolt's faces once");
         let back = read_back(&w).scene;
         assert_eq!(back.defs.len(), 1);
@@ -2925,7 +3112,19 @@ mod tests {
         root.set_color(2, Some([10, 200, 30].into()));
         root.set_color(3, Some([10, 200, 30].into()));
         let at = root.positions.len() as u32;
-        for p in [[0.0, 0.0, 2.0], [4.0, 0.0, 2.0], [4.0, 2.0, 2.0], [0.0, 2.0, 2.0], [1.0, 0.5, 2.0], [1.0, 1.5, 2.0], [1.5, 1.5, 2.0], [1.5, 0.5, 2.0], [2.5, 0.5, 2.0], [2.5, 1.5, 2.0], [3.0, 1.0, 2.0]] {
+        for p in [
+            [0.0, 0.0, 2.0],
+            [4.0, 0.0, 2.0],
+            [4.0, 2.0, 2.0],
+            [0.0, 2.0, 2.0],
+            [1.0, 0.5, 2.0],
+            [1.0, 1.5, 2.0],
+            [1.5, 1.5, 2.0],
+            [1.5, 0.5, 2.0],
+            [2.5, 0.5, 2.0],
+            [2.5, 1.5, 2.0],
+            [3.0, 1.0, 2.0],
+        ] {
             root.add_vertex(p);
         }
         root.add_face(vec![at, at + 1, at + 2, at + 3]);
@@ -3062,7 +3261,11 @@ mod tests {
             .iter()
             .map(|&[a, b]| {
                 let (p, q) = (key(m.positions[a as usize]), key(m.positions[b as usize]));
-                if p <= q { [p, q] } else { [q, p] }
+                if p <= q {
+                    [p, q]
+                } else {
+                    [q, p]
+                }
             })
             .collect();
         out.sort_unstable();
@@ -3086,7 +3289,11 @@ mod tests {
         let w = written(&Scene::from_mesh(m.clone()));
         assert_eq!(w.left_out, vec!["1 loose line with no length".to_string()]);
         let t = &w.text;
-        assert_eq!((n(t, "GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION"), n(t, "GEOMETRIC_CURVE_SET"), n(t, "POLYLINE")), (1, 1, 5), "a chain, a ring, three spokes");
+        assert_eq!(
+            (n(t, "GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION"), n(t, "GEOMETRIC_CURVE_SET"), n(t, "POLYLINE")),
+            (1, 1, 5),
+            "a chain, a ring, three spokes"
+        );
         let layer = t.lines().find(|l| l.contains("=PRESENTATION_LAYER_ASSIGNMENT('Soft edges',")).expect("the soft edges' layer");
         assert_eq!(layer.matches('#').count(), 3, "its own number and the two edges: {layer}");
         assert_eq!(n(t, "INVISIBILITY"), 1);
@@ -3170,14 +3377,26 @@ mod tests {
         assert_eq!(m.lines.len(), 1 + 24 + 2);
         let line = pairs(m, &m.lines[..1]);
         assert_eq!(line, vec![[key([0.02, 0.0, 0.0]), key([0.025, 0.0, 0.0])]]);
-        assert!(m.lines[1..25].iter().flatten().all(|&v| (length(sub(m.positions[v as usize], [0.01, 0.01, 0.0])) - 0.002).abs() < 1e-12), "round the circle");
+        assert!(
+            m.lines[1..25].iter().flatten().all(|&v| (length(sub(m.positions[v as usize], [0.01, 0.01, 0.0])) - 0.002).abs() < 1e-12),
+            "round the circle"
+        );
     }
 
     #[test]
     fn a_face_listing_a_hole_first_is_written_the_right_way_round() {
         // as some converted faces are: a small square given as the outline, the big one round it as the "hole"
         let mut m = Mesh::new();
-        for p in [[4.0, 4.0, 0.0], [5.0, 4.0, 0.0], [5.0, 5.0, 0.0], [4.0, 5.0, 0.0], [0.0, 0.0, 0.0], [0.0, 9.0, 0.0], [9.0, 9.0, 0.0], [9.0, 0.0, 0.0]] {
+        for p in [
+            [4.0, 4.0, 0.0],
+            [5.0, 4.0, 0.0],
+            [5.0, 5.0, 0.0],
+            [4.0, 5.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 9.0, 0.0],
+            [9.0, 9.0, 0.0],
+            [9.0, 0.0, 0.0],
+        ] {
             m.add_vertex(p);
         }
         m.add_face(vec![0, 1, 2, 3]);
@@ -3187,7 +3406,16 @@ mod tests {
         assert!(w.text.contains("DIRECTION('',(0.,0.,-1.))"));
         let back = read_back(&w).scene.root.mesh;
         let mut want = Mesh::new();
-        for p in [[0.0, 0.0, 0.0], [0.0, 9.0, 0.0], [9.0, 9.0, 0.0], [9.0, 0.0, 0.0], [4.0, 4.0, 0.0], [5.0, 4.0, 0.0], [5.0, 5.0, 0.0], [4.0, 5.0, 0.0]] {
+        for p in [
+            [0.0, 0.0, 0.0],
+            [0.0, 9.0, 0.0],
+            [9.0, 9.0, 0.0],
+            [9.0, 0.0, 0.0],
+            [4.0, 4.0, 0.0],
+            [5.0, 4.0, 0.0],
+            [5.0, 5.0, 0.0],
+            [4.0, 5.0, 0.0],
+        ] {
             want.add_vertex(p);
         }
         want.add_face(vec![0, 1, 2, 3]);
@@ -3243,7 +3471,10 @@ mod tests {
         // as other programs write it: \X\ and \S\ for ISO 8859-1, and plain UTF-8
         let other = "'caf\\X\\E9 caf\\S\\i caf\u{e9}'";
         assert_eq!(Lexer { s: other.as_bytes(), i: 0 }.param(0).unwrap(), P::Str("café café café".into()));
-        assert_eq!(Lexer { s: b"LENGTH_MEASURE(1.E-07)", i: 0 }.param(0).unwrap(), P::Typed("LENGTH_MEASURE".into(), Box::new(P::Real(1e-7))));
+        assert_eq!(
+            Lexer { s: b"LENGTH_MEASURE(1.E-07)", i: 0 }.param(0).unwrap(),
+            P::Typed("LENGTH_MEASURE".into(), Box::new(P::Real(1e-7)))
+        );
     }
 
     #[test]

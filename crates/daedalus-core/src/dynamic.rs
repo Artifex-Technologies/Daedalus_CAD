@@ -41,7 +41,11 @@ impl Value {
         match self {
             Value::Num(n) => {
                 let r = (n * 1e9).round() / 1e9;
-                if r.fract() == 0.0 && r.abs() < 1e15 { format!("{}", r as i64) } else { format!("{r}") }
+                if r.fract() == 0.0 && r.abs() < 1e15 {
+                    format!("{}", r as i64)
+                } else {
+                    format!("{r}")
+                }
             }
             Value::Text(t) => t.clone(),
         }
@@ -79,12 +83,30 @@ pub fn parse_color(text: &str) -> Option<[u8; 3]> {
         return Some(rgb);
     }
     const NAMES: [(&str, [u8; 3]); 24] = [
-        ("black", [0, 0, 0]), ("white", [255, 255, 255]), ("red", [220, 40, 40]), ("green", [40, 160, 60]), ("blue", [40, 90, 220]),
-        ("yellow", [240, 210, 40]), ("orange", [240, 140, 30]), ("purple", [130, 60, 180]), ("pink", [240, 150, 190]),
-        ("brown", [130, 80, 40]), ("gray", [128, 128, 128]), ("grey", [128, 128, 128]), ("silver", [192, 192, 192]),
-        ("gold", [212, 175, 55]), ("cyan", [40, 200, 220]), ("magenta", [210, 50, 180]), ("navy", [20, 30, 110]),
-        ("teal", [20, 128, 128]), ("olive", [128, 128, 0]), ("maroon", [128, 20, 30]), ("beige", [230, 220, 190]),
-        ("tan", [210, 180, 140]), ("wood", [160, 110, 60]), ("steel", [140, 150, 160]),
+        ("black", [0, 0, 0]),
+        ("white", [255, 255, 255]),
+        ("red", [220, 40, 40]),
+        ("green", [40, 160, 60]),
+        ("blue", [40, 90, 220]),
+        ("yellow", [240, 210, 40]),
+        ("orange", [240, 140, 30]),
+        ("purple", [130, 60, 180]),
+        ("pink", [240, 150, 190]),
+        ("brown", [130, 80, 40]),
+        ("gray", [128, 128, 128]),
+        ("grey", [128, 128, 128]),
+        ("silver", [192, 192, 192]),
+        ("gold", [212, 175, 55]),
+        ("cyan", [40, 200, 220]),
+        ("magenta", [210, 50, 180]),
+        ("navy", [20, 30, 110]),
+        ("teal", [20, 128, 128]),
+        ("olive", [128, 128, 0]),
+        ("maroon", [128, 20, 30]),
+        ("beige", [230, 220, 190]),
+        ("tan", [210, 180, 140]),
+        ("wood", [160, 110, 60]),
+        ("steel", [140, 150, 160]),
     ];
     NAMES.iter().find(|(n, _)| *n == t).map(|(_, c)| *c)
 }
@@ -237,7 +259,13 @@ impl Parser<'_, '_> {
             let times = self.op("*");
             self.at += 1;
             let b = self.power()?.num();
-            a = Value::Num(if times { a.num() * b } else if b == 0.0 { return Err("a division by zero".into()) } else { a.num() / b });
+            a = Value::Num(if times {
+                a.num() * b
+            } else if b == 0.0 {
+                return Err("a division by zero".into());
+            } else {
+                a.num() / b
+            });
         }
         Ok(a)
     }
@@ -369,7 +397,13 @@ fn literal(text: &str) -> Value {
 /// an attribute does not set (where the copy is now). A formula that goes wrong (or refers round in a circle) is an error
 /// naming the attribute.
 pub fn evaluate(attrs: &[Attribute], given: &HashMap<String, f64>) -> Result<HashMap<String, Value>, String> {
-    fn get(name: &str, attrs: &[Attribute], given: &HashMap<String, f64>, done: &mut HashMap<String, Value>, busy: &mut Vec<String>) -> Result<Value, String> {
+    fn get(
+        name: &str,
+        attrs: &[Attribute],
+        given: &HashMap<String, f64>,
+        done: &mut HashMap<String, Value>,
+        busy: &mut Vec<String>,
+    ) -> Result<Value, String> {
         if let Some(v) = done.get(name) {
             return Ok(v.clone());
         }
@@ -402,7 +436,9 @@ pub fn evaluate(attrs: &[Attribute], given: &HashMap<String, f64>) -> Result<Has
 
 /// Interact: runs the `onClick` actions, changing the attributes they name to plain values. Returns whether any changed.
 pub fn on_click(attrs: &mut Vec<Attribute>, given: &HashMap<String, f64>) -> Result<bool, String> {
-    let Some(script) = attrs.iter().find(|a| a.name.eq_ignore_ascii_case("onclick")).map(|a| a.formula.trim().trim_start_matches('=').to_string()) else {
+    let Some(script) =
+        attrs.iter().find(|a| a.name.eq_ignore_ascii_case("onclick")).map(|a| a.formula.trim().trim_start_matches('=').to_string())
+    else {
         return Ok(false);
     };
     let mut changed = false;
@@ -415,9 +451,15 @@ pub fn on_click(attrs: &mut Vec<Attribute>, given: &HashMap<String, f64>) -> Res
         let verb = action[..open].trim().to_ascii_uppercase();
         let inner = action[open + 1..].trim_end().strip_suffix(')').ok_or(format!("{action} is not closed with )"))?;
         let parts = split_top(inner, ',');
-        let target = parts.first().map(|t| t.trim().trim_matches('"').to_string()).filter(|t| !t.is_empty()).ok_or("an action names no attribute")?;
+        let target = parts
+            .first()
+            .map(|t| t.trim().trim_matches('"').to_string())
+            .filter(|t| !t.is_empty())
+            .ok_or("an action names no attribute")?;
         let values = evaluate(attrs, given)?;
-        let mut look = |n: &str| values.get(n).cloned().or_else(|| given.get(n).map(|&x| Value::Num(x))).ok_or(format!("there is no attribute called {n}"));
+        let mut look = |n: &str| {
+            values.get(n).cloned().or_else(|| given.get(n).map(|&x| Value::Num(x))).ok_or(format!("there is no attribute called {n}"))
+        };
         let new = match verb.as_str() {
             "SET" => eval(parts.get(1).ok_or("SET needs a value")?, &mut look)?,
             "ALTER" | "ANIMATE" | "ANIMATESLOW" | "ANIMATEFAST" => {
@@ -474,7 +516,12 @@ mod tests {
 
     #[test]
     fn formulas_work_out_in_order() {
-        let attrs = vec![attr("LenX", "=Width*2"), attr("Width", "300mm"), attr("Big", "=IF(LenX>0.5, \"yes\", \"no\")"), attr("Shelves", "=ROUND(LenZ/0.4, 0)")];
+        let attrs = vec![
+            attr("LenX", "=Width*2"),
+            attr("Width", "300mm"),
+            attr("Big", "=IF(LenX>0.5, \"yes\", \"no\")"),
+            attr("Shelves", "=ROUND(LenZ/0.4, 0)"),
+        ];
         let given: HashMap<String, f64> = [("lenz".to_string(), 1.8)].into();
         let v = evaluate(&attrs, &given).unwrap();
         assert!((v["lenx"].num() - 0.6).abs() < 1e-12);

@@ -23,7 +23,9 @@ fn main() {
                 let groups = scene.defs.iter().filter(|d| !d.component).count();
                 let back = daedalus_io::native::read_scene(&daedalus_io::native::write_scene(&scene));
                 let round = match back {
-                    Ok(b) if b.flatten().faces.len() == flat.faces.len() && b.defs.len() == scene.defs.len() => "saves and reopens the same".to_string(),
+                    Ok(b) if b.flatten().faces.len() == flat.faces.len() && b.defs.len() == scene.defs.len() => {
+                        "saves and reopens the same".to_string()
+                    }
                     Ok(b) => format!("SAVE DIFFERS ({} faces, {} definitions back)", b.flatten().faces.len(), b.defs.len()),
                     Err(e) => format!("SAVE FAILS: {e}"),
                 };
