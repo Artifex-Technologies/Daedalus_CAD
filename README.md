@@ -171,6 +171,10 @@ calls the tools make.
 ## Next
 Stress testing (FEA) first, then more sheet metal (jogs) and the Dynamic Components extras.
 
+## Version
+
+`VERSION` is Daedalus's own version (1.0.0 since 2026-11-11, its first numbered release); its package is `daedalus-cad-git` `VERSION-<build number>`. How the numbers work and how to make a release: [Labyrinth_OS docs/VERSIONING.md](https://github.com/Artifex-Technologies/Labyrinth_OS/blob/main/docs/VERSIONING.md).
+
 ## License
 
 MPL-2.0 (see `LICENSE`), like Labyrinth OS's other from-scratch projects. Daedalus is written independently; no source from other
