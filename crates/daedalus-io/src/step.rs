@@ -990,7 +990,8 @@ pub fn write(scene: &Scene, opts: &WriteOptions) -> Result<Written, IoError> {
 
     let mut text = String::with_capacity(w.data.len() + 512);
     text.push_str("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('Daedalus CAD model'),'2;1');\n");
-    let program = format!("Daedalus CAD {}", env!("CARGO_PKG_VERSION"));
+    // Daedalus's own version: the VERSION file at the top of the repository, read when this is built
+    let program = format!("Daedalus CAD {}", include_str!("../../../VERSION").trim_ascii());
     let _ = writeln!(text, "FILE_NAME({},{},(''),(''),{},'Daedalus CAD','');", string(&opts.name), string(&now()), string(&program));
     let _ = writeln!(text, "FILE_SCHEMA(('{SCHEMA}'));");
     text.push_str("ENDSEC;\nDATA;\n");
@@ -2755,6 +2756,7 @@ mod tests {
         assert!(header.contains("FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));"));
         let file_name = header.lines().find(|l| l.starts_with("FILE_NAME(")).expect("FILE_NAME");
         assert!(file_name.ends_with(",'Daedalus CAD','');"), "{file_name}");
+        assert!(file_name.contains(&format!("'Daedalus CAD {}'", include_str!("../../../VERSION").trim())), "the program and Daedalus's VERSION: {file_name}");
         // the time it was written, in ISO 8601: 2026-11-08T14:03:12+00:00
         let stamp = file_name.split('\'').nth(3).unwrap();
         assert_eq!(stamp.len(), 25, "{stamp}");
