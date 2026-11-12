@@ -20,6 +20,11 @@ jobs:
       - uses: actions/checkout@v4
       # the exact-solid kernel (daedalus-sheet) is most of the build: keep compiled dependencies between runs
       - uses: Swatinem/rust-cache@v2
+      # formatting (rustfmt.toml) and lints: the debt cleared on 2026-11-11 must not come back
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Build
         run: cargo build --workspace --locked
       - name: Test
