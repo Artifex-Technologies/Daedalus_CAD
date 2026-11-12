@@ -103,9 +103,9 @@ pub struct Stress {
     pub show: bool,
     pub exaggerate: bool,
     /// The result drawn (exaggerated or not), with its triangles.
-    drawn: Option<(bool, Mesh, Vec<Vec<[u32; 3]>>)>,
+    drawn: Option<(bool, Mesh, crate::pieces::Tris)>,
     /// The part with its supports and loads painted, with its triangles.
-    painted: Option<(Mesh, Vec<Vec<[u32; 3]>>)>,
+    painted: Option<(Mesh, crate::pieces::Tris)>,
 }
 
 /// Instance `i` of the open context as a part: its faces in model coordinates, closed all round.
@@ -330,10 +330,9 @@ impl Stress {
         if model_state != self.state {
             return None;
         }
-        if self.show && self.result.is_some() {
+        if let (true, Some((r, _, _))) = (self.show, &self.result) {
             if self.drawn.as_ref().is_none_or(|d| d.0 != self.exaggerate) {
                 let scale = self.scale();
-                let (r, _, _) = self.result.as_ref().unwrap();
                 let top = r.max_stress.max(1e-30);
                 let mut m = Mesh::new();
                 for q in &r.surface {

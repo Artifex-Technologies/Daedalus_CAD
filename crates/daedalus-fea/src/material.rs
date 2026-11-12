@@ -39,9 +39,7 @@ impl Material {
         let mu = e / (2.0 * (1.0 + nu));
         let mut d = [[0.0; 6]; 6];
         for i in 0..3 {
-            for j in 0..3 {
-                d[i][j] = lambda;
-            }
+            d[i][..3].fill(lambda);
             d[i][i] = lambda + 2.0 * mu;
             d[i + 3][i + 3] = mu;
         }
@@ -50,13 +48,13 @@ impl Material {
 
     /// Whether the numbers can be solved with (positive stiffness, Poisson's ratio below 0.5).
     pub fn check(&self) -> Result<(), String> {
-        if !(self.youngs_modulus > 0.0) {
+        if self.youngs_modulus.is_nan() || self.youngs_modulus <= 0.0 {
             return Err("the material's Young's modulus must be above zero".into());
         }
         if !(self.poissons_ratio > -0.99 && self.poissons_ratio < 0.49) {
             return Err("the material's Poisson's ratio must be between -0.99 and 0.49".into());
         }
-        if !(self.yield_strength > 0.0) {
+        if self.yield_strength.is_nan() || self.yield_strength <= 0.0 {
             return Err("the material's yield strength must be above zero".into());
         }
         Ok(())

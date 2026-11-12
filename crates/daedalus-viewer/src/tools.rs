@@ -789,7 +789,7 @@ impl Tools {
 
     /// 3D Text: the words chosen in its window; the mouse now places them.
     pub fn begin_text3d(&mut self, text: &str, height: f64, depth: Option<f64>, font: Option<&std::path::Path>) -> Result<(), String> {
-        if !(height > 0.0) {
+        if height.is_nan() || height <= 0.0 {
             return Err("the letters need a height".into());
         }
         let letters = crate::text3d::outlines(text, height, font).ok_or("that font could not be read")?;
@@ -2974,8 +2974,7 @@ mod tests {
     fn copying_loose_faces_with_ctrl() {
         let mut m = Model::new();
         let f = m.add_rectangle([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
-        let mut t = Tools::default();
-        t.selected = vec![f];
+        let mut t = Tools { selected: vec![f], ..Tools::default() };
         t.set_tool(Tool::Move);
         t.click(&mut m, &ground_hit([0.0, 0.0, 0.0], Snap::Endpoint)).unwrap();
         t.copy = true;

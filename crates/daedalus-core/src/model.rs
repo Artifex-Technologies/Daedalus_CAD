@@ -1931,7 +1931,7 @@ mod tests {
     #[test]
     fn options_changed_on_one_copy_leave_the_other_copies_as_they_were() {
         use crate::dynamic::Attribute;
-        let a = |n: &str, f: &str| Attribute { name: n.into(), formula: f.into(), label: Some("Width".into()).filter(|_| n == "Width") };
+        let a = |n: &str, f: &str| Attribute { name: n.into(), formula: f.into(), label: (n == "Width").then_some("Width".into()) };
         let (mut m, i, def) = cube_component();
         m.set_attributes(def, vec![a("Width", "1"), a("LenX", "=Width"), a("onClick", "ALTER(\"Width\", 1, 2)")]).unwrap();
         let j = m.copy_instances(&[i], &Xform::translation([3.0, 0.0, 0.0])).unwrap()[0];

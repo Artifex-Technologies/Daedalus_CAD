@@ -251,7 +251,7 @@ pub fn run(part: &Part, study: &Study, progress: &mut dyn FnMut(f32, &str)) -> R
     }
     let (lo, hi) = voxel::bounds(&part.triangles);
     let longest = (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max);
-    if !(longest > 0.0) {
+    if longest.is_nan() || longest <= 0.0 {
         return Err("the part has no size".into());
     }
     let true_volume = voxel::mesh_volume(&part.triangles).abs();

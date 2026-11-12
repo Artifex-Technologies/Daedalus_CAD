@@ -566,7 +566,7 @@ impl RuleValues {
         if !(0.0..=1.0).contains(&self.k_factor) {
             return Err(DocError::Invalid("the K-factor must be between 0 and 1".into()));
         }
-        if !(self.bend_radius >= 0.0) {
+        if self.bend_radius.is_nan() || self.bend_radius < 0.0 {
             return Err(DocError::Invalid("the bend radius must not be negative".into()));
         }
         Ok(self)
@@ -2161,7 +2161,7 @@ impl SheetBody {
     /// A drill that meets a bend is refused (a bend's material has no flat place for a hole).
     pub(crate) fn drilled_panels(&self, base: Vec3, axis: Vec3, radius: f64, height: f64) -> Result<Vec<(Option<usize>, f64)>> {
         let axis = axis.normalized().ok_or_else(|| DocError::Invalid("bore axis".into()))?;
-        if ![base.x, base.y, base.z, radius, height].iter().all(|v| v.is_finite()) || !(radius > 0.0) || height == 0.0 {
+        if ![base.x, base.y, base.z, radius, height].iter().all(|v| v.is_finite()) || radius.is_nan() || radius <= 0.0 || height == 0.0 {
             return Err(DocError::Invalid("invalid sheet bore".into()));
         }
         let mut work = FlatWork::new();
@@ -2675,7 +2675,7 @@ impl SheetBody {
         }
         zones.iter().for_each(|z| add(&z.outer));
         let Aabb2 { min: lo, max: hi } = segs.iter().map(|(a, _)| *a).collect();
-        if !(lo.x <= hi.x) || !(p.pitch > 0.0) {
+        if lo.x.is_nan() || hi.x.is_nan() || lo.x > hi.x || p.pitch.is_nan() || p.pitch <= 0.0 {
             return Ok(Vec::new());
         }
         // The rows and columns span the flat, or the outline's part of it; the bucket grid below stays the flat's.
@@ -3261,7 +3261,7 @@ impl SheetBody {
             let [p, q] = pair else { continue };
             let v = *q - *p;
             let len = v.len();
-            if !(len > 1e-6) {
+            if len.is_nan() || len <= 1e-6 {
                 return Err(DocError::Invalid(format!("line {} of the path flange's path has no length", k + 1)));
             }
             if v.dot(along).abs() > len * 1e-4 {
@@ -3381,7 +3381,7 @@ impl SheetBody {
             };
             let least = e.from.before_leg(e.angle, radius, self.t);
             let leg = e.height - least;
-            if !(leg >= -1e-9) {
+            if leg.is_nan() || leg < -1e-9 {
                 let from = match e.from {
                     HeightFrom::Outer => String::new(),
                     other => format!(" from {}", other.datum()),
@@ -3474,7 +3474,7 @@ impl SheetBody {
                     let f = self.flanges.get(i).ok_or_else(|| DocError::Invalid("flange".into()))?;
                     let tip = f.p + f.n * (self.allowance(f) + f.leg);
                     let (lo, hi) = self.far_edge(f);
-                    if !(hi - lo > 1e-9) {
+                    if (hi - lo).partial_cmp(&1e-9) != Some(std::cmp::Ordering::Greater) {
                         return Err(DocError::Invalid("the flange's edge was trimmed away".into()));
                     }
                     (tip + f.d * lo, hi - lo)
@@ -3499,7 +3499,7 @@ impl SheetBody {
             let (start, len) = {
                 let u = start.dot(d);
                 let (u0, u1) = (u.max(run.0), (u + len).min(run.1));
-                if !(u1 - u0 > 1e-9) {
+                if (u1 - u0).partial_cmp(&1e-9) != Some(std::cmp::Ordering::Greater) {
                     return Err(DocError::Invalid("the flange's edge was trimmed away".into()));
                 }
                 (start + d * (u0 - u), u1 - u0)
@@ -3508,7 +3508,7 @@ impl SheetBody {
             let (start, len) = if cut.0 || cut.1 {
                 let u = (start - a).dot(d);
                 let (u0, u1) = (if cut.0 { u.max(0.0) } else { u }, if cut.1 { (u + len).min(a.dist(b)) } else { u + len });
-                if !(u1 - u0 > 1e-9) {
+                if (u1 - u0).partial_cmp(&1e-9) != Some(std::cmp::Ordering::Greater) {
                     return Err(DocError::Invalid("the flange's edge was trimmed away".into()));
                 }
                 (start + d * (u0 - u), u1 - u0)
@@ -3669,7 +3669,7 @@ impl SheetBody {
             if free || !self.base.contains(at(1e-4, 1e-4)) {
                 continue;
             }
-            let cut = if !(width >= MIN_BEND_RELIEF) {
+            let cut = if width.is_nan() || width < MIN_BEND_RELIEF {
                 Err(format!("the relief width {width:.4} mm is below {MIN_BEND_RELIEF} mm"))
             } else if !self.base.contains(at(width + 1e-4, 1e-4)) {
                 Err(format!("a relief {width:.3} mm wide would take away all of the base beside the bend"))
@@ -3848,7 +3848,7 @@ impl SheetBody {
         }
         let Some(m) = (ea3 - eb3).normalized() else { return Err("the flanges are parallel".into()) };
         let gap = self.gap;
-        if !(gap >= MIN_CORNER_GAP) {
+        if gap.is_nan() || gap < MIN_CORNER_GAP {
             return Err(format!("the flange gap {gap:.4} mm is below {MIN_CORNER_GAP} mm"));
         }
         // Where the inner start lines cross, seen along `up` (the midpoint if they run in line).
@@ -3865,7 +3865,7 @@ impl SheetBody {
             let at = |u: f64, s: f64, z: f64| dist(apply_point(w, v3(c + e * u + f.n * s) + Vec3::Z * z));
             let c0 = at(0.0, 0.0, 0.0);
             let (cu, cs, cz) = (at(1.0, 0.0, 0.0) - c0, at(0.0, 1.0, 0.0) - c0, at(0.0, 0.0, 1.0) - c0);
-            if !(cu > 1e-6) || ![c0, cs, cz].iter().all(|v| v.is_finite()) {
+            if cu.is_nan() || cu <= 1e-6 || ![c0, cs, cz].iter().all(|v| v.is_finite()) {
                 return Err("the flanges don't meet across the corner".into());
             }
             let ba = self.allowance(f);
@@ -3883,7 +3883,7 @@ impl SheetBody {
                 f.p += f.d * u_bend;
             }
             f.len -= u_bend;
-            if !(f.len > 1e-6) {
+            if f.len.is_nan() || f.len <= 1e-6 {
                 return Err("the gap would cut a bend away".into());
             }
             // The panel runs on past its bend's (new) end toward the corner, or is cut back.
@@ -3982,7 +3982,7 @@ impl SheetBody {
         let at = |u: f64, s: f64, z: f64| clear(apply_point(&w, v3(ci + e * u + f.n * s) + Vec3::Z * z));
         let c0 = at(0.0, 0.0, 0.0);
         let (cu, cs, cz) = (at(1.0, 0.0, 0.0) - c0, at(0.0, 1.0, 0.0) - c0, at(0.0, 0.0, 1.0) - c0);
-        if !(cu > 1e-6) || ![c0, cs, cz].iter().all(|v| v.is_finite()) {
+        if cu.is_nan() || cu <= 1e-6 || ![c0, cs, cz].iter().all(|v| v.is_finite()) {
             return Ok(());
         }
         let ba = self.allowance(&f);
@@ -4006,7 +4006,7 @@ impl SheetBody {
             f.p += f.d * u_bend;
         }
         f.len -= u_bend;
-        if !(f.len > 1e-6) {
+        if f.len.is_nan() || f.len <= 1e-6 {
             return Err("that would cut its bend away".into());
         }
         if at_end {
@@ -4201,7 +4201,7 @@ impl SheetBody {
             return Err("the flanges bend opposite ways".into());
         }
         let gap = self.gap;
-        if !(gap >= MIN_CORNER_GAP) {
+        if gap.is_nan() || gap < MIN_CORNER_GAP {
             return Err(format!("the flange gap {gap:.4} mm is below {MIN_CORNER_GAP} mm"));
         }
         let (wa, wb) = (self.fold(k.a), self.fold(k.b));
@@ -4216,7 +4216,7 @@ impl SheetBody {
             let at = |u: f64, s: f64, z: f64| sign * bisector(apply_point(w, v3(k.c + e * u + f.n * s) + Vec3::Z * z));
             let c0 = at(0.0, 0.0, 0.0);
             let (cu, cs, cz) = (at(1.0, 0.0, 0.0) - c0, at(0.0, 1.0, 0.0) - c0, at(0.0, 0.0, 1.0) - c0);
-            if !(cu > 1e-6) || ![c0, cs, cz].iter().all(|x| x.is_finite()) {
+            if cu.is_nan() || cu <= 1e-6 || ![c0, cs, cz].iter().all(|x| x.is_finite()) {
                 return Err("the flanges don't meet across the corner".into());
             }
             let ba = self.allowance(f);
@@ -4392,7 +4392,7 @@ impl SheetBody {
             return Err("not supported yet: a butt corner torn between bends of more than 90°".into());
         }
         let gap = self.gap;
-        if !(gap >= MIN_CORNER_GAP) {
+        if gap.is_nan() || gap < MIN_CORNER_GAP {
             return Err(format!("the flange gap {gap:.4} mm is below {MIN_CORNER_GAP} mm"));
         }
         // The earlier panel's inner face, folded, and the side of it the new flange is on.
@@ -4409,7 +4409,7 @@ impl SheetBody {
         let at = |u: f64, s: f64, z: f64| (apply_point(&wn, v3(c + en * u + nf.n * s) + Vec3::Z * z) - origin).dot(inward);
         let c0 = at(0.0, 0.0, 0.0);
         let (cu, cs, cz) = (at(1.0, 0.0, 0.0) - c0, at(0.0, 1.0, 0.0) - c0, at(0.0, 0.0, 1.0) - c0);
-        if !(cu > 1e-6) || ![c0, cs, cz].iter().all(|x| x.is_finite()) {
+        if cu.is_nan() || cu <= 1e-6 || ![c0, cs, cz].iter().all(|x| x.is_finite()) {
             return Err("the flanges don't meet across the corner".into());
         }
         let u_end = (gap - c0 - (cz * self.t).min(0.0) - cs * ba) / cu;
@@ -4540,7 +4540,7 @@ impl SheetBody {
         shape: ReliefShape,
         size: f64,
     ) -> std::result::Result<Option<PlannedRelief>, String> {
-        if !(size >= MIN_CORNER_RELIEF) {
+        if size.is_nan() || size < MIN_CORNER_RELIEF {
             return Err(format!("the relief size {size:.4} mm is below {MIN_CORNER_RELIEF} mm"));
         }
         let r = size / 2.0;
@@ -4727,7 +4727,7 @@ impl SheetBody {
         if !(angle > 1e-6 && angle <= std::f64::consts::PI - 1e-6) {
             return Err(DocError::Invalid("the fold angle must be between 0 and 180°".into()));
         }
-        if !(radius >= 0.0) {
+        if radius.is_nan() || radius < 0.0 {
             return Err(DocError::Invalid("the bend radius must not be negative".into()));
         }
         // The panel the line lies on: both ends on its top or bottom face, the middle inside it.
@@ -5615,6 +5615,9 @@ fn clear_of(a: Vec2, d: Vec2, len: f64, cuts: &[Region2]) -> Vec<(f64, f64)> {
     out
 }
 
+/// What [`kept_past_edge`] gives: the pieces that stay, and the stretch of the edge's line between them.
+type KeptPastEdge = (Vec<Vec<Vec2>>, (f64, f64));
+
 /// What stays of `piece` (counter-clockwise), the part of a base that trimming its edge a→b back
 /// along the edge's whole line would take: where the base runs on past the edge's own line
 /// (beyond an inside corner at an end of the edge), that material and the strip beneath it, up
@@ -5622,7 +5625,7 @@ fn clear_of(a: Vec2, d: Vec2, len: f64, cuts: &[Region2]) -> Vec<(f64, f64)> {
 /// a→b being what the cut-out left of a longer edge. Nothing where the base ends at the line.
 /// With it comes the stretch of the edge's line between what stays, as distances from `a`:
 /// infinite toward an end beyond which nothing stays.
-fn kept_past_edge(piece: &[Vec2], a: Vec2, b: Vec2, cut_at: (bool, bool), work: &mut FlatWork) -> Result<(Vec<Vec<Vec2>>, (f64, f64))> {
+fn kept_past_edge(piece: &[Vec2], a: Vec2, b: Vec2, cut_at: (bool, bool), work: &mut FlatWork) -> Result<KeptPastEdge> {
     let Some(d) = (b - a).normalized() else { return Ok((Vec::new(), (f64::NEG_INFINITY, f64::INFINITY))) };
     let outward = Vec2::new(d.y, -d.x);
     let mut kept = merge_loops(&[clip(piece, a, outward)], work)?;
@@ -8163,7 +8166,8 @@ mod tests {
         let right = [(120.0, 0.0), (120.0, 3.0), (200.0, 3.0)];
         let (plain_left, plain_right, top) = ([(0.0, 0.0)], [(200.0, 0.0)], [(200.0, 100.0), (0.0, 100.0)]);
         // (picks' x, the base's corners along that edge, where each flange starts)
-        let cases: [(&[f64], Vec<(f64, f64)>, &[f64]); 4] = [
+        type Case<'a> = (&'a [f64], Vec<(f64, f64)>, &'a [f64]);
+        let cases: [Case; 4] = [
             (&[40.0], [&left[..], &plain_right[..]].concat(), &[0.0]),
             (&[150.0], [&plain_left[..], &right[..]].concat(), &[120.0]),
             (&[40.0, 150.0], [&left[..], &right[..]].concat(), &[0.0, 120.0]),

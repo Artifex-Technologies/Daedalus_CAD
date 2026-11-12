@@ -992,8 +992,8 @@ mod tests {
         for plane in planes() {
             for (ring, how) in [(&keyhole, "against"), (&with, "with")] {
                 for r in every_start(ring) {
-                    same_both_ways(&[r.clone()], &plane);
-                    let cap = faces(&[r.clone()], &plane).unwrap();
+                    same_both_ways(std::slice::from_ref(&r), &plane);
+                    let cap = faces(std::slice::from_ref(&r), &plane).unwrap();
                     assert_eq!(cap.faces.len(), 1, "{how}, from {:?}", r[0]);
                     assert_eq!(holes_seen(&cap, 0, &plane), vec![opening.clone()], "{how}, from {:?}", r[0]);
                     assert!((area(&cap, &plane) - 388.0).abs() < 1e-6, "{how}, from {:?}: {}", r[0], area(&cap, &plane));
@@ -1053,8 +1053,8 @@ mod tests {
         ];
         for plane in planes() {
             for r in every_start(&pair) {
-                same_both_ways(&[r.clone()], &plane);
-                let cap = faces(&[r.clone()], &plane).unwrap();
+                same_both_ways(std::slice::from_ref(&r), &plane);
+                let cap = faces(std::slice::from_ref(&r), &plane).unwrap();
                 assert_eq!((cap.faces.len(), cap.holes.iter().flatten().count()), (2, 0), "from {:?}", r[0]);
                 assert!((area(&cap, &plane) - 24.0).abs() < 1e-6);
             }
@@ -1086,7 +1086,7 @@ mod tests {
             [0.0, 390.0],
         ];
         let plane = Plane::ground();
-        same_both_ways(&[ring.clone()], &plane);
+        same_both_ways(std::slice::from_ref(&ring), &plane);
         let cap = faces(&[ring], &plane).unwrap();
         assert_eq!((cap.faces.len(), cap.holes_of(0).len()), (1, 1));
         assert!((area(&cap, &plane) - (120.0 * 390.0 - 60.0 * 60.0)).abs() < 1e-6);
@@ -1127,7 +1127,7 @@ mod tests {
             v: [0.6838495430777648, 0.3219897037590494, 0.654730809650418],
             normal: [0.5923532141339216, 0.2789087714839825, -0.7558621348463674],
         };
-        same_both_ways(&[ring.clone()], &plane);
+        same_both_ways(std::slice::from_ref(&ring), &plane);
         let cap = faces(&[ring], &plane).unwrap();
         assert_eq!((cap.faces.len(), cap.holes_of(0).len()), (1, 2));
         assert!((area(&cap, &plane) - 44e-6).abs() < 1e-15, "{}", area(&cap, &plane));

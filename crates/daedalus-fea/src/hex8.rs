@@ -84,6 +84,8 @@ fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<Vec<f64>>) -> Vec<Vec<f64>> {
             if f == 0.0 {
                 continue;
             }
+            // two rows of the same matrix: an iterator would need split_at_mut
+            #[allow(clippy::needless_range_loop)]
             for j in k..n {
                 a[i][j] -= f * a[k][j];
             }
@@ -147,7 +149,8 @@ impl Element {
                 k[i][j] = s;
             }
         }
-        // exact symmetry (rounding)
+        // exact symmetry (rounding); k[i][j] and k[j][i] together need both indices
+        #[allow(clippy::needless_range_loop)]
         for i in 0..24 {
             for j in i + 1..24 {
                 let m = 0.5 * (k[i][j] + k[j][i]);
@@ -201,13 +204,13 @@ mod tests {
         // a translation and a small rotation about z: no force at any corner
         for motion in [|_: [usize; 3]| [1.0, 0.0, 0.0], |c: [usize; 3]| [-(c[1] as f64), c[0] as f64, 0.0]] {
             let u: Vec<f64> = CORNERS.iter().flat_map(|&c| motion(c)).collect();
-            for i in 0..24 {
-                let f: f64 = (0..24).map(|j| k[i][j] * u[j]).sum();
+            for (i, row) in k.iter().enumerate() {
+                let f: f64 = row.iter().zip(&u).map(|(a, b)| a * b).sum();
                 assert!(f.abs() < 1e-12, "row {i}: {f}");
             }
         }
-        for i in 0..24 {
-            assert!(k[i][i] > 0.0);
+        for (i, row) in k.iter().enumerate() {
+            assert!(row[i] > 0.0);
         }
     }
 

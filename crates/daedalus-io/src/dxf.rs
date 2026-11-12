@@ -49,6 +49,9 @@ fn entities<'a>(pairs: &[(i32, &'a str)]) -> Vec<Entity<'a>> {
     out
 }
 
+/// Polyface state while reading: (vertices, 1-based face records).
+type Polyface = (Vec<[f64; 3]>, Vec<Vec<i32>>);
+
 impl MeshImporter for Dxf {
     fn extensions(&self) -> &'static [&'static str] {
         &["dxf"]
@@ -60,8 +63,7 @@ impl MeshImporter for Dxf {
         let mut mesh = Mesh::new();
         let mut welder = Welder::default();
 
-        // Polyface state: (vertices, 1-based face records)
-        let mut poly: Option<(Vec<[f64; 3]>, Vec<Vec<i32>>)> = None;
+        let mut poly: Option<Polyface> = None;
 
         for e in entities(&pairs) {
             match e.name {

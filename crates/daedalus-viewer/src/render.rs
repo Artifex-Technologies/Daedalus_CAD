@@ -681,20 +681,6 @@ impl Renderer {
     }
 }
 
-#[cfg(test)]
-mod shader_tests {
-    /// Every shader parses and validates as wgpu would at start (a broken one would only show as a crash at launch).
-    #[test]
-    fn the_shaders_compile() {
-        for (name, src) in [("shader.wgsl", include_str!("shader.wgsl")), ("lines.wgsl", include_str!("lines.wgsl"))] {
-            let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
-            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
-                .validate(&module)
-                .unwrap_or_else(|e| panic!("{name}: {e:?}"));
-        }
-    }
-}
-
 /// The bind group: the uniforms, the textures as layers of one array (a blank layer when there are none), the sampler.
 fn texture_bind_group(
     device: &wgpu::Device,
@@ -743,4 +729,18 @@ fn texture_bind_group(
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
         ],
     })
+}
+
+#[cfg(test)]
+mod shader_tests {
+    /// Every shader parses and validates as wgpu would at start (a broken one would only show as a crash at launch).
+    #[test]
+    fn the_shaders_compile() {
+        for (name, src) in [("shader.wgsl", include_str!("shader.wgsl")), ("lines.wgsl", include_str!("lines.wgsl"))] {
+            let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        }
+    }
 }

@@ -98,13 +98,13 @@ struct State {
     dxf_inches: bool,
     /// Convert to Sheet Metal under way: the solid's instance, the point on its face that stays put and on each bend edge
     /// (its own coordinates, metres).
-    convert: Option<(usize, Option<[f64; 3]>, Vec<[f64; 3]>)>,
+    convert: Option<Converting>,
     /// The Stress Test panel is open, and the test under way (its part, picks, settings and last result).
     stress_open: bool,
     stress: Option<stressui::Stress>,
     /// The Outliner is open; its rows, for the model state they were read at.
     outliner_open: bool,
-    outline_cache: Option<(u64, Vec<(usize, String, bool, Vec<usize>)>)>,
+    outline_cache: Option<(u64, Vec<OutlineRow>)>,
     /// What it shows, for the model state and selection it was worked out for.
     info_cache: Option<(u64, Option<ui::Info>)>,
     press_at: (f32, f32),
@@ -130,7 +130,7 @@ struct State {
     piece_cache: pieces::PieceCache,
     /// The geometry being edited split into triangles, and its edges, as of the document, revision and read-only import they
     /// were worked out for (none while a preview runs).
-    active: Option<((u64, u64, bool), Tris, Vec<(u32, u32)>)>,
+    active: Option<Active>,
     /// `display`'s faces as triangles, and its edges to draw and snap to: worked out in refresh, not on every mouse move.
     tris: Tris,
     edges: Vec<(u32, u32)>,
@@ -3174,6 +3174,15 @@ fn from_sketchup(path: &Path) -> Result<Scene, String> {
 
 /// Each face's triangles.
 type Tris = Vec<Vec<[u32; 3]>>;
+
+/// Convert to Sheet Metal under way: the solid's instance, the point on its face that stays put, the points on the bend edges.
+type Converting = (usize, Option<[f64; 3]>, Vec<[f64; 3]>);
+
+/// An Outliner row: depth, name, component, path of instance numbers from the top.
+type OutlineRow = (usize, String, bool, Vec<usize>);
+
+/// The geometry being edited: (document, revision, read-only import) it was worked out for, its triangles and its edges.
+type Active = ((u64, u64, bool), Tris, Vec<(u32, u32)>);
 
 /// A file's name for a message (the whole path would run into the Measurements box).
 fn short(path: &Path) -> String {

@@ -53,9 +53,9 @@ impl<'a> System<'a> {
                 }
             }
         }
-        for n in 0..total {
-            if index[n] != NONE {
-                index[n] = nodes.len() as u32;
+        for (n, ix) in index.iter_mut().enumerate() {
+            if *ix != NONE {
+                *ix = nodes.len() as u32;
                 nodes.push(n);
             }
         }
@@ -105,9 +105,9 @@ impl<'a> System<'a> {
                             for (q, m) in self.grid.cube_nodes(c).iter().enumerate() {
                                 let at = self.index[*m] as usize * 3;
                                 let u = [x[at], x[at + 1], x[at + 2]];
-                                for d in 0..3 {
+                                for (d, fd) in f.iter_mut().enumerate() {
                                     let row = &self.ke[3 * l + d];
-                                    f[d] += row[3 * q] * u[0] + row[3 * q + 1] * u[1] + row[3 * q + 2] * u[2];
+                                    *fd += row[3 * q] * u[0] + row[3 * q + 1] * u[1] + row[3 * q + 2] * u[2];
                                 }
                             }
                         }
@@ -141,13 +141,13 @@ impl<'a> System<'a> {
         let mut it = 0;
         while it < max_iterations {
             self.apply(&p, &mut ap);
-            for i in 0..n {
+            for (i, a) in ap.iter_mut().enumerate() {
                 if self.fixed[i] {
-                    ap[i] = 0.0;
+                    *a = 0.0;
                 }
             }
             let pap = dot(&p, &ap);
-            if !(pap > 0.0) {
+            if pap.is_nan() || pap <= 0.0 {
                 break; // not positive: the part is not held (it can move without straining)
             }
             let alpha = rz / pap;

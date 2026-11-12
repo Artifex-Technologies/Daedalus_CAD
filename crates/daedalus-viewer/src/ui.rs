@@ -1235,6 +1235,8 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, selected: bool, enabled: bool) -> 
 }
 
 /// One place in the toolbar.
+// A few dozen slots, copied freely while the toolbar is drawn; boxing the action would cost Copy for no real saving.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Copy)]
 enum Slot {
     Tool(Tool),

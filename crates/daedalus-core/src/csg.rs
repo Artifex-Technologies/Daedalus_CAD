@@ -291,8 +291,7 @@ fn boolean_here(a: &Mesh, b: &Mesh, op: Op) -> Mesh {
     tb.all(&mut polys);
     let mut rest = Vec::new();
     ta.all(&mut rest);
-    let mut both = Node::default();
-    both.polys = rest;
+    let mut both = Node { polys: rest, ..Node::default() };
     both.polys.extend(polys);
     let mut all = both.polys;
     if matches!(op, Op::Subtract | Op::Intersect) {

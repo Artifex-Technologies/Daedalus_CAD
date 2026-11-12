@@ -384,7 +384,7 @@ fn jog(sheet: &mut SheetBody, a: Vec3, b: Vec3, step: f64, angle: f64, radius: f
     let (_, o1, _) = jog_second(&first, i, s0, angle, radius, flip)?;
     let (_, o2, _) = jog_second(&first, i, s0 + 5.0, angle, radius, flip)?;
     let slope = (o2.abs() - o1.abs()) / 5.0;
-    if !(slope > 1e-9) {
+    if slope.is_nan() || slope <= 1e-9 {
         return invalid("the jog's step does not grow with the flat between its bends (is the angle 0?)");
     }
     if step < o1.abs() - 1e-9 {
@@ -439,7 +439,8 @@ fn cut_hole(sheet: &mut SheetBody, h: &HoleAsked) -> Result<()> {
     };
     let before = flat_area(sheet)?;
     sheet.holes.push(Region2 { outer, holes: Vec::new() });
-    if !(before - flat_area(sheet)? > 1e-6) {
+    let cut = before - flat_area(sheet)?;
+    if cut.is_nan() || cut <= 1e-6 {
         sheet.holes.pop();
         return invalid("the hole misses the sheet (it would cut no material)");
     }
@@ -500,6 +501,9 @@ fn check_flange(height: f64, angle_deg: f64) -> Result<()> {
     }
     Ok(())
 }
+
+/// A flat pattern for drawing: the outline and holes (closed point lists), then the bend centre lines (start, end).
+pub type FlatDrawing = (Vec<Vec<[f64; 2]>>, Vec<([f64; 2], [f64; 2])>);
 
 impl SheetPart {
     /// A flat part from an outline and its holes (part mm, the outline counter-clockwise), `rule`'s thickness up +Z.
@@ -859,7 +863,7 @@ impl SheetPart {
     }
 
     /// The flat pattern's outline, holes and bend centre lines (part mm, flat frame), for drawing.
-    pub fn flat_drawing(&self) -> Result<(Vec<Vec<[f64; 2]>>, Vec<([f64; 2], [f64; 2])>)> {
+    pub fn flat_drawing(&self) -> Result<FlatDrawing> {
         let mut loops = Vec::new();
         for r in self.sheet.flat_regions()? {
             for lp in std::iter::once(&r.outer).chain(&r.holes) {
@@ -1017,8 +1021,11 @@ fn body_faces(body: &kernel::Body) -> Result<Mesh> {
     Ok(mesh)
 }
 
+/// A face's frame: (origin, X, Y, Z).
+type FaceFrame = ([f64; 3], [f64; 3], [f64; 3], [f64; 3]);
+
 /// A frame for a face of the model: origin at its first corner, X along its first edge, Z its normal (all model metres).
-fn face_frame(mesh: &Mesh, f: usize) -> Option<([f64; 3], [f64; 3], [f64; 3], [f64; 3])> {
+fn face_frame(mesh: &Mesh, f: usize) -> Option<FaceFrame> {
     let (n, _) = daedalus_core::imprint::face_plane(mesh, &mesh.faces[f])?;
     let face = &mesh.faces[f];
     let o = mesh.positions[face[0] as usize];
@@ -1027,7 +1034,7 @@ fn face_frame(mesh: &Mesh, f: usize) -> Option<([f64; 3], [f64; 3], [f64; 3], [f
     let dn = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
     let x = [d[0] - dn * n[0], d[1] - dn * n[1], d[2] - dn * n[2]];
     let l = (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
-    if !(l > 0.0) {
+    if l.is_nan() || l <= 0.0 {
         return None;
     }
     let x = [x[0] / l, x[1] / l, x[2] / l];

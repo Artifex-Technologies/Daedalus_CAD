@@ -104,13 +104,13 @@ pub fn bend_deduction(bend: Bend, m: Material) -> f64 {
 }
 
 pub fn flat_pattern(profile: &Profile, m: Material, width: f64) -> Result<FlatPattern, SheetMetalError> {
-    if !(m.thickness > 0.0) {
+    if m.thickness.is_nan() || m.thickness <= 0.0 {
         return Err(SheetMetalError::InvalidMaterial("thickness must be positive"));
     }
     if !(0.0..=0.5).contains(&m.k_factor) {
         return Err(SheetMetalError::InvalidMaterial("K-factor must be between 0 and 0.5"));
     }
-    if !(width > 0.0) {
+    if width.is_nan() || width <= 0.0 {
         return Err(SheetMetalError::InvalidWidth);
     }
     if profile.flanges.len() != profile.bends.len() + 1 {

@@ -86,7 +86,7 @@ fn raster(shapes: &[Shape], size: u32) -> Vec<u8> {
     }
     let n = size as usize;
     let mut px = vec![[0.0f32; 4]; n * n];
-    for tri in mesh.indices.chunks_exact(3) {
+    for tri in mesh.indices.as_chunks::<3>().0 {
         let v = [mesh.vertices[tri[0] as usize], mesh.vertices[tri[1] as usize], mesh.vertices[tri[2] as usize]];
         let (a, b, c) = (v[0].pos, v[1].pos, v[2].pos);
         let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);

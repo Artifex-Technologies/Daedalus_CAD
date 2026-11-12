@@ -88,8 +88,8 @@ impl Xform {
         inv[2][1] = (m[0][1] * m[2][0] - m[0][0] * m[2][1]) / d;
         inv[2][2] = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) / d;
         // and the translation taken back through it
-        for r in 0..3 {
-            inv[r][3] = -(inv[r][0] * m[0][3] + inv[r][1] * m[1][3] + inv[r][2] * m[2][3]);
+        for row in &mut inv {
+            row[3] = -(row[0] * m[0][3] + row[1] * m[1][3] + row[2] * m[2][3]);
         }
         Some(Xform(inv))
     }

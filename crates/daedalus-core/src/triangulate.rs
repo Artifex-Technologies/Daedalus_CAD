@@ -402,8 +402,7 @@ impl Grid {
         let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
         for p in pts {
             for k in 0..2 {
-                // NaN fails this too
-                if !(p[k].abs() <= GRID_REACH) {
+                if p[k].is_nan() || p[k].abs() > GRID_REACH {
                     return None;
                 }
                 lo[k] = lo[k].min(p[k]);
@@ -411,7 +410,7 @@ impl Grid {
             }
         }
         let size = (hi[0] - lo[0]).max(hi[1] - lo[1]);
-        if !(size >= GRID_SMALLEST) {
+        if size.is_nan() || size < GRID_SMALLEST {
             return None;
         }
         let side = (pts.len() as f64).sqrt().ceil();

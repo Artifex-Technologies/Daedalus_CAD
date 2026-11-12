@@ -401,7 +401,8 @@ mod tests {
     fn a_long_run_of_edits_always_draws_what_splitting_it_all_draws() {
         let (mut m, mut cache) = (model(), PieceCache::default());
         check(&mut m, &mut cache);
-        let steps: Vec<(&str, fn(&mut Model))> = vec![
+        type Step = (&'static str, fn(&mut Model));
+        let steps: Vec<Step> = vec![
             ("mirror the floor", |m| {
                 let _ = m.transform_instances(&[2], &Xform::from_fn(|p| [p[0], -p[1], p[2]]));
             }),

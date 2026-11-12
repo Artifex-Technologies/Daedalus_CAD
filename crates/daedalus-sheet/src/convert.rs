@@ -305,7 +305,8 @@ fn outline(b: &Body, mesh: &Mesh, f: usize, tol: f64) -> Result<Face> {
     let mut walls = std::collections::HashMap::new();
     let mut wall = |g: u32| *walls.entry(g).or_insert_with(|| round_wall(b, &plane, *n, g));
     // Each loop with the faces of its walls.
-    let mut shaped: Vec<(Vec<(Seg2, Option<u32>)>, Vec<usize>)> = loops
+    type Shaped = (Vec<(Seg2, Option<u32>)>, Vec<usize>);
+    let mut shaped: Vec<Shaped> = loops
         .iter()
         .map(|lp| {
             let pts: Vec<(Vec2, Option<u32>)> =
@@ -566,7 +567,8 @@ fn without_chamfers(b: &Body, mut face: Face, g: usize, chamfers: &[Chamfer], to
             Some(p) => vec![(p, Some(other))],
             None => vec![(p0, None), (drop(p0)?, Some(other))],
         };
-        let end: Vec<(Vec3, Option<usize>, Option<(Vec3, Vec3)>)> = match slide(k + 1, k + 2, k + 1) {
+        type End = (Vec3, Option<usize>, Option<(Vec3, Vec3)>);
+        let end: Vec<End> = match slide(k + 1, k + 2, k + 1) {
             Some(q) => vec![(q, next_across, next_round)],
             None => vec![(drop(q0)?, None, None), (q0, next_across, next_round)],
         };
@@ -658,7 +660,7 @@ fn inset(pts: &[Vec2], by: &[f64], tol: f64) -> Result<(Vec<Vec2>, Vec<Option<us
         (Some((_, d)), Some(&a), Some(&b)) => (b - a).dot(d) > 1e-9,
         _ => true,
     });
-    if !kept || !(signed_area(&out) > 0.0) || polys_cross(&out, &out) {
+    if !kept || signed_area(&out).partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) || polys_cross(&out, &out) {
         return err("the bends' setbacks and the gaps at the cut edges use up an edge of a face");
     }
     Ok((out, from))
@@ -1072,7 +1074,7 @@ pub fn convert_body(
         let (mut pts, mut by) = (Vec::with_capacity(n), Vec::with_capacity(n));
         for (i, p) in panel.face.pts.iter().enumerate() {
             let q = apply_point(&inv, *p);
-            if !(q.z.abs() <= tol) {
+            if q.z.is_nan() || tol.is_nan() || q.z.abs() > tol {
                 return err(format!("the face at {} does not lie where its bend puts it ({:.6} mm off)", at(*p), q.z));
             }
             pts.push(Vec2::new(q.x, q.y));

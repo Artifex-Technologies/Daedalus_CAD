@@ -46,7 +46,7 @@ pub fn fonts() -> &'static [Font] {
                 }
             }
         }
-        found.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        found.sort_by_key(|f| f.name.to_lowercase());
         found.dedup_by(|a, b| a.name == b.name);
         std::iter::once(Font { name: "Ubuntu Light (built in)".into(), path: None }).chain(found).collect()
     })
