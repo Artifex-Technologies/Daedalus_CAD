@@ -176,7 +176,7 @@ fn part(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiAction
 
 /// Drawing: the outline the part was made from (with its size), its material, and its flanges.
 fn drawing_tab(ui: &mut egui::Ui, v: &UiView, s: &SheetView, actions: &mut Vec<UiAction>) {
-    drawing(ui, &s.base, &[], 200.0);
+    drawing(ui, &s.base, &[], &[], 200.0);
     for n in &s.notes {
         ui.label(RichText::new(format!("Note: {n}")).weak().small());
     }
@@ -636,19 +636,22 @@ fn fold_section(ui: &mut egui::Ui, v: &UiView, actions: &mut Vec<UiAction>) {
 
 /// Flat pattern: the blank, its bend lines and bend table, and DXF for the cutting shop.
 fn flat_tab(ui: &mut egui::Ui, s: &SheetView, actions: &mut Vec<UiAction>) {
-    drawing(ui, &s.flat_loops, &s.bend_lines, 220.0);
+    let up: Vec<bool> = s.bends.iter().map(|b| b.3).collect();
+    drawing(ui, &s.flat_loops, &s.bend_lines, &up, 220.0);
     if let Some((w, h)) = s.flat_size {
         ui.label(format!("Blank {} × {} mm, {} mm thick", fmt(w), fmt(h), fmt(s.thickness)));
     }
     if !s.bends.is_empty() {
         ui.add_space(4.0);
-        egui::Grid::new(("bend-table", s.key)).num_columns(5).spacing([10.0, 2.0]).striped(true).show(ui, |ui| {
-            for head in ["Bend", "Angle", "Included", "Radius", "Length"] {
+        egui::Grid::new(("bend-table", s.key)).num_columns(6).spacing([10.0, 2.0]).striped(true).show(ui, |ui| {
+            for head in ["Bend", "Way", "Angle", "Included", "Radius", "Length"] {
                 ui.label(RichText::new(head).weak().small());
             }
             ui.end_row();
-            for (i, &(a, r, l)) in s.bends.iter().enumerate() {
+            for (i, &(a, r, l, up)) in s.bends.iter().enumerate() {
                 ui.label(format!("{}", i + 1));
+                ui.label(RichText::new(if up { "Up" } else { "Down" }).color(if up { BEND_UP } else { BEND_DOWN }))
+                    .on_hover_text("Toward the blank's top face (up) or away from it (down), with the blank as the drawing shows it");
                 ui.label(format!("{}°", fmt(a)));
                 ui.label(format!("{}°", fmt(180.0 - a)));
                 ui.label(fmt(r));
@@ -679,9 +682,14 @@ fn flat_tab(ui: &mut egui::Ui, s: &SheetView, actions: &mut Vec<UiAction>) {
     ui.label(RichText::new("Check with your shop whether bend lines go in the cut file or are left out.").weak().small());
 }
 
-/// A 2D drawing fitted to the panel's width: `loops` in ink, `bends` as dashed red lines, the overall size along the bottom
-/// and the right side (mm, y up).
-fn drawing(ui: &mut egui::Ui, loops: &[Vec<[f64; 2]>], bends: &[([f64; 2], [f64; 2])], height: f32) {
+/// Bend lines that bend up (toward the blank's top face) in the flat drawing and the bend table, and those that bend down.
+const BEND_UP: Color32 = Color32::from_rgb(220, 60, 50);
+const BEND_DOWN: Color32 = Color32::from_rgb(40, 120, 230);
+
+/// A 2D drawing fitted to the panel's width: `loops` in ink, `bends` as dashed lines numbered as the bend table numbers them
+/// (red bending up, blue down, as `up` says; red when it says nothing), the overall size along the bottom and the right side
+/// (mm, y up).
+fn drawing(ui: &mut egui::Ui, loops: &[Vec<[f64; 2]>], bends: &[([f64; 2], [f64; 2])], up: &[bool], height: f32) {
     /// Room kept right of the drawing for its height (points).
     const RIGHT: f64 = 52.0;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
@@ -715,12 +723,16 @@ fn drawing(ui: &mut egui::Ui, loops: &[Vec<[f64; 2]>], bends: &[([f64; 2], [f64;
         }
         painter.add(Shape::line(pts, Stroke::new(1.3_f32, ink)));
     }
-    let red = Color32::from_rgb(220, 60, 50);
-    for (a, b) in bends {
-        painter.extend(Shape::dashed_line(&[at(a), at(b)], Stroke::new(1.0_f32, red), 6.0, 4.0));
+    let font = egui::FontId::proportional(11.0);
+    for (i, (a, b)) in bends.iter().enumerate() {
+        let colour = if up.get(i).copied().unwrap_or(true) { BEND_UP } else { BEND_DOWN };
+        painter.extend(Shape::dashed_line(&[at(a), at(b)], Stroke::new(1.0_f32, colour), 6.0, 4.0));
+        // its number just past the end higher on the page (a jog's two lines sit close: each keeps its own number)
+        let (p, q) = if at(a).y <= at(b).y { (at(a), at(b)) } else { (at(b), at(a)) };
+        let away = (p - q).normalized() * 7.0;
+        painter.text(p + away, egui::Align2::CENTER_CENTER, format!("{}", i + 1), font.clone(), colour);
     }
     // overall size
-    let font = egui::FontId::proportional(11.0);
     let dim = visuals.weak_text_color();
     let box_ = Rect::from_min_size(origin, vec2(w as f32, h as f32));
     let y = box_.bottom() + 8.0;

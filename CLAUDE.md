@@ -67,7 +67,7 @@ is an open decision, not yet taken.
 `PROGRESS.md` (gitignored, local) holds the roadmap, done list, open questions and the Linux first-run checklist.
 If it is missing on a fresh clone, it was not copied over: ask the owner. The essentials are repeated here;
 the current state is:
-- 331 tests pass (2026-11-07, 120 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
+- 394 tests pass (2026-11-12, 125 of them in daedalus-sheet, 10 in daedalus-fea). The viewer runs on Linux (CachyOS, KDE Wayland, NVIDIA) with egui toolbar, drawing
   tools (Line, Rectangle, Circle, Polygon), push/pull by mouse or typed value, Eraser, endpoint/midpoint snapping
   and axis lock, Measurements box, edges, Top/Iso and parallel projection. UI toolkit decided: egui.
 - Driven by hand 2026-11-05 (Hyprland, Wayland and XWayland): Rectangle with typed size, Push/Pull with typed distance,
@@ -233,6 +233,16 @@ the current state is:
   Drawing tab: corner relief None / Round / Square / Tear and its size, bend relief width and depth; new parts start with
   square corner reliefs (what SendCutSend asks for; SolidCraft's default cuts none). Tested in the part model (fold, jogs at
   90/45/60 degrees up and down, every relief shape at a two-flange corner); not yet seen on screen.
+- Jogs and the flat pattern checked by hand numbers (2026-11-12, `crates/daedalus-sheet/tests/flat_pattern.rs`): a jog's two
+  bend lines sit in the blank where BA = angle x (R + K T), setbacks (R + T) tan(angle/2) and the web's mould line
+  (T + step - T cos)/sin put them, both go out on `BEND` in the DXF (mm and inches); the folded part is as long as its mould
+  lines, setbacks and allowances give; every flat panel keeps the thickness (a face T behind each panel face); folding keeps
+  the volume the neutral layer says (the folded part is the blank plus angle x T² x length x (0.5 - K) per bend, exact to
+  1e-6: flanges, folds, jogs, hems, K 0.5/0.44/0.33). Fixed then: a jog drawn on a flange (not the base) was refused ("the
+  jog's second bend could not be made"): its step and parallel were measured against the base, now against the panel it is
+  drawn on. The Flat pattern tab's bend table has a Way column (Up / Down, toward the blank's top face or away) and the
+  drawing numbers its bend lines, red up and blue down, so a jog's opposite pair reads at a glance; the DXF keeps every
+  bend line on `BEND` (direction is in the table and the STEP).
 - Holes, path flanges, bend table (2026-11-07): Tools > Sheet Metal > Hole or Cut-out (toolbar too): click a flat face of a
   part, bent or not, and a round hole or a rectangle (sides along and across that panel's bend) is cut there, through the flat
   so the blank and the folded part both have it (`SheetPart::add_hole`, `panel_at`). A hole is a step placed on its panel

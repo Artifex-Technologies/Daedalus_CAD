@@ -338,7 +338,8 @@ fn apply(sheet: &mut SheetBody, f: &FlangeAsked, rule: &RuleValues) -> Result<()
 }
 
 /// The second fold of a jog: `s` (flat mm) from where the first one's bend starts, the other way round. Returns the sheet, the
-/// far side's step from the base (top face to top face, along the base's normal) and how parallel it is to the base (1: it is).
+/// far side's step from the panel the jog was drawn on (top face to top face, along that panel's normal) and how parallel it is
+/// to that panel (1: it is). The panel is the first fold's parent: the base, or a flange when the jog is drawn on a flange.
 fn jog_second(first: &SheetBody, i: usize, s: f64, angle: f64, radius: f64, flip: bool) -> Result<(SheetBody, f64, f64)> {
     use crate::util::apply_point;
     let f = first.flanges[i].clone();
@@ -353,7 +354,7 @@ fn jog_second(first: &SheetBody, i: usize, s: f64, angle: f64, radius: f64, flip
     let j = next.add_fold(wa, wb, angle, radius, "centerline", flip, None, &mut warning)?;
     let g = next.flanges[j].clone();
     let q = g.p + g.n * (next.allowance(&g) + 1.0);
-    let (far, base) = (next.world(Some(j)), next.world(None));
+    let (far, base) = (next.world(Some(j)), next.world(f.parent));
     let normal = |m: &crate::util::Mat| {
         let v = apply_point(m, Vec3::Z) - apply_point(m, Vec3::ZERO);
         v.normalized().unwrap_or(Vec3::Z)
@@ -789,9 +790,10 @@ impl SheetPart {
         Ok(mesh)
     }
 
-    /// The bends as the flat pattern's bend table: (angle degrees, inside radius mm, length mm).
-    pub fn bend_table(&self) -> Vec<(f64, f64, f64)> {
-        self.sheet.bends().iter().map(|b| (b.angle_deg, b.radius, b.length)).collect()
+    /// The bends as the flat pattern's bend table, in the order the flat drawing's bend lines come: (angle degrees, inside
+    /// radius mm, length mm, up: toward the blank's top face). A jog's two bends go opposite ways.
+    pub fn bend_table(&self) -> Vec<(f64, f64, f64, bool)> {
+        self.sheet.bends().iter().map(|b| (b.angle_deg, b.radius, b.length, b.up)).collect()
     }
 
     /// What a bending shop would likely query, by common rules of thumb (not any shop's own limits): a hole closer to a

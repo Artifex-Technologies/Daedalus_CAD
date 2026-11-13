@@ -196,8 +196,8 @@ pub struct SheetView {
     pub flat_loops: Vec<Vec<[f64; 2]>>,
     pub bend_lines: Vec<([f64; 2], [f64; 2])>,
     pub flat_size: Option<(f64, f64)>,
-    /// The bend table: angle (degrees), inside radius, length.
-    pub bends: Vec<(f64, f64, f64)>,
+    /// The bend table: angle (degrees), inside radius, length, and whether it bends up (toward the blank's top face).
+    pub bends: Vec<(f64, f64, f64, bool)>,
     /// What a bending shop would likely query (rules of thumb).
     pub checks: Vec<String>,
     /// What a conversion from a solid could not finish as the rule says.
