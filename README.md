@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="128" alt="Daedalus CAD icon"></p>
+
 # Daedalus CAD
 
 A SketchUp-style modeler in Rust, built from first principles (no code derived from other applications).
