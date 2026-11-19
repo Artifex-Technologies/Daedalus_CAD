@@ -92,21 +92,22 @@ winit loads the X11/Wayland libraries at runtime, so the viewer runs on either s
 The workspace is pure Rust with no C build dependencies beyond a linker (`base-devel`).
 CI (`.github/workflows/ci.yml`) builds and tests on Arch and Windows.
 
-## Roadmap
+## What it does
 Behavior targets come from the publicly documented feature set of other free modelers
 (for example IngeTrazo, GPL-3.0). Daedalus is designed and written independently;
 no source from those projects is used.
 
-1. Drawing: line, rectangle, circle, polygon, arc; edge splitting of faces; inference and axis locks (done)
-2. Value-box entry of exact lengths; repeat-last-command (done)
-3. Modify: move, rotate, scale, offset, follow-me, eraser (done); hide (not yet)
-4. Groups and components (shared definitions) (done); layers, scenes (not yet)
-5. Materials and styles, edge rendering, section planes (done)
-6. Solid operations (union, subtract, intersect) and a watertightness guard (done: Solid Tools, Solid Inspector)
-7. Native save format (done), SKP read (done, through `skp-convert` instead of the SDK), glTF export (not yet)
-8. Sheet layout with vector PDF/DXF output (not yet; sheet-metal flat patterns already go to DXF)
-9. Sheet metal in the model and STEP export (done)
-10. Stress testing (FEA), next
+- Drawing: line, rectangle, circle, polygon, arc; edge splitting of faces; inference and axis locks
+- Value-box entry of exact lengths; repeat-last-command
+- Modify: move, rotate, scale, offset, follow-me, eraser
+- Groups and components (shared definitions)
+- Materials and styles, edge rendering, section planes
+- Solid operations (Solid Tools) and a watertightness guard (Solid Inspector)
+- Native save format; SKP read through `skp-convert` instead of the SDK
+- Sheet metal in the model and STEP export; flat patterns to DXF
+- Stress testing (linear static FEA)
+
+Known limitations: no hide, layers or scenes; no glTF export; no sheet layouts with vector PDF/DXF output.
 
 ## Format status
 | Format | Status | Notes |
@@ -116,14 +117,14 @@ no source from those projects is used.
 | DAE | import + export | triangles, polylist, polygons; no materials or transforms |
 | JPEG/PNG/TIFF/BMP/DIB | load | `image` crate |
 | PSD | load | flattened composite only (`psd` crate) |
-| PDF | todo | `pdfium-render` needs the pdfium library at runtime |
-| FBX | todo | `fbxcel` |
+| PDF | not supported | `pdfium-render` needs the pdfium library at runtime |
+| FBX | not supported | `fbxcel` |
 | Daedalus (`.ddls`) | open + save | native, keeps everything: plain text, versioned (version 6 holds sheet-metal parts); `.daedalus`, its earlier name, still opens and saves under its own name |
 | SKP | import | through `tools/skp-convert` (OpenSKP, installed apart), which writes `.dskp` for Daedalus to read |
 | STEP (`.step`, `.stp`) | read (flat faces) + write | what new models are saved as. AP214, our own reader and writer (`daedalus-io/src/step.rs`, from the standard): every face a plane with its holes, closed shells as solids and the rest as surfaces, loose lines as wireframe, soft edges in an invisible "Soft edges" layer, groups and components as an assembly (each written once), colours, units. Curved faces (cylinders, B-splines...) are named, not read yet. File > Export STEP for Fabrication writes sheet-metal parts exact (AP242, `daedalus-sheet`) |
-| DWG | todo | LibreDWG is GPLv3, so isolate in an optional crate |
+| DWG | not supported | LibreDWG is GPLv3, so isolate in an optional crate |
 | F3D/F3Z/CAM360 | blocked | no public spec; use STEP instead |
-| RBZ | later | needs a reimplementation of the public SketchUp Ruby API |
+| RBZ | not supported | needs a reimplementation of the public SketchUp Ruby API |
 
 ## Coplanar faces
 As in SketchUp, neighbouring faces that lie in one plane are one face: pushing a face of a solid again leaves no seam, and
@@ -176,9 +177,6 @@ closing the window asks before throwing them away.
 
 The demo models in these pictures are drawn by `cargo run -p daedalus-io --example demo_models -- FOLDER`, with the same
 calls the tools make.
-
-## Next
-Stress testing (FEA) first, then more sheet metal (jogs) and the Dynamic Components extras.
 
 ## Version
 

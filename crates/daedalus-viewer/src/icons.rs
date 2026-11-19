@@ -27,7 +27,7 @@ pub enum Icon {
     Planned(Planned),
 }
 
-/// Tools of SketchUp's Large Tool Set still to come; see PROGRESS.md for the order they are built in.
+/// Tools of SketchUp's Large Tool Set still to come; the order they are built in is in docs/plans/ (private).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Planned {
     MakeComponent,
