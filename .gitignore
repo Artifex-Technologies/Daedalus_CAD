@@ -3,5 +3,8 @@
 # Local working notes (not published)
 PROGRESS.md
 
+# My private plans (a link to a private checkout on my computers)
+docs/plans/
+
 # Claude Code helpers' scratch worktrees and local settings
 /.claude/

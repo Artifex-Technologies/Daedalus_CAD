@@ -10,6 +10,9 @@ capability only.
 Push every commit as you make it; don't ask me first. Before pushing, check the diff names no host name,
 network address, SSID or MAC address.
 
+Plans, owner steps and other internal notes go in `docs/plans/` (private and git-ignored; ask the owner), never in the
+public docs.
+
 ## Commands
 ```sh
 cargo test --workspace                      # no GPU needed; the main check

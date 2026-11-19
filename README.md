@@ -2,9 +2,16 @@
 
 # Daedalus CAD
 
+[![CI](https://github.com/Artifex-Technologies/Daedalus_CAD/actions/workflows/ci.yml/badge.svg)](https://github.com/Artifex-Technologies/Daedalus_CAD/actions/workflows/ci.yml)
+
 A SketchUp-style modeler in Rust, built from first principles (no code derived from other applications).
 
 ![A house and a shed drawn in Daedalus: painted walls and roof, windows and a door cut into the walls, a dimension and a text label](docs/images/house.png)
+
+**How it is tested.** Every push runs CI on Arch Linux (formatting, clippy, then `cargo test` for the whole workspace) and
+on Windows (build and test). The tests cover the modelling core (faces, push/pull, undo), the file formats (written and
+read back), the sheet-metal flat patterns against numbers I worked out by hand, and the stress test against the textbook
+formulas.
 
 ## Goals
 One multi-purpose CAD tool: SketchUp-style 3D modeling for buildings and layouts, top-down 2D
