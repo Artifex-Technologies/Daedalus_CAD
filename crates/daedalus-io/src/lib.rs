@@ -78,6 +78,19 @@ pub fn import_mesh(path: &Path) -> Result<Mesh, IoError> {
 /// and components; refused, naming them, if it has faces Daedalus cannot read yet: `step::read` reads the rest), any other
 /// format as its geometry.
 pub fn open_scene(path: &Path) -> Result<daedalus_core::scene::Scene, IoError> {
+    open_scene_units(path).map(|(s, _)| s)
+}
+
+/// [`open_scene`], and the units the file says its lengths are shown in (a `.ddls` file of version 7 or later; STEP's units
+/// come with `step::read`).
+pub fn open_scene_units(path: &Path) -> Result<(daedalus_core::scene::Scene, Option<daedalus_core::units::Units>), IoError> {
+    if let Some("ddls" | "daedalus") = extension(path).as_deref() {
+        return native::read_scene_units(&std::fs::read(path)?);
+    }
+    Ok((open_scene_only(path)?, None))
+}
+
+fn open_scene_only(path: &Path) -> Result<daedalus_core::scene::Scene, IoError> {
     match extension(path).as_deref() {
         Some("ddls" | "daedalus") => return native::read_scene(&std::fs::read(path)?),
         // a SketchUp model, as skp-convert describes it (skp.rs)
@@ -97,7 +110,7 @@ pub fn save_scene(scene: &daedalus_core::scene::Scene, path: &Path) -> Result<()
 /// How [`save_scene_with`] saves.
 #[derive(Debug, Clone, Copy)]
 pub struct SaveOptions {
-    /// The units lengths are shown in: a STEP file is written in them (feet and inches as inches).
+    /// The units lengths are shown in: a STEP file is written in them (feet and inches as inches), a `.ddls` file records them.
     pub units: daedalus_core::units::Units,
 }
 
@@ -114,7 +127,7 @@ pub fn save_scene_with(scene: &daedalus_core::scene::Scene, path: &Path, opts: &
     use formats::Format;
     match Format::of(path) {
         Some(Format::Native) => {
-            std::fs::write(path, native::write_scene(scene))?;
+            std::fs::write(path, native::write_scene_units(scene, opts.units))?;
             Ok(Vec::new())
         }
         Some(Format::Step) => {

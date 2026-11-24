@@ -119,7 +119,7 @@ Known limitations: no hide, layers or scenes; no glTF export; no sheet layouts w
 | PSD | load | flattened composite only (`psd` crate) |
 | PDF | not supported | `pdfium-render` needs the pdfium library at runtime |
 | FBX | not supported | `fbxcel` |
-| Daedalus (`.ddls`) | open + save | native, keeps everything: plain text, versioned (version 6 holds sheet-metal parts); `.daedalus`, its earlier name, still opens and saves under its own name |
+| Daedalus (`.ddls`) | open + save | native, keeps everything: plain text, versioned (version 6 holds sheet-metal parts; version 7 records the units lengths are shown in when they are not metres, and opening the file shows them again); `.daedalus`, its earlier name, still opens and saves under its own name |
 | SKP | import | through `tools/skp-convert` (OpenSKP, installed apart), which writes `.dskp` for Daedalus to read |
 | STEP (`.step`, `.stp`) | read (flat faces) + write | what new models are saved as. AP214, our own reader and writer (`daedalus-io/src/step.rs`, from the standard): every face a plane with its holes, closed shells as solids and the rest as surfaces, loose lines as wireframe, soft edges in an invisible "Soft edges" layer, groups and components as an assembly (each written once), colours, units. Curved faces (cylinders, B-splines...) are named, not read yet. File > Export STEP for Fabrication writes sheet-metal parts exact (AP242, `daedalus-sheet`) |
 | DWG | not supported | LibreDWG is GPLv3, so isolate in an optional crate |

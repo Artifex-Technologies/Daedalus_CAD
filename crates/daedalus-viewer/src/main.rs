@@ -520,8 +520,12 @@ impl State {
             }
             return;
         }
-        match daedalus_io::open_scene(path) {
-            Ok(m) => {
+        match daedalus_io::open_scene_units(path) {
+            Ok((m, units)) => {
+                // a .ddls file says the units it was saved in (version 7); an older one keeps the units shown
+                if let Some(u) = units {
+                    self.tools.units = u;
+                }
                 self.replace(&m, file);
                 self.message = Some(format!("{verb} {}.", short(path)));
             }

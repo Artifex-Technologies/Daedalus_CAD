@@ -20,6 +20,8 @@
 //! part "{...}"                      inside a definition: the exact part it stands for (a sheet-metal part), as its own text
 //!                                   (version 6); the definition's v and f lines are that part's faces
 //! end
+//! units in                          the units its lengths are shown in, when not metres (version 7; a file of version 7 or later
+//!                                   without the line is in metres; an older one keeps the units already shown)
 //! guide line 0 0 0 1 0 0            notes (version 3): guide point x y z, guide line x y z dx dy dz,
 //! dim 0 0 0 1 0 0 0 -0.3 0          dim a b offset, text point at "words", section point normal on|off (one line each, one on at most),
 //! axes 0 0 0 1 0 0 0 1 0 0 0 1      axes origin red green blue
@@ -32,10 +34,11 @@
 
 use crate::{IoError, MeshExporter, MeshImporter};
 use daedalus_core::scene::{Axes, Context, Definition, Dimension, Guide, Instance, Label, Scene, Section, Texture, Xform};
+use daedalus_core::units::Units;
 use daedalus_core::{Mesh, Paint};
 
-/// Version 2 added loose lines, seams and colours; version 3 groups and components (`def`, `i`) and notes.
-pub const VERSION: u32 = 6;
+/// Version 2 added loose lines, seams and colours; version 3 groups and components (`def`, `i`) and notes; 7 the units.
+pub const VERSION: u32 = 7;
 const MAGIC: &str = "daedalus";
 
 pub struct Native;
@@ -116,6 +119,11 @@ fn p3(c: &[f64]) -> [f64; 3] {
 
 /// Reads a whole `.daedalus` file: geometry, groups and components, notes.
 pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
+    read_scene_units(bytes).map(|(s, _)| s)
+}
+
+/// [`read_scene`], and the units the file was saved in (None for a file older than version 7, which does not say).
+pub fn read_scene_units(bytes: &[u8]) -> Result<(Scene, Option<Units>), IoError> {
     let text = std::str::from_utf8(bytes).map_err(|_| IoError::Parse("not UTF-8 text".into()))?;
     let mut lines = Vec::new();
     for (i, l) in text.lines().enumerate() {
@@ -136,6 +144,7 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
         )));
     }
     let mut scene = Scene::default();
+    let mut units = None;
     // the block being read: None the top level, Some(d) definition d
     let mut block: Option<usize> = None;
     for (n, w) in lines {
@@ -295,6 +304,10 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
                 let c = numbers(rest, 12, "axes are an origin and three directions", n)?;
                 scene.notes.axes = Axes { origin: p3(&c), dirs: [p3(&c[3..]), p3(&c[6..]), p3(&c[9..])] };
             }
+            "units" if version >= 7 => {
+                let u = rest.first().and_then(|k| Units::from_key(k));
+                units = Some(u.ok_or_else(|| IoError::Parse(format!("line {n}: units are mm, cm, m, in or ft-in")))?);
+            }
             other => return Err(IoError::Parse(format!("line {n}: unknown entry {other:?}"))),
         }
     }
@@ -329,7 +342,8 @@ pub fn read_scene(bytes: &[u8]) -> Result<Scene, IoError> {
             }
         }
     }
-    Ok(scene)
+    let units = if version >= 7 { Some(units.unwrap_or(Units::Metres)) } else { None };
+    Ok((scene, units))
 }
 
 fn write_mesh(s: &mut String, mesh: &Mesh) {
@@ -384,13 +398,20 @@ fn v3(p: [f64; 3]) -> String {
 
 /// Writes a whole scene, in the oldest version that holds it.
 pub fn write_scene(scene: &Scene) -> Vec<u8> {
+    write_scene_units(scene, Units::Metres)
+}
+
+/// [`write_scene`], with the units its lengths are shown in (a `units` line and version 7 when they are not metres).
+pub fn write_scene_units(scene: &Scene, units: Units) -> Vec<u8> {
     let extras = |m: &Mesh| !m.lines.is_empty() || !m.seams.is_empty() || m.colors.iter().any(|c| c.is_some());
     let holes = std::iter::once(&scene.root).chain(scene.defs.iter().map(|d| &d.ctx)).any(|c| c.mesh.holes.iter().any(|h| !h.is_empty()));
     // seams (soft edges) mean "join these faces" when a file before version 4 is read (rings saved before faces had holes), so a
     // model with soft edges of its own (SketchUp's, between faces that stay apart) is written as version 4 at least
     let seams = std::iter::once(&scene.root).chain(scene.defs.iter().map(|d| &d.ctx)).any(|c| !c.mesh.seams.is_empty());
     let holes = holes || !scene.textures.is_empty() || seams;
-    let version = if scene.defs.iter().any(|d| d.part.is_some()) {
+    let version = if units != Units::Metres {
+        7
+    } else if scene.defs.iter().any(|d| d.part.is_some()) {
         6
     } else if scene.defs.iter().any(|d| !d.attributes.is_empty()) {
         5
@@ -406,6 +427,9 @@ pub fn write_scene(scene: &Scene) -> Vec<u8> {
     let mut s = format!(
         "{MAGIC} {version}\n# Daedalus CAD model: v x y z (metres), f vertex numbers counter-clockwise from outside, l a loose line\n"
     );
+    if units != Units::Metres {
+        s.push_str(&format!("units {}\n", units.key()));
+    }
     write_mesh(&mut s, &scene.root.mesh);
     write_instances(&mut s, &scene.root.instances);
     for d in &scene.defs {
@@ -540,10 +564,36 @@ mod tests {
         assert_eq!((back.faces.len(), back.seams.len()), (2, 1), "two triangles and the soft edge between them");
     }
 
+    /// The units a model is shown in come back with it (DAE-14): a file saved in inches reopens in inches; one saved in metres
+    /// is written as before (no units line, the oldest version that holds it) and an old file says nothing about units.
+    #[test]
+    fn a_file_saved_in_inches_reopens_in_inches() {
+        let mut m = Mesh::new();
+        for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+            m.add_vertex(p);
+        }
+        m.add_face(vec![0, 1, 2]);
+        let s = Scene::from_mesh(m);
+        let inches = write_scene_units(&s, Units::Inches);
+        let text = String::from_utf8(inches.clone()).unwrap();
+        assert!(text.starts_with("daedalus 7\n") && text.contains("\nunits in\n"), "{text}");
+        assert_eq!(read_scene_units(&inches).unwrap(), (s.clone(), Some(Units::Inches)));
+        let metres = write_scene(&s);
+        assert!(String::from_utf8(metres.clone()).unwrap().starts_with("daedalus 1\n"));
+        assert_eq!(read_scene_units(&metres).unwrap(), (s.clone(), None));
+        assert_eq!(read_scene_units(b"daedalus 7\n").unwrap().1, Some(Units::Metres), "version 7 without the line: metres");
+        for u in daedalus_core::units::ALL {
+            assert_eq!(read_scene_units(&write_scene_units(&s, u)).unwrap().1.unwrap_or(Units::Metres), u);
+        }
+        let e = |t: &str| read_scene_units(t.as_bytes()).unwrap_err().to_string();
+        assert!(e("daedalus 6\nunits in\n").contains("unknown entry"), "units need version 7");
+        assert!(e("daedalus 7\nunits furlongs\n").contains("units are mm"));
+    }
+
     #[test]
     fn bad_files_are_refused_with_the_line() {
         let e = |t: &str| Native.import(t.as_bytes()).unwrap_err().to_string();
-        assert!(e("daedalus 7\n").contains("newer Daedalus"), "{}", e("daedalus 7\n"));
+        assert!(e("daedalus 8\n").contains("newer Daedalus"), "{}", e("daedalus 8\n"));
         assert!(e("daedalus 6\npart \"x\"\n").contains("inside a definition"));
         assert!(e("daedalus 5\ndef \"a\" component\npart \"x\"\nend\n").contains("unknown entry"), "parts need version 6");
         assert!(e("hello\n").contains("not a .daedalus file"));
