@@ -3,23 +3,30 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "47 5 * * 1" # the audit weekly, for advisories published after the last change
 
 # a newer push makes the run for an older one moot
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
 jobs:
   arch:
     name: Arch Linux
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     container: archlinux:latest
     steps:
       - name: Install toolchain
         run: pacman -Syu --noconfirm base-devel git rust
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0, pinned by commit
+        with:
+          persist-credentials: false
       # the exact-solid kernel (daedalus-sheet) is most of the build: keep compiled dependencies between runs
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3, pinned by commit
       # formatting (rustfmt.toml) and lints: the debt cleared on 2026-11-11 must not come back
       - name: Format
         run: cargo fmt --all --check
@@ -33,10 +40,29 @@ jobs:
   windows:
     name: Windows
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0, pinned by commit
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3, pinned by commit
       - name: Build
         run: cargo build --workspace --locked
       - name: Test
         run: cargo test --workspace --locked
+
+  # the lock file against RustSec's advisories
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0, pinned by commit
+        with:
+          persist-credentials: false
+      - run: cargo install --locked cargo-audit
+      # Unmaintained notices (no vulnerability, no fixed version): RUSTSEC-2024-0436 paste (through wgpu's macOS backend,
+      # metal), RUSTSEC-2026-0192 ttf-parser (window decorations' font) and RUSTSEC-2026-0370 to 0372 zvariant/zbus_names
+      # (the screen reader link), both through eframe. Revisit at each eframe and wgpu update.
+      - run: >-
+          cargo audit --file Cargo.lock --deny warnings --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0192
+          --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372
