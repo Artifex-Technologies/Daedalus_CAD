@@ -112,7 +112,7 @@ Known limitations: no hide, layers or scenes; no glTF export; no sheet layouts w
 ## Format status
 | Format | Status | Notes |
 |---|---|---|
-| STL, OBJ | import + export | hand-written parsers |
+| STL, OBJ | import + export | hand-written parsers; STL's corners closer than a millionth of the model's size are welded into one vertex on import (a triangle that collapses is left out) |
 | DXF | import + export | ASCII only; `3DFACE` and polyface meshes |
 | DAE | import + export | triangles, polylist, polygons; no materials or transforms |
 | JPEG/PNG/TIFF/BMP/DIB | load | `image` crate |
